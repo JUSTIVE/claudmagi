@@ -266,6 +266,11 @@ fn inside(layout: &Layout, x: f32, w: f32) -> bool {
     x - w / 2.0 >= layout.width * LEFT_BOUND && x + w / 2.0 <= layout.width - EDGE_MARGIN
 }
 
+/// Subagents ignore the left `LEFT_BOUND` (#37); they only stay on screen.
+fn inside_sub(layout: &Layout, x: f32, w: f32) -> bool {
+    x - w / 2.0 >= EDGE_MARGIN && x + w / 2.0 <= layout.width - EDGE_MARGIN
+}
+
 /// Where a session chip goes on its lane: `(arc length, placement key)`.
 /// Session chips only ever ride a diagonal (#29); candidates are the
 /// diagonals of each stripe, left to right, and the first one that fits on
@@ -327,7 +332,7 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
         };
         let mut right_cursor = s_bend_out + CURVE_MARGIN;
         let mut left_cursor = s_bend_in - CURVE_MARGIN;
-        let fits = |s: f32, w: f32| inside(layout, lane.point_at(s).0.x, w);
+        let fits = |s: f32, w: f32| inside_sub(layout, lane.point_at(s).0.x, w);
         for (j, sub) in c.subs.iter().enumerate() {
             let style = SUB_STYLE;
             let label = sub.info.label();
@@ -774,7 +779,7 @@ mod tests {
         model.apply(list, Instant::now());
         model.settle();
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
-        for d in &draws {
+        for d in draws.iter().filter(|d| matches!(d.target, Target::Session(_))) {
             assert!(d.center.x - d.width / 2.0 >= layout.width * LEFT_BOUND - 1.0, "{} at x={}", d.label, d.center.x);
         }
         let keys: Vec<u32> = placements(&model, &layout, &lanes).iter().map(|p| p.1).collect();
