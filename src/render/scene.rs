@@ -14,7 +14,7 @@ use crate::model::{BoardModel, Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
-pub const GAP: f32 = 33.0;
+pub const GAP: f32 = 28.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;
@@ -65,12 +65,12 @@ impl ChipStyle {
 }
 
 pub const SESSION_STYLE: ChipStyle = ChipStyle {
-    h: 20.0,
-    r: 4.0,
-    pad: 12.0,
-    min_w: 52.0,
-    text_scale: 1.4,
-    text_stroke: 1.35,
+    h: 17.0,
+    r: 3.5,
+    pad: 10.0,
+    min_w: 48.0,
+    text_scale: 1.25,
+    text_stroke: 1.25,
     pull: 16.0,
     wave_len: 46.0,
     wave_amp: 6.0,
@@ -80,12 +80,12 @@ pub const SESSION_STYLE: ChipStyle = ChipStyle {
 };
 
 pub const SUB_STYLE: ChipStyle = ChipStyle {
-    h: 16.0,
+    h: 14.0,
     r: 3.0,
-    pad: 9.0,
-    min_w: 40.0,
-    text_scale: 1.1,
-    text_stroke: 1.15,
+    pad: 8.0,
+    min_w: 36.0,
+    text_scale: 1.0,
+    text_stroke: 1.05,
     pull: 11.0,
     wave_len: 28.0,
     wave_amp: 4.0,
