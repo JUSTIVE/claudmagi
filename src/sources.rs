@@ -55,6 +55,7 @@ struct SubCache {
 pub struct ClaudeSource {
     subs: Mutex<HashMap<PathBuf, SubCache>>,
     dirs: Mutex<HashMap<String, Option<PathBuf>>>,
+    tabs: Mutex<Option<WarpTabs>>,
 }
 
 impl SessionSource for ClaudeSource {
@@ -64,10 +65,155 @@ impl SessionSource for ClaudeSource {
 
     fn snapshot(&self) -> Vec<SessionInfo> {
         let mut list = read_sessions();
+        let tabs = self.warp_tabs();
         for s in &mut list {
             s.subagents = self.subagents_for(s);
+            if let Some(uuid) = &s.warp_session_uuid {
+                if let Some(tab) = tabs.get(&uuid.replace('-', "")) {
+                    s.group = format!("warp-tab:{tab}");
+                }
+            }
         }
         list
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Warp tabs via the Warp Control CLI (`warpctrl`), when it is installed
+// ---------------------------------------------------------------------------
+
+/// How often to ask Warp for its pane → tab map.
+const WARP_TABS_TTL: Duration = Duration::from_secs(5);
+const WARPCTRL_TIMEOUT: Duration = Duration::from_millis(1500);
+
+struct WarpTabs {
+    map: HashMap<String, String>,
+    fetched: Instant,
+}
+
+/// The Warp Control CLI: an installed `warpctrl` if there is one, else the
+/// Warp app binary itself in its hidden `--warpctrl` mode. Returns the
+/// program and the leading arguments.
+pub fn warpctrl_command() -> Option<(PathBuf, Vec<&'static str>)> {
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("warpctrl")).collect())
+        .unwrap_or_default();
+    candidates.push(PathBuf::from("/usr/local/bin/warpctrl"));
+    candidates.push(PathBuf::from("/opt/homebrew/bin/warpctrl"));
+    if let Some(p) = candidates.into_iter().find(|p| p.is_file()) {
+        return Some((p, vec![]));
+    }
+    for app in ["/Applications/Warp.app", "/Applications/WarpPreview.app"] {
+        let dir = PathBuf::from(app).join("Contents/MacOS");
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            if let Some(bin) = rd.flatten().map(|e| e.path()).find(|p| p.is_file()) {
+                return Some((bin, vec!["--warpctrl"]));
+            }
+        }
+    }
+    None
+}
+
+/// Runs `warpctrl --output-format json pane list` with a timeout. Empty when
+/// Warp's local control server is off (Settings → Scripting).
+fn fetch_warp_tabs() -> Option<HashMap<String, String>> {
+    let (bin, lead) = warpctrl_command()?;
+    let mut child = std::process::Command::new(bin)
+        .args(lead)
+        .args(["--output-format", "json", "pane", "list"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if start.elapsed() < WARPCTRL_TIMEOUT => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                return None;
+            }
+        }
+    }
+    let mut text = String::new();
+    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some(parse_pane_tabs(&value))
+}
+
+fn looks_like_uuid(s: &str) -> bool {
+    let hex = s.chars().filter(|c| c.is_ascii_hexdigit()).count();
+    (s.len() == 32 && hex == 32) || (s.len() == 36 && hex == 32 && s.matches('-').count() == 4)
+}
+
+/// Extracts `session uuid → tab id` from `warpctrl pane list` JSON without
+/// depending on its exact shape: any object carrying a session-ish uuid is a
+/// pane, and its tab is either a `tab*` field on the pane or the id of an
+/// enclosing object reached through a `tab*` key.
+pub fn parse_pane_tabs(value: &serde_json::Value) -> HashMap<String, String> {
+    fn id_of(obj: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+        ["id", "uuid", "tab_id", "tabId"].iter().find_map(|k| obj.get(*k).and_then(scalar))
+    }
+    fn scalar(v: &serde_json::Value) -> Option<String> {
+        match v {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+    fn walk(v: &serde_json::Value, parent_key: &str, tab: Option<String>, out: &mut HashMap<String, String>) {
+        match v {
+            serde_json::Value::Object(obj) => {
+                let tab_here = if parent_key.to_ascii_lowercase().contains("tab") { id_of(obj).or(tab.clone()) } else { tab.clone() };
+                let own_tab = obj
+                    .iter()
+                    .find(|(k, v)| k.to_ascii_lowercase().contains("tab") && scalar(v).is_some())
+                    .and_then(|(_, v)| scalar(v))
+                    .or(tab_here.clone());
+                let session = obj.iter().find_map(|(k, v)| {
+                    let k = k.to_ascii_lowercase();
+                    if !k.contains("session") {
+                        return None;
+                    }
+                    match v {
+                        serde_json::Value::String(s) if looks_like_uuid(s) => Some(s.clone()),
+                        serde_json::Value::Object(inner) => id_of(inner).filter(|s| looks_like_uuid(s)),
+                        _ => None,
+                    }
+                });
+                if let (Some(sess), Some(t)) = (session, own_tab.clone()) {
+                    out.insert(sess.replace('-', ""), t);
+                }
+                for (k, child) in obj {
+                    walk(child, k, tab_here.clone(), out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    walk(item, parent_key, tab.clone(), out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = HashMap::new();
+    walk(value, "", None, &mut out);
+    out
+}
+
+impl ClaudeSource {
+    /// Cached pane → tab map; empty when `warpctrl` is not installed.
+    fn warp_tabs(&self) -> HashMap<String, String> {
+        let mut guard = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
+        let stale = guard.as_ref().is_none_or(|t| t.fetched.elapsed() > WARP_TABS_TTL);
+        if stale {
+            let map = fetch_warp_tabs().unwrap_or_default();
+            *guard = Some(WarpTabs { map, fetched: Instant::now() });
+        }
+        guard.as_ref().map(|t| t.map.clone()).unwrap_or_default()
     }
 }
 
@@ -724,6 +870,32 @@ mod tests {
         assert!(tail_running([junk, user].into_iter()));
         assert!(!tail_running([stop, tool].into_iter()), "stop hook after a tool call means finished");
         assert!(tail_running([user, done].into_iter()), "a new prompt after the final answer resumes it");
+    }
+
+    #[test]
+    fn pane_list_json_maps_sessions_to_tabs_in_either_shape() {
+        let flat = serde_json::json!({
+            "panes": [
+                {"id": "p1", "tab_id": "t1", "session_id": "0762e1f78808469c8809535d4eb65068"},
+                {"id": "p2", "tab_id": "t1", "session": {"id": "8691e9de-2600-40af-9792-b25feb1846d9"}},
+                {"id": "p3", "tab_id": "t2", "session_id": "9899800ccc604e0da7bb74b6c2e42b2e"}
+            ]
+        });
+        let m = parse_pane_tabs(&flat);
+        assert_eq!(m.get("0762e1f78808469c8809535d4eb65068").map(String::as_str), Some("t1"));
+        assert_eq!(m.get("8691e9de260040af9792b25feb1846d9").map(String::as_str), Some("t1"));
+        assert_eq!(m.get("9899800ccc604e0da7bb74b6c2e42b2e").map(String::as_str), Some("t2"));
+
+        let nested = serde_json::json!({
+            "windows": [{"id": "w1", "tabs": [
+                {"id": "tab-a", "panes": [{"session_id": "0762e1f78808469c8809535d4eb65068"}]},
+                {"id": "tab-b", "panes": [{"sessionId": "9899800ccc604e0da7bb74b6c2e42b2e"}]}
+            ]}]
+        });
+        let m = parse_pane_tabs(&nested);
+        assert_eq!(m.get("0762e1f78808469c8809535d4eb65068").map(String::as_str), Some("tab-a"));
+        assert_eq!(m.get("9899800ccc604e0da7bb74b6c2e42b2e").map(String::as_str), Some("tab-b"));
+        assert!(parse_pane_tabs(&serde_json::json!({"ok": true})).is_empty());
     }
 
     #[test]

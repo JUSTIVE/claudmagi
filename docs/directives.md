@@ -45,5 +45,6 @@
 | # | 날짜 | 지시 | 상태 | 반영 위치 |
 |---|------|------|------|-----------|
 | 41 | 2026-09-10 | Claude 데스크톱에서 실행되는 세션끼리, 각 Warp 탭 안의 세션끼리 묶고 그룹 사이에 매우 큰 갭 | ✅ | `src/model.rs` (`assign_slots`, `GROUP_GAP` 5), `src/sources.rs` (`group` = warp pane / term / desktop) |
+| 42 | 2026-09-10 | 같은 Warp 탭의 세션(인접 pane)들은 붙이고, 다른 탭/프로그램에서 띄운 세션들 사이만 크게 띄우기 (#41 정정) | ✅ | `src/sources.rs` (`warpctrl --output-format json pane list` → `warp-tab:<id>` 그룹; Warp 로컬 제어가 꺼져 있으면 pane 단위) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기

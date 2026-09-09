@@ -133,6 +133,7 @@ impl SessionInfo {
     /// Human label for the group.
     pub fn group_label(&self) -> String {
         match self.group.split_once(':') {
+            Some(("warp-tab", tab)) => format!("warp tab {tab}"),
             Some(("warp", uuid)) => format!("warp pane {}", &uuid[..uuid.len().min(8)]),
             Some(("term", prog)) => prog.to_string(),
             Some(("sandbox", n)) => format!("sandbox group {n}"),
