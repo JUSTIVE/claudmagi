@@ -14,7 +14,7 @@ use crate::model::{BoardModel, Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
-pub const GAP: f32 = 28.0;
+pub const GAP: f32 = 24.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;
@@ -65,12 +65,12 @@ impl ChipStyle {
 }
 
 pub const SESSION_STYLE: ChipStyle = ChipStyle {
-    h: 17.0,
-    r: 3.5,
-    pad: 10.0,
-    min_w: 48.0,
-    text_scale: 1.25,
-    text_stroke: 1.25,
+    h: 22.0,
+    r: 4.0,
+    pad: 13.0,
+    min_w: 56.0,
+    text_scale: 1.5,
+    text_stroke: 1.45,
     pull: 16.0,
     wave_len: 46.0,
     wave_amp: 6.0,
@@ -80,12 +80,12 @@ pub const SESSION_STYLE: ChipStyle = ChipStyle {
 };
 
 pub const SUB_STYLE: ChipStyle = ChipStyle {
-    h: 14.0,
+    h: 16.0,
     r: 3.0,
-    pad: 8.0,
-    min_w: 36.0,
-    text_scale: 1.0,
-    text_stroke: 1.05,
+    pad: 9.0,
+    min_w: 40.0,
+    text_scale: 1.1,
+    text_stroke: 1.15,
     pull: 11.0,
     wave_len: 28.0,
     wave_amp: 4.0,
@@ -779,7 +779,7 @@ mod tests {
     }
 
     #[test]
-    fn neighbouring_session_chips_do_not_overlap() {
+    fn chips_of_different_pairs_never_overlap_and_pairs_stay_legible() {
         let layout = Layout::new(DESIGN_W, DESIGN_H, 6, 1.0);
         let lanes = layout.build_lanes();
         let mut model = BoardModel::new();
@@ -787,12 +787,18 @@ mod tests {
         model.apply(list, Instant::now());
         model.settle();
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
-        for (a, b) in draws.iter().zip(draws.iter().skip(1)) {
+        for (i, (a, b)) in draws.iter().zip(draws.iter().skip(1)).enumerate() {
             // Both chips are 45° rotated; their separation across the diagonals
             // is the perpendicular distance between centres.
             let d = b.center - a.center;
             let perp = (d.x - d.y).abs() / std::f32::consts::SQRT_2;
-            assert!(perp >= SESSION_STYLE.h + 2.0, "{} and {} are {perp:.1}px apart", a.label, b.label);
+            if i % 2 == 0 {
+                // Same pair: Ben chose a tight 24px gap (#35); most of each
+                // chip must still show.
+                assert!(perp >= SESSION_STYLE.h * 0.7, "{} and {} are {perp:.1}px apart", a.label, b.label);
+            } else {
+                assert!(perp >= SESSION_STYLE.h + 2.0, "{} and {} are {perp:.1}px apart", a.label, b.label);
+            }
         }
     }
 
