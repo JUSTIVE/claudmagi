@@ -14,7 +14,7 @@ use crate::model::{BoardModel, Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
-pub const GAP: f32 = 24.0;
+pub const GAP: f32 = 22.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;

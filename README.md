@@ -51,7 +51,7 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | Data | `model.rs` | `SessionInfo` (facts), `Phase`, `BoardModel` (animated chip state: `apply` a snapshot, `tick` time). Pure Rust, unit-tested. |
 | Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json`, the process env, and each session's `projects/<slug>/<session>/subagents/` transcripts; `FakeSource` is the in-memory sandbox the test tools edit. |
 | Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
-| Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths, or serialised to SVG for headless checks. |
+| Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths (tessellations cached by geometry), or serialised to SVG for headless checks. |
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |

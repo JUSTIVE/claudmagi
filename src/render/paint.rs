@@ -1,4 +1,9 @@
-//! Draws a shape list with gpui's path API.
+//! Draws a shape list with gpui's path API. Tessellated paths are cached by
+//! their geometry so a static board costs almost nothing per frame (#38);
+//! colours are applied at paint time and never invalidate the cache.
+
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use gpui::{Bounds, Path, PathBuilder, PathStyle, Pixels, StrokeOptions, Window, fill, point, px, size};
 use lyon::path::{LineCap, LineJoin};
@@ -7,6 +12,13 @@ use crate::font;
 use crate::geom::Pt;
 use crate::render::scene::Shape;
 use crate::theme;
+
+/// Cache upper bound; positions shift while scrolling, so it is flushed
+/// rather than evicted when it grows past this.
+const CACHE_LIMIT: usize = 6000;
+/// Rounded rects narrower than this (the packets) move every frame and are
+/// cheap to build, so they bypass the cache.
+const CACHE_MIN_W: f32 = 12.0;
 
 fn gp(p: Pt) -> gpui::Point<Pixels> {
     point(px(p.x), px(p.y))
@@ -70,28 +82,100 @@ fn rounded_rect(center: Pt, w: f32, h: f32, r: f32, angle: f32, stroke: Option<f
     b.build().ok()
 }
 
-pub fn paint_shapes(shapes: &[Shape], window: &mut Window) {
-    for shape in shapes {
-        match shape {
-            Shape::Rect { x, y, w, h, color } => {
-                let bounds = Bounds { origin: point(px(*x), px(*y)), size: size(px(*w), px(*h)) };
-                window.paint_quad(fill(bounds, theme::hsla(*color)));
-            }
-            Shape::Stroke { pieces, width, color } => {
-                if let Some(path) = stroke_path(pieces, *width) {
-                    window.paint_path(path, theme::hsla(*color));
-                }
-            }
-            Shape::RoundedRect { center, w, h, r, angle, color, stroke } => {
-                if let Some(path) = rounded_rect(*center, *w, *h, *r, *angle, *stroke) {
-                    window.paint_path(path, theme::hsla(*color));
-                }
-            }
-            Shape::Text { text, scale, stroke, angle, center, color } => {
-                if let Some(path) = font::build(text, *scale, *stroke, *angle, (center.x, center.y)) {
-                    window.paint_path(path, theme::hsla(*color));
+/// Quantises a coordinate so tiny float noise still hits the cache.
+fn q(v: f32) -> i32 {
+    (v * 20.0).round() as i32
+}
+
+fn key_of(shape: &Shape) -> Option<u64> {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match shape {
+        Shape::Rect { .. } => return None,
+        Shape::Stroke { pieces, width, .. } => {
+            1u8.hash(&mut h);
+            q(*width).hash(&mut h);
+            for piece in pieces {
+                piece.len().hash(&mut h);
+                for p in piece {
+                    q(p.x).hash(&mut h);
+                    q(p.y).hash(&mut h);
                 }
             }
         }
+        Shape::RoundedRect { center, w, h: hh, r, angle, stroke, .. } => {
+            if *w < CACHE_MIN_W {
+                return None;
+            }
+            2u8.hash(&mut h);
+            for v in [center.x, center.y, *w, *hh, *r, *angle] {
+                q(v).hash(&mut h);
+            }
+            stroke.map(q).hash(&mut h);
+        }
+        Shape::Text { text, scale, stroke, angle, center, .. } => {
+            3u8.hash(&mut h);
+            text.hash(&mut h);
+            for v in [*scale, *stroke, *angle, center.x, center.y] {
+                q(v).hash(&mut h);
+            }
+        }
     }
+    Some(h.finish())
+}
+
+fn build(shape: &Shape) -> Option<Path<Pixels>> {
+    match shape {
+        Shape::Rect { .. } => None,
+        Shape::Stroke { pieces, width, .. } => stroke_path(pieces, *width),
+        Shape::RoundedRect { center, w, h, r, angle, stroke, .. } => rounded_rect(*center, *w, *h, *r, *angle, *stroke),
+        Shape::Text { text, scale, stroke, angle, center, .. } => {
+            font::build(text, *scale, *stroke, *angle, (center.x, center.y))
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct PathCache {
+    paths: HashMap<u64, Path<Pixels>>,
+}
+
+impl PathCache {
+    pub fn paint(&mut self, shapes: &[Shape], window: &mut Window) {
+        if self.paths.len() > CACHE_LIMIT {
+            self.paths.clear();
+        }
+        for shape in shapes {
+            let color = match shape {
+                Shape::Rect { x, y, w, h, color } => {
+                    let bounds = Bounds { origin: point(px(*x), px(*y)), size: size(px(*w), px(*h)) };
+                    window.paint_quad(fill(bounds, theme::hsla(*color)));
+                    continue;
+                }
+                Shape::Stroke { color, .. } | Shape::RoundedRect { color, .. } | Shape::Text { color, .. } => *color,
+            };
+            let path = match key_of(shape) {
+                Some(key) => {
+                    if !self.paths.contains_key(&key) {
+                        match build(shape) {
+                            Some(p) => {
+                                self.paths.insert(key, p);
+                            }
+                            None => continue,
+                        }
+                    }
+                    self.paths.get(&key).cloned()
+                }
+                None => build(shape),
+            };
+            if let Some(path) = path {
+                window.paint_path(path, theme::hsla(color));
+            }
+        }
+    }
+}
+
+/// Uncached one-off painting (kept for callers without a cache).
+#[allow(dead_code)]
+pub fn paint_shapes(shapes: &[Shape], window: &mut Window) {
+    PathCache::default().paint(shapes, window);
 }

@@ -49,5 +49,7 @@
 | 35 | 2026-09-10 | 노드 크기는 줄이지 말고(원래 크기로 복원) 짝 안 간격만 24로 | ✅ | `src/render/scene.rs` (GAP 24, 칩 22/16) |
 | 36 | 2026-09-10 | 서브에이전트는 무조건 수평선 위에만, 커브에서 좀 떨어진 위치에만 스폰 | ✅ | `src/render/scene.rs` (`place_all`: 좌우 수평 구간 + `CURVE_MARGIN`) |
 | 37 | 2026-09-10 | 서브에이전트 노드는 왼쪽 20% 회피를 무시 (화면 가장자리만 피함) | ✅ | `src/render/scene.rs` (`inside_sub`) |
+| 38 | 2026-09-10 | claudmagi의 CPU 사용량이 너무 크다 → 줄일 것 | ✅ | `src/render/paint.rs` (경로 캐시), `src/ui/board.rs` (30fps, 폴링 1초) |
+| 39 | 2026-09-10 | 짝 안 간격을 22로 | ✅ | `src/render/scene.rs` (GAP 22) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기

@@ -1,6 +1,7 @@
 //! The interactive board: owns the model + sources, handles input, and hands
 //! each frame to the renderer.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,7 +13,7 @@ use gpui::{
 
 use crate::geom::{Polyline, Pt};
 use crate::model::{BoardModel, Target};
-use crate::render::paint::paint_shapes;
+use crate::render::paint::PathCache;
 use crate::render::scene::{self, ChipDraw, Frame, GAP, Layout};
 use crate::settings::Settings;
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
@@ -21,7 +22,11 @@ use crate::ui::panel::PanelState;
 use crate::{mac, warp};
 
 pub const STATUS_H: f32 = 30.0;
-const POLL_MS: u64 = 300;
+/// Session registry poll interval.
+const POLL_MS: u64 = 1000;
+/// Redraw cadence: the packets glide at 30fps, which halves the CPU of a
+/// vsync-driven loop (#38).
+const FRAME_MS: u64 = 33;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -42,6 +47,7 @@ pub struct Board {
     layout: Layout,
     lanes: Rc<Vec<Polyline>>,
     draws: Vec<ChipDraw>,
+    paths: Rc<RefCell<PathCache>>,
     scroll_y: f32,
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
@@ -76,6 +82,17 @@ impl Board {
         })
         .detach();
 
+        // Frame clock: repaint on a fixed cadence instead of every vsync.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(FRAME_MS)).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+
         let settings = Settings::load();
         let now = Instant::now();
         Self {
@@ -89,6 +106,7 @@ impl Board {
             settings_panel: PanelState::default(),
             lanes: Rc::new(Vec::new()),
             draws: Vec::new(),
+            paths: Rc::new(RefCell::new(PathCache::default())),
             scroll_y: 0.0,
             mouse: None,
             pressed: None,
@@ -235,7 +253,7 @@ impl Render for Board {
             pan_x: 0.0,
             palette,
         };
-        window.request_animation_frame();
+        let paths = self.paths.clone();
 
         let ink = theme::hsla(palette.ink);
         let summary = self.model.summary();
@@ -331,7 +349,7 @@ impl Render for Board {
                     move |bounds, _, window, _| {
                         let origin = Pt::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y));
                         let shapes = scene::build_shapes(&frame, origin);
-                        paint_shapes(&shapes, window);
+                        paths.borrow_mut().paint(&shapes, window);
                     },
                 )
                 .size_full(),
