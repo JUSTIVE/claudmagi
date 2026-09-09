@@ -29,14 +29,36 @@ cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 
 `swift tools/svg2png.swift out.svg out.png [scale]` rasterises the SVG at its exact size; add `--size 1920x1080` to the `--svg` run to preview other window sizes.
 
-## How it works
+## Architecture
 
-| Piece | Source |
-|-------|--------|
-| Session list | `~/.claude/sessions/<pid>.json`, written by Claude Code itself (`status`, `waitingFor`, `name`, `cwd`, …). Dead pids are skipped. |
-| Phase | `waitingFor` present → needs input · `status == busy` → working · otherwise idle (`tempo/state == blocked` also counts as needs input). |
-| Warp tab | Warp exports `WARP_FOCUS_URL=warp://session/<uuid>` into each shell. claudmagi reads it from the Claude process environment (`sysctl KERN_PROCARGS2`) and `open`s it. Sessions not started in Warp fall back to activating Warp. |
-| Rendering | `scene.rs` builds a renderer-independent shape list; `board.rs` paints it with gpui paths, `--svg` serialises the same list. Labels use a small built-in stroke font so they can rotate with the diagonal traces. |
+Data and rendering are separate layers; only `ui/` touches gpui.
+
+| Layer | Module | Role |
+|-------|--------|------|
+| Data | `model.rs` | `SessionInfo` (facts), `Phase`, `BoardModel` (animated chip state: `apply` a snapshot, `tick` time). Pure Rust, unit-tested. |
+| Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json` + the process env; `FakeSource` is the in-memory sandbox the test tools edit. |
+| Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
+| Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths, or serialised to SVG for headless checks. |
+| UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
+| UI | `ui/devtools.rs` | Floating test tools (below). |
+| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Stroke font, polylines, palette, AppKit shims, Warp focus. |
+
+Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
+otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp
+jumps use `WARP_FOCUS_URL=warp://session/<uuid>` read from the Claude process
+environment via `sysctl KERN_PROCARGS2`.
+
+## Test tools
+
+Press `T` (or click `TEST` in the status bar) to open a floating panel:
+
+- **SOURCE** switches the board between live sessions and a sandbox.
+- **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at
+  once, clears them, or turns on *auto churn* (random phase changes, arrivals
+  and departures every 1.4 s) to watch the plug/unplug and fade animations.
+- **SESSIONS** lists what the board shows; sandbox rows have `W/N/I` phase
+  buttons and `×`, live rows have `→ WARP`. Clicking a sandbox name cycles its
+  phase. Drag the header to move the panel; `Esc` closes it.
 
 ## Layout
 

@@ -26,7 +26,7 @@ pub const PALETTE: Palette = Palette {
     text_on: Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 },  // #3BE38A
     text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 }, // #FFB03A
     text_idle: Rgba { r: 0.788, g: 0.467, b: 0.227, a: 1.0 }, // #C9773A
-    outline: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+    outline: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },   // hover ring: black (#11)
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
 };
 

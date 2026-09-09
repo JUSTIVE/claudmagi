@@ -1,20 +1,25 @@
-mod board;
 mod font;
 mod geom;
 mod mac;
-mod scene;
-mod sessions;
+mod model;
+mod render;
+mod sources;
 mod theme;
+mod ui;
 mod warp;
 
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::{
     App, Application, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions,
     prelude::*, px, size,
 };
 
-use board::Board;
+use model::{BoardModel, SessionInfo};
+use render::scene;
+use sources::{ClaudeSource, FakeSource, SessionSource};
+use ui::board::Board;
 
 actions!(claudmagi, [Quit]);
 
@@ -30,16 +35,22 @@ fn main() {
             .and_then(|k| args.get(k + 1))
             .and_then(|s| s.split_once('x'))
             .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
-            .unwrap_or((980.0, 620.0));
-        let sessions = if demo { demo_sessions() } else { sessions::read_sessions() };
-        let svg = render_svg(&sessions, w, h);
+            .unwrap_or((scene::DESIGN_W, scene::DESIGN_H));
+        let sessions = if demo {
+            let fake = FakeSource::new();
+            fake.fill(8);
+            fake.snapshot()
+        } else {
+            ClaudeSource.snapshot()
+        };
+        let svg = render_svg(&sessions, w, h, demo);
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--focus") {
         let key = args.get(i + 1).cloned().unwrap_or_default().to_ascii_uppercase();
-        let list = sessions::read_sessions();
+        let list = ClaudeSource.snapshot();
         match list.iter().find(|s| s.label() == key || s.pid.to_string() == key) {
             Some(s) => println!("{:?}", warp::focus(s)),
             None => eprintln!("no session matching {key:?}; try --list"),
@@ -47,11 +58,11 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--list") {
-        for s in sessions::read_sessions() {
+        for s in ClaudeSource.snapshot() {
             println!(
-                "{:<14} {:<10} {:<40} {:?} {}",
+                "{:<14} {:<12} {:<40} {:?} {}",
                 s.label(),
-                format!("{:?}", s.phase()),
+                s.phase().label(),
                 s.short_cwd(),
                 s.tty,
                 s.warp_focus_url.as_deref().unwrap_or("-")
@@ -68,7 +79,7 @@ fn main() {
             items: vec![MenuItem::action("Quit claudmagi", Quit)],
         }]);
 
-        let bounds = Bounds::centered(None, size(px(980.), px(620.)), cx);
+        let bounds = Bounds::centered(None, size(px(scene::DESIGN_W), px(scene::DESIGN_H)), cx);
         cx.open_window(
             WindowOptions {
                 titlebar: None,
@@ -93,66 +104,18 @@ fn main() {
 }
 
 /// Headless still frame with every animation settled.
-fn render_svg(list: &[sessions::SessionInfo], width: f32, height: f32) -> String {
-    let layout = scene::Layout::new(width, height, list.len());
+fn render_svg(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool) -> String {
+    let now = Instant::now();
+    let mut model = BoardModel::new();
+    model.apply(list.to_vec(), now);
+    model.settle();
+    if demo_hover && model.chips.len() > 1 {
+        model.chips[1].hover_t = 1.0;
+    }
+    let layout = scene::Layout::new(width, height, model.chips.len());
     let lanes = Rc::new(layout.build_lanes());
-    let chips = list
-        .iter()
-        .enumerate()
-        .map(|(k, info)| {
-            let lane = scene::Layout::chip_lane(k);
-            let on_diag = k % 2 == 0;
-            let label = info.label();
-            let w = scene::chip_width(&label);
-            let s_c = scene::chip_anchor(&lanes[lane], lane, on_diag, &layout, w);
-            let p = if info.phase() == sessions::Phase::Working { 0.0 } else { 1.0 };
-            let (pos, tan) = lanes[lane].point_at(s_c + p * scene::PULL);
-            scene::ChipDraw {
-                lane,
-                s_c,
-                width: w,
-                label,
-                p,
-                hover: if k == 1 { 1.0 } else { 0.0 },
-                alpha: 1.0,
-                phase: info.phase(),
-                center: pos,
-                tangent: tan,
-            }
-        })
-        .collect();
+    let chips = scene::chip_draws(&model, &layout, &lanes, now);
     let frame = scene::Frame { lanes, chips, scroll_y: 0.0, t: 3.7, layout };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
-    scene::to_svg(&shapes, width, height)
-}
-
-fn demo_sessions() -> Vec<sessions::SessionInfo> {
-    let mk = |pid: i32, name: &str, cwd: &str, status: &str, waiting: Option<&str>| sessions::SessionInfo {
-        pid,
-        session_id: format!("demo-{pid}"),
-        cwd: cwd.into(),
-        name: name.into(),
-        status: status.into(),
-        waiting_for: waiting.map(Into::into),
-        state: None,
-        tempo: None,
-        detail: None,
-        started_at: pid as u64,
-        status_updated_at: 0,
-        kind: "interactive".into(),
-        version: None,
-        tty: Some("ttys001".into()),
-        warp_focus_url: None,
-        warp_session_uuid: None,
-    };
-    vec![
-        mk(1, "personal-71", "/Users/ben/git/personal", "busy", None),
-        mk(2, "yoshi-d3", "/Users/ben/git/cookieplace/crepe/yoshi", "idle", None),
-        mk(3, "crepe-2f", "/Users/ben/git/cookieplace/crepe", "busy", Some("dialog open")),
-        mk(4, "flxtra-08", "/Users/ben/git/personal/flxtra", "busy", None),
-        mk(5, "trailblazer-a1", "/Users/ben/git/personal/trailblazer", "idle", None),
-        mk(6, "morphing-sheet-4", "/Users/ben/git/personal/morphing-sheet", "busy", Some("input needed")),
-        mk(7, "gql-9c", "/Users/ben/git/personal/GompassQL", "busy", None),
-        mk(8, "djdeck-31", "/Users/ben/git/personal/djdeck", "idle", None),
-    ]
+    render::svg::to_svg(&shapes, width, height)
 }

@@ -9,7 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::sessions::SessionInfo;
+use crate::model::SessionInfo;
 
 #[derive(Debug)]
 pub enum Outcome {

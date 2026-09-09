@@ -1,16 +1,16 @@
 //! Renderer-independent description of a board frame.
 //!
-//! `build_shapes` turns lanes + chips into a flat list of `Shape`s. The gpui
-//! view paints them with paths; `to_svg` writes the same list as SVG so the
-//! layout can be checked headlessly (`claudmagi --svg out.svg`).
+//! `chip_draws` projects the model onto lanes, and `build_shapes` turns lanes
+//! + chips into a flat list of `Shape`s. `render::paint` draws that list with
+//! gpui; `render::svg` serialises it so layouts can be checked headlessly.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::rc::Rc;
+use std::time::Instant;
 
 use crate::font;
 use crate::geom::{Polyline, Pt, smoothstep};
-use crate::sessions::Phase;
+use crate::model::{BoardModel, Phase};
 use crate::theme::{self, PALETTE, Rgba};
 
 pub const GAP: f32 = 16.0;
@@ -428,85 +428,83 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
     out
 }
 
-fn svg_color(c: Rgba) -> String {
-    format!(
-        "rgba({},{},{},{:.3})",
-        (c.r * 255.0).round() as u8,
-        (c.g * 255.0).round() as u8,
-        (c.b * 255.0).round() as u8,
-        c.a
-    )
+/// Projects every chip of the model onto its lane.
+pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: Instant) -> Vec<ChipDraw> {
+    model
+        .chips
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| {
+            let lane_idx = Layout::chip_lane(k);
+            let lane = lanes.get(lane_idx)?;
+            let label = c.info.label();
+            let width = chip_width(&label);
+            let on_diag = k % 2 == 0;
+            let s_c = chip_anchor(lane, lane_idx, on_diag, layout, width);
+            let p = smoothstep(c.disconnect);
+            let (center, tangent) = lane.point_at(s_c + p * PULL);
+            Some(ChipDraw {
+                lane: lane_idx,
+                s_c,
+                width,
+                label,
+                p,
+                hover: c.hover_t,
+                alpha: c.alpha(now),
+                phase: c.phase(),
+                center,
+                tangent,
+            })
+        })
+        .collect()
 }
 
-/// Serialises shapes as a standalone SVG document.
-pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
-    let mut s = String::new();
-    let _ = writeln!(
-        s,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
-    );
-    for shape in shapes {
-        match shape {
-            Shape::Rect { x, y, w, h, color } => {
-                let _ = writeln!(s, r#"<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{}"/>"#, svg_color(*color));
-            }
-            Shape::Stroke { pieces, width, color } => {
-                for piece in pieces {
-                    if piece.len() < 2 {
-                        continue;
-                    }
-                    let pts: Vec<String> = piece.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect();
-                    let _ = writeln!(
-                        s,
-                        r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="{width}" stroke-linecap="round" stroke-linejoin="round"/>"#,
-                        pts.join(" "),
-                        svg_color(*color)
-                    );
-                }
-            }
-            Shape::RoundedRect { center, w, h, r, angle, color, stroke } => {
-                let (fill, stroke_attr) = match stroke {
-                    Some(sw) => ("none".to_string(), format!(r#"stroke="{}" stroke-width="{sw}""#, svg_color(*color))),
-                    None => (svg_color(*color), String::new()),
-                };
-                let _ = writeln!(
-                    s,
-                    r#"<rect x="{:.2}" y="{:.2}" width="{w:.2}" height="{h:.2}" rx="{r}" fill="{fill}" {stroke_attr} transform="rotate({angle:.2} {:.2} {:.2})"/>"#,
-                    center.x - w / 2.0,
-                    center.y - h / 2.0,
-                    center.x,
-                    center.y
-                );
-            }
-            Shape::Text { text, scale, stroke, angle, center, color } => {
-                let width = font::measure(text, *scale);
-                let x0 = center.x - width / 2.0;
-                let y0 = center.y - font::height(*scale) / 2.0;
-                let _ = writeln!(
-                    s,
-                    r#"<g fill="none" stroke="{}" stroke-width="{stroke}" stroke-linecap="round" stroke-linejoin="round" transform="rotate({angle:.2} {:.2} {:.2})">"#,
-                    svg_color(*color),
-                    center.x,
-                    center.y
-                );
-                for (i, ch) in text.chars().enumerate() {
-                    let gx = x0 + i as f32 * font::ADVANCE * scale;
-                    for stroke_pts in font::glyph(ch) {
-                        let pts: Vec<String> = stroke_pts
-                            .iter()
-                            .map(|(ux, uy)| format!("{:.2},{:.2}", gx + ux * scale, y0 + uy * scale))
-                            .collect();
-                        if pts.len() == 1 {
-                            let _ = writeln!(s, r#"<polyline points="{} {}"/>"#, pts[0], pts[0]);
-                        } else {
-                            let _ = writeln!(s, r#"<polyline points="{}"/>"#, pts.join(" "));
-                        }
-                    }
-                }
-                let _ = writeln!(s, "</g>");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layout_fills_big_windows_with_more_lanes_and_stripes() {
+        let small = Layout::new(DESIGN_W, DESIGN_H, 3);
+        let big = Layout::new(3840.0, 2160.0, 3);
+        assert_eq!(small.zoom, 1.0);
+        assert!(big.zoom > 1.0 && big.zoom <= MAX_ZOOM);
+        assert!(big.lanes > small.lanes);
+        assert!(big.bands >= small.bands);
+        assert!(big.content_height() * big.zoom >= 2160.0 - BOTTOM_PAD * big.zoom);
+    }
+
+    #[test]
+    fn lanes_form_a_staircase_that_never_crosses() {
+        let layout = Layout::new(1920.0, 1080.0, 8);
+        for i in 1..layout.lanes {
+            let a = lane_params(i - 1, &layout);
+            let b = lane_params(i, &layout);
+            for (pa, pb) in a.iter().zip(b.iter()) {
+                assert!((pa.0 - pb.0 - GAP).abs() < 1e-3, "bend moves exactly one gap left per lane");
+                assert!((pb.1 - pa.1 - GAP).abs() < 1e-3);
             }
         }
     }
-    s.push_str("</svg>\n");
-    s
+
+    #[test]
+    fn chips_alternate_between_diagonal_and_horizontal_placement() {
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 2);
+        let lanes = layout.build_lanes();
+        let mut model = BoardModel::new();
+        model.apply(
+            vec![
+                crate::model::SessionInfo::synthetic(1, "a", Phase::Working),
+                crate::model::SessionInfo::synthetic(2, "b", Phase::Idle),
+            ],
+            Instant::now(),
+        );
+        model.settle();
+        let draws = chip_draws(&model, &layout, &lanes, Instant::now());
+        assert_eq!(draws.len(), 2);
+        assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first chip rides the diagonal");
+        assert!(draws[1].tangent.angle_deg().abs() < 1.0, "second chip sits on the horizontal");
+        assert_eq!(draws[0].p, 0.0);
+        assert_eq!(draws[1].p, 1.0);
+    }
 }
