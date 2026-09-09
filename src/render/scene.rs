@@ -258,8 +258,9 @@ pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
 /// the right edge; a spot that would is swapped for the next one to the right.
 pub const LEFT_BOUND: f32 = 0.20;
 const EDGE_MARGIN: f32 = 12.0;
-/// Extra upstream room a left-side subagent leaves for the parent's cable.
-const LEFT_GAP: f32 = SUB_GAP + 40.0;
+/// Subagents sit on the horizontals either side of their session's diagonal,
+/// at least this far from the curves (#36).
+const CURVE_MARGIN: f32 = 30.0 + CORNER_R;
 
 fn inside(layout: &Layout, x: f32, w: f32) -> bool {
     x - w / 2.0 >= layout.width * LEFT_BOUND && x + w / 2.0 <= layout.width - EDGE_MARGIN
@@ -309,26 +310,43 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
         let (s_c, key) = session_anchor(lane, lane_idx, layout, width);
         out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style });
 
-        let mut right_edge = s_c + width / 2.0;
-        let mut left_edge = s_c - width / 2.0;
+        // Horizontal runs either side of the parent's diagonal (stripe `key`),
+        // trimmed by CURVE_MARGIN so nothing sits on a bend (#36).
+        let params = lane_params(lane_idx, layout);
+        let b = key as usize;
+        let (ax, y) = params[b];
+        let s_bend_in = lane.nearest_s(Pt::new(ax, y));
+        let s_bend_out = lane.nearest_s(Pt::new(ax + DIAG, y + DIAG));
+        let right_limit = match params.get(b + 1) {
+            Some((nax, ny)) => lane.nearest_s(Pt::new(*nax, *ny)) - CURVE_MARGIN,
+            None => lane.length(),
+        };
+        let left_limit = match b.checked_sub(1).and_then(|pb| params.get(pb)) {
+            Some((pax, py)) => lane.nearest_s(Pt::new(pax + DIAG, py + DIAG)) + CURVE_MARGIN,
+            None => 0.0,
+        };
+        let mut right_cursor = s_bend_out + CURVE_MARGIN;
+        let mut left_cursor = s_bend_in - CURVE_MARGIN;
         let fits = |s: f32, w: f32| inside(layout, lane.point_at(s).0.x, w);
         for (j, sub) in c.subs.iter().enumerate() {
             let style = SUB_STYLE;
             let label = sub.info.label();
             let width = style.width(&label);
-            let right_s = right_edge + SUB_GAP + width / 2.0;
-            let left_s = left_edge - LEFT_GAP - width / 2.0;
+            let right_s = right_cursor + width / 2.0;
+            let left_s = left_cursor - width / 2.0;
+            let right_ok = right_s + width / 2.0 <= right_limit && fits(right_s, width);
+            let left_ok = left_s - width / 2.0 >= left_limit && fits(left_s, width);
             let prefer_right = j % 2 == 0;
-            let (s_c, on_right) = match (fits(right_s, width), fits(left_s, width)) {
+            let (s_c, on_right) = match (right_ok, left_ok) {
                 (true, true) => (if prefer_right { right_s } else { left_s }, prefer_right),
                 (true, false) => (right_s, true),
                 (false, true) => (left_s, false),
                 (false, false) => (right_s, true),
             };
             if on_right {
-                right_edge = s_c + width / 2.0;
+                right_cursor = s_c + width / 2.0 + SUB_GAP;
             } else {
-                left_edge = s_c - width / 2.0;
+                left_cursor = s_c - width / 2.0 - SUB_GAP;
             }
             // Key: side + ordinal on that side, so flipping sides animates.
             let key = 100 + j as u32 * 2 + on_right as u32;
@@ -709,6 +727,15 @@ mod tests {
         assert_eq!(draws[2].p, 1.0, "finished subagent is unplugged");
         assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first session rides the diagonal");
         assert!((draws[3].tangent.angle_deg() - 45.0).abs() < 1.0, "so does the second (#29)");
+        for d in &draws[1..3] {
+            assert!(d.tangent.angle_deg().abs() < 0.5, "{} sits on a horizontal (#36)", d.label);
+            let lane = &lanes[d.lane];
+            // The rounded corner starts CORNER_R before the apex, so probe a
+            // little inside the margin: the trace must still be flat there.
+            for s in [d.s_c - d.width / 2.0 - 16.0, d.s_c + d.width / 2.0 + 16.0] {
+                assert!(lane.point_at(s).1.angle_deg().abs() < 0.5, "{} keeps clear of the bends", d.label);
+            }
+        }
         assert_eq!(draws[3].lane - draws[0].lane, 1, "sessions take consecutive lanes");
     }
 
