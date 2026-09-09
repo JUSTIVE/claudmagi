@@ -14,7 +14,7 @@ Warp tab that hosts that session.
 cargo run --release
 ```
 
-- Frameless window: drag anywhere on the board to move it, drag edges to resize.
+- Frameless window: drag anywhere on the board to move it, drag edges to resize. Bigger windows zoom the board (up to 2.6×) and add more trace stripes so a fullscreen 4K display stays as dense as the reference clip.
 - Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 
@@ -27,7 +27,7 @@ cargo run -- --svg out.svg --demo   # same, with fake sessions in every state
 cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 ```
 
-`qlmanage -t -s 1960 -o . out.svg` turns the SVG into a PNG for a quick look.
+`swift tools/svg2png.swift out.svg out.png [scale]` rasterises the SVG at its exact size; add `--size 1920x1080` to the `--svg` run to preview other window sizes.
 
 ## How it works
 

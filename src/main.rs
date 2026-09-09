@@ -94,16 +94,17 @@ fn main() {
 
 /// Headless still frame with every animation settled.
 fn render_svg(list: &[sessions::SessionInfo], width: f32, height: f32) -> String {
-    let lanes = Rc::new(scene::build_lanes(scene::lane_count(list.len()), width));
+    let layout = scene::Layout::new(width, height, list.len());
+    let lanes = Rc::new(layout.build_lanes());
     let chips = list
         .iter()
         .enumerate()
         .map(|(k, info)| {
-            let lane = 1 + k;
+            let lane = scene::Layout::chip_lane(k);
             let on_diag = k % 2 == 0;
             let label = info.label();
             let w = scene::chip_width(&label);
-            let s_c = scene::chip_anchor(&lanes[lane], lane, on_diag, width, w);
+            let s_c = scene::chip_anchor(&lanes[lane], lane, on_diag, &layout, w);
             let p = if info.phase() == sessions::Phase::Working { 0.0 } else { 1.0 };
             let (pos, tan) = lanes[lane].point_at(s_c + p * scene::PULL);
             scene::ChipDraw {
@@ -120,7 +121,7 @@ fn render_svg(list: &[sessions::SessionInfo], width: f32, height: f32) -> String
             }
         })
         .collect();
-    let frame = scene::Frame { lanes, chips, scroll_y: 0.0, t: 3.7, width, height };
+    let frame = scene::Frame { lanes, chips, scroll_y: 0.0, t: 3.7, layout };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
     scene::to_svg(&shapes, width, height)
 }

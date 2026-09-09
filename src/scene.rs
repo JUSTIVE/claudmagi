@@ -24,7 +24,7 @@ pub const TEXT_STROKE: f32 = 1.45;
 pub const DIAG: f32 = 8.0 * GAP;
 pub const CORNER_R: f32 = 8.0;
 pub const TOP_PAD: f32 = 54.0;
-pub const BOTTOM_PAD: f32 = 70.0;
+pub const BOTTOM_PAD: f32 = 34.0;
 pub const PULL: f32 = 16.0;
 pub const SOCK_W: f32 = 24.0;
 pub const SOCK_H: f32 = 14.0;
@@ -32,7 +32,6 @@ pub const NOTCH_W: f32 = 6.0;
 pub const NOTCH_H: f32 = 6.0;
 pub const WAVE_LEN: f32 = 46.0;
 pub const WAVE_AMP: f32 = 6.0;
-pub const BUNDLE: usize = 12;
 pub const MIN_LANES: usize = 24;
 pub const TITLE_SCALE: f32 = 2.6;
 
@@ -57,8 +56,7 @@ pub struct Frame {
     pub chips: Vec<ChipDraw>,
     pub scroll_y: f32,
     pub t: f32,
-    pub width: f32,
-    pub height: f32,
+    pub layout: Layout,
 }
 
 #[derive(Clone, Debug)]
@@ -69,46 +67,102 @@ pub enum Shape {
     Text { text: String, scale: f32, stroke: f32, angle: f32, center: Pt, color: Rgba },
 }
 
-pub fn lane_count(chips: usize) -> usize {
-    MIN_LANES.max(chips + 14)
+pub const DESIGN_W: f32 = 980.0;
+pub const DESIGN_H: f32 = 620.0;
+pub const MAX_ZOOM: f32 = 2.6;
+/// Extra lanes above lane 0 whose diagonals fill the top-right corner.
+pub const LEAD_LANES: usize = 8;
+/// Where the first diagonal stripe meets the top edge, as a fraction of width.
+pub const ANCHOR: f32 = 0.62;
+/// Horizontal distance between diagonal stripes, as a fraction of width.
+pub const STRIPE_PITCH: f32 = 0.55;
+
+/// Board geometry derived from the window size. All layout happens in
+/// "design units"; `zoom` maps them to window pixels so a fullscreen 4K
+/// board keeps the density of the reference clip instead of a sparse corner.
+///
+/// Every lane is one global staircase: lane `i` bends `GAP` further left
+/// than lane `i - 1`, so the bends form 45° stripes running from top-right
+/// to bottom-left. Wide windows get extra stripes (`bands`) `STRIPE_PITCH`
+/// apart; this construction never lets two lanes cross.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Layout {
+    pub zoom: f32,
+    pub width: f32,
+    pub height: f32,
+    pub bands: usize,
+    pub lanes: usize,
 }
 
-pub fn content_height(chips: usize) -> f32 {
-    TOP_PAD + lane_count(chips) as f32 * GAP + DIAG + BOTTOM_PAD
+impl Layout {
+    pub fn new(win_w: f32, win_h: f32, chips: usize) -> Self {
+        let zoom = ((win_w * win_h) / (DESIGN_W * DESIGN_H)).sqrt().clamp(1.0, MAX_ZOOM);
+        let width = win_w / zoom;
+        let height = win_h / zoom;
+        // Stripes are needed until one starts far enough right to still be
+        // on screen at the bottom-right corner.
+        let span = width + height - width * ANCHOR;
+        let bands = (span / (width * STRIPE_PITCH)).ceil().max(1.0) as usize;
+        let fill = ((height - TOP_PAD - DIAG - BOTTOM_PAD) / GAP).ceil().max(0.0) as usize + 1;
+        let lanes = LEAD_LANES + MIN_LANES.max(chips + 14).max(fill);
+        Self { zoom, width, height, bands, lanes }
+    }
+
+    pub fn content_height(&self) -> f32 {
+        TOP_PAD + (self.lanes - LEAD_LANES) as f32 * GAP + DIAG + BOTTOM_PAD
+    }
+
+    /// Lane index (into `build_lanes`) for the `k`-th chip.
+    pub fn chip_lane(k: usize) -> usize {
+        LEAD_LANES + 1 + k
+    }
+
+    pub fn build_lanes(&self) -> Vec<Polyline> {
+        (0..self.lanes).map(|i| lane_path(i, self)).collect()
+    }
 }
 
-/// Where lane `i` starts its diagonal (`ax`) and its top-left y.
-pub fn lane_params(i: usize, width: f32) -> (f32, f32) {
-    let y0 = TOP_PAD + i as f32 * GAP;
-    let bundle = i / BUNDLE;
-    let j = (i % BUNDLE) as f32;
-    let anchor = if bundle % 2 == 0 { width * 0.46 } else { width * 0.30 };
-    let ax = (anchor - j * GAP).max(72.0);
-    (ax, y0)
+/// For lane `idx`, one `(ax, y0)` per stripe: where that stripe's diagonal
+/// starts. `ax` may be off screen on either side. The first `LEAD_LANES`
+/// lanes sit above the top padding.
+pub fn lane_params(idx: usize, layout: &Layout) -> Vec<(f32, f32)> {
+    let i = idx as f32 - LEAD_LANES as f32;
+    (0..layout.bands)
+        .map(|b| {
+            let ax = layout.width * (ANCHOR + b as f32 * STRIPE_PITCH) - i * GAP;
+            let y = TOP_PAD + i * GAP + b as f32 * DIAG;
+            (ax, y)
+        })
+        .collect()
 }
 
-pub fn lane_path(i: usize, width: f32) -> Polyline {
-    let (ax, y0) = lane_params(i, width);
-    let corners = [
-        Pt::new(-24.0, y0),
-        Pt::new(ax, y0),
-        Pt::new(ax + DIAG, y0 + DIAG),
-        Pt::new(width + 24.0, y0 + DIAG),
-    ];
+pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
+    let params = lane_params(i, layout);
+    let mut corners = Vec::with_capacity(2 + params.len() * 2);
+    let (ax0, y0) = params[0];
+    corners.push(Pt::new((-24.0f32).min(ax0 - 1.0), y0));
+    for (ax, y) in &params {
+        corners.push(Pt::new(*ax, *y));
+        corners.push(Pt::new(ax + DIAG, y + DIAG));
+    }
+    let (ax_last, y_last) = *params.last().unwrap();
+    corners.push(Pt::new((layout.width + 24.0).max(ax_last + DIAG + 1.0), y_last + DIAG));
     Polyline::rounded(&corners, CORNER_R)
-}
-
-pub fn build_lanes(count: usize, width: f32) -> Vec<Polyline> {
-    (0..count).map(|i| lane_path(i, width)).collect()
 }
 
 pub fn chip_width(label: &str) -> f32 {
     CHIP_MIN_W.max(font::measure(label, TEXT_SCALE) + 2.0 * CHIP_PAD)
 }
 
-/// Arc length of the chip centre on its lane.
-pub fn chip_anchor(lane: &Polyline, lane_index: usize, on_diag: bool, width: f32, chip_w: f32) -> f32 {
-    let (ax, y0) = lane_params(lane_index, width);
+/// Arc length of the chip centre on its lane: the first stripe whose
+/// diagonal is comfortably on screen.
+pub fn chip_anchor(lane: &Polyline, lane_index: usize, on_diag: bool, layout: &Layout, chip_w: f32) -> f32 {
+    let params = lane_params(lane_index, layout);
+    let (ax, y0) = params
+        .iter()
+        .copied()
+        .find(|(ax, _)| ax + DIAG / 2.0 > 40.0)
+        .unwrap_or(*params.last().unwrap());
     let target = if on_diag {
         Pt::new(ax + DIAG / 2.0, y0 + DIAG / 2.0)
     } else {
@@ -159,15 +213,62 @@ fn splice_lane(lane: &Polyline, c: &ChipDraw) -> Splice {
     Splice { pieces, wave_start }
 }
 
-/// Produces the draw list for a frame. `origin` is the on-screen position of
-/// the content's (0, 0) *after* scrolling has been applied.
-pub fn build_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
+impl Shape {
+    fn scale(&mut self, z: f32) {
+        match self {
+            Shape::Rect { x, y, w, h, .. } => {
+                *x *= z;
+                *y *= z;
+                *w *= z;
+                *h *= z;
+            }
+            Shape::Stroke { pieces, width, .. } => {
+                for piece in pieces {
+                    for p in piece {
+                        *p = *p * z;
+                    }
+                }
+                *width *= z;
+            }
+            Shape::RoundedRect { center, w, h, r, .. } => {
+                *center = *center * z;
+                *w *= z;
+                *h *= z;
+                *r *= z;
+            }
+            Shape::Text { center, scale, stroke, .. } => {
+                *center = *center * z;
+                *scale *= z;
+                *stroke *= z;
+            }
+        }
+    }
+}
+
+/// Produces the draw list for a frame in window pixels. `origin_px` is the
+/// window position of the board element; scrolling and zoom are applied here.
+pub fn build_shapes(f: &Frame, origin_px: Pt) -> Vec<Shape> {
+    let zoom = f.layout.zoom;
+    let origin = origin_px * (1.0 / zoom);
+    let mut out = build_design_shapes(f, origin);
+    if (zoom - 1.0).abs() > 1e-3 {
+        for s in &mut out {
+            s.scale(zoom);
+        }
+    }
+    out
+}
+
+/// Same as `build_shapes` but in design units, with `origin` already in
+/// design units.
+fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
     let ox = origin.x;
     let oy = origin.y - f.scroll_y;
     let to_screen = move |p: Pt| Pt::new(p.x + ox, p.y + oy);
     let mut out = Vec::new();
+    let (width, height) = (f.layout.width, f.layout.height);
 
-    out.push(Shape::Rect { x: origin.x, y: origin.y, w: f.width, h: f.height, color: PALETTE.bg });
+    out.push(Shape::Rect { x: origin.x, y: origin.y, w: width, h: height, color: PALETTE.bg });
 
     let chip_by_lane: HashMap<usize, &ChipDraw> = f.chips.iter().map(|c| (c.lane, c)).collect();
 
@@ -176,7 +277,7 @@ pub fn build_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         let (Some(first), Some(last)) = (lane.pts.first(), lane.pts.last()) else { continue };
         let y_min = first.y.min(last.y) + oy - 40.0;
         let y_max = first.y.max(last.y) + oy + 40.0;
-        if y_max < origin.y || y_min > origin.y + f.height {
+        if y_max < origin.y || y_min > origin.y + height {
             continue;
         }
         let chip = chip_by_lane.get(&li).copied();
@@ -293,10 +394,19 @@ pub fn build_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         });
     }
 
-    // Title badge.
+    // Title badge, on a patch of background so the lead lanes stay clear of it.
     let title = "CLAUDMAGI";
     let tw = font::measure(title, TITLE_SCALE);
     let center = Pt::new(origin.x + 26.0 + tw / 2.0, origin.y + 26.0);
+    out.push(Shape::RoundedRect {
+        center,
+        w: tw + 26.0 + 28.0,
+        h: 30.0 + 18.0,
+        r: 9.0,
+        angle: 0.0,
+        color: PALETTE.bg,
+        stroke: None,
+    });
     out.push(Shape::RoundedRect {
         center,
         w: tw + 26.0,

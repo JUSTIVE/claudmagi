@@ -12,7 +12,7 @@ use lyon::path::{LineCap, LineJoin};
 
 use crate::font;
 use crate::geom::{Polyline, Pt, ease_out, smoothstep};
-use crate::scene::{self, ChipDraw, Frame, Shape, CHIP_H, GAP, PULL};
+use crate::scene::{self, ChipDraw, Frame, Layout, Shape, CHIP_H, GAP, PULL};
 use crate::sessions::{self, Phase, SessionInfo};
 use crate::theme::{self, PALETTE};
 use crate::{mac, warp};
@@ -34,7 +34,7 @@ struct Chip {
 pub struct Board {
     chips: Vec<Chip>,
     lanes: Rc<Vec<Polyline>>,
-    lane_key: (i32, usize),
+    layout: Layout,
     draws: Vec<ChipDraw>,
     scroll_y: f32,
     mouse: Option<Pt>,
@@ -67,7 +67,7 @@ impl Board {
         Self {
             chips: Vec::new(),
             lanes: Rc::new(Vec::new()),
-            lane_key: (0, 0),
+            layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0),
             draws: Vec::new(),
             scroll_y: 0.0,
             mouse: None,
@@ -118,23 +118,28 @@ impl Board {
 
     fn assign_lanes(&mut self) {
         for (k, chip) in self.chips.iter_mut().enumerate() {
-            chip.lane = 1 + k;
+            chip.lane = Layout::chip_lane(k);
             chip.on_diag = k % 2 == 0;
         }
     }
 
-    fn ensure_lanes(&mut self, width: f32) {
-        let key = (width as i32, scene::lane_count(self.chips.len()));
-        if key == self.lane_key && !self.lanes.is_empty() {
+    fn ensure_lanes(&mut self, win_w: f32, win_h: f32) {
+        let layout = Layout::new(win_w, win_h, self.chips.len());
+        if layout == self.layout && !self.lanes.is_empty() {
             return;
         }
-        self.lane_key = key;
-        self.lanes = Rc::new(scene::build_lanes(key.1, width));
+        self.layout = layout;
+        self.lanes = Rc::new(layout.build_lanes());
     }
 
-    fn clamp_scroll(&mut self, viewport_h: f32) {
-        let max = (scene::content_height(self.chips.len()) - viewport_h).max(0.0);
+    fn clamp_scroll(&mut self) {
+        let max = (self.layout.content_height() - self.layout.height).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max);
+    }
+
+    /// Window pixels → design units.
+    fn to_design(&self, p: gpui::Point<Pixels>) -> Pt {
+        Pt::new(f32::from(p.x), f32::from(p.y)) * (1.0 / self.layout.zoom)
     }
 
     fn tick(&mut self, dt: f32, now: Instant) {
@@ -160,13 +165,13 @@ impl Board {
         }
     }
 
-    fn compute_draws(&self, width: f32, now: Instant) -> Vec<ChipDraw> {
+    fn compute_draws(&self, now: Instant) -> Vec<ChipDraw> {
         let mut out = Vec::with_capacity(self.chips.len());
         for c in &self.chips {
             let Some(lane) = self.lanes.get(c.lane) else { continue };
             let label = c.info.label();
             let w = scene::chip_width(&label);
-            let s_c = scene::chip_anchor(lane, c.lane, c.on_diag, width, w);
+            let s_c = scene::chip_anchor(lane, c.lane, c.on_diag, &self.layout, w);
             let p = smoothstep(c.disconnect);
             let (pos, tan) = lane.point_at(s_c + p * PULL);
             let age = now.duration_since(c.born).as_secs_f32();
@@ -187,7 +192,7 @@ impl Board {
         out
     }
 
-    /// Hit test in window coordinates.
+    /// Hit test in design units (see `to_design`).
     fn hit_test(&self, m: Pt) -> Option<usize> {
         let mut best: Option<(f32, usize)> = None;
         for (i, d) in self.draws.iter().enumerate() {
@@ -279,9 +284,9 @@ impl Render for Board {
         let (w, h) = (f32::from(vp.width), f32::from(vp.height));
 
         self.tick(dt, now);
-        self.ensure_lanes(w);
-        self.clamp_scroll(h);
-        self.draws = self.compute_draws(w, now);
+        self.ensure_lanes(w, h);
+        self.clamp_scroll();
+        self.draws = self.compute_draws(now);
         self.hovered = self.mouse.and_then(|m| self.hit_test(m));
 
         let frame = Frame {
@@ -289,8 +294,7 @@ impl Render for Board {
             chips: self.draws.clone(),
             scroll_y: self.scroll_y,
             t: now.duration_since(self.started).as_secs_f32(),
-            width: w,
-            height: h,
+            layout: self.layout,
         };
         window.request_animation_frame();
 
@@ -309,7 +313,7 @@ impl Render for Board {
                 }
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                let m = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
+                let m = this.to_design(ev.position);
                 this.mouse = Some(m);
                 this.hovered = this.hit_test(m);
                 if ev.pressed_button == Some(MouseButton::Left) {
@@ -328,7 +332,7 @@ impl Render for Board {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                    let m = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
+                    let m = this.to_design(ev.position);
                     this.mouse = Some(m);
                     this.hovered = this.hit_test(m);
                     if this.hovered.is_some() {
@@ -344,7 +348,7 @@ impl Render for Board {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseUpEvent, _, cx| {
-                    let m = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
+                    let m = this.to_design(ev.position);
                     let hit = this.hit_test(m);
                     if let (Some(p), Some(h)) = (this.pressed, hit) {
                         if p == h {
@@ -358,7 +362,7 @@ impl Render for Board {
             )
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                 let delta = ev.delta.pixel_delta(px(GAP));
-                this.scroll_y -= f32::from(delta.y);
+                this.scroll_y -= f32::from(delta.y) / this.layout.zoom;
                 cx.notify();
             }))
             .child(
