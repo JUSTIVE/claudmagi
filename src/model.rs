@@ -189,7 +189,33 @@ pub const UNPLUG_DELAY_SECS: f32 = 0.7;
 pub const UNPLUG_SECS: f32 = 0.42;
 pub const HOVER_SECS: f32 = 0.12;
 pub const FADE_SECS: f32 = 0.35;
+/// Half of a relocation: fade out at the old spot, then fade in at the new one.
+pub const RELOC_HALF_SECS: f32 = 0.22;
 pub const NOTICE_SECS: u64 = 5;
+
+/// A chip moving to a different spot on its lane (window resized, #28).
+#[derive(Clone, Copy, Debug)]
+pub struct Reloc {
+    /// Arc length of the old spot.
+    pub from_s: f32,
+    pub started: Instant,
+}
+
+impl Reloc {
+    /// `(use_old_spot, alpha_factor)` for `now`.
+    pub fn stage(&self, now: Instant) -> (bool, f32) {
+        let t = now.saturating_duration_since(self.started).as_secs_f32();
+        if t < RELOC_HALF_SECS {
+            (true, 1.0 - t / RELOC_HALF_SECS)
+        } else {
+            (false, ((t - RELOC_HALF_SECS) / RELOC_HALF_SECS).min(1.0))
+        }
+    }
+
+    pub fn done(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started).as_secs_f32() >= 2.0 * RELOC_HALF_SECS
+    }
+}
 
 /// Animated presentation state shared by session and subagent chips.
 #[derive(Clone, Debug)]
@@ -201,11 +227,47 @@ pub struct Anim {
     /// The underlying thing disappeared; fade out then drop.
     pub gone: bool,
     pub fade: f32,
+    /// Which spot on the lane the chip was last placed at (see
+    /// `scene::placements`), and its arc length; a change starts a `Reloc`.
+    pub place_key: Option<u32>,
+    pub last_s: f32,
+    pub reloc: Option<Reloc>,
 }
 
 impl Anim {
     fn new(now: Instant) -> Self {
-        Self { disconnect: 0.0, hover_t: 0.0, born: now, gone: false, fade: 0.0 }
+        Self {
+            disconnect: 0.0,
+            hover_t: 0.0,
+            born: now,
+            gone: false,
+            fade: 0.0,
+            place_key: None,
+            last_s: 0.0,
+            reloc: None,
+        }
+    }
+
+    /// Records where the chip is about to be drawn; a new placement key
+    /// (other than the very first) triggers the fade-out / fade-in.
+    pub fn track_placement(&mut self, key: u32, s: f32, now: Instant) {
+        match self.place_key {
+            Some(prev) if prev != key => {
+                let from_s = match self.reloc {
+                    // Mid-relocation: keep fading from where we were heading.
+                    Some(r) if !r.stage(now).0 => self.last_s,
+                    Some(r) => r.from_s,
+                    None => self.last_s,
+                };
+                self.reloc = Some(Reloc { from_s, started: now });
+            }
+            _ => {}
+        }
+        if self.reloc.is_some_and(|r| r.done(now)) {
+            self.reloc = None;
+        }
+        self.place_key = Some(key);
+        self.last_s = s;
     }
 
     pub fn age(&self, now: Instant) -> f32 {
@@ -229,6 +291,7 @@ impl Anim {
         self.fade = 1.0;
         self.disconnect = if phase == Phase::Working { 0.0 } else { 1.0 };
         self.hover_t = 0.0;
+        self.reloc = None;
     }
 
     fn dead(&self) -> bool {
@@ -348,6 +411,20 @@ impl BoardModel {
     /// One past the highest occupied slot: how many lanes the board needs.
     pub fn slot_span(&self) -> usize {
         self.chips.iter().map(|c| c.slot + 1).max().unwrap_or(0)
+    }
+
+    pub fn anim_mut(&mut self, target: Target) -> Option<&mut Anim> {
+        match target {
+            Target::Session(i) => self.chips.get_mut(i).map(|c| &mut c.anim),
+            Target::Sub(i, j) => self.chips.get_mut(i).and_then(|c| c.subs.get_mut(j)).map(|s| &mut s.anim),
+        }
+    }
+
+    pub fn anim(&self, target: Target) -> Option<&Anim> {
+        match target {
+            Target::Session(i) => self.chips.get(i).map(|c| &c.anim),
+            Target::Sub(i, j) => self.chips.get(i).and_then(|c| c.subs.get(j)).map(|s| &s.anim),
+        }
     }
 
     /// Advances animations by `dt` seconds. Returns true when chips were
@@ -586,6 +663,25 @@ mod tests {
         assert!(m.chips[0].subs[0].anim.gone);
         m.tick(1.0, t0 + secs(4.0));
         assert!(m.chips.is_empty());
+    }
+
+    #[test]
+    fn a_new_placement_key_starts_a_fade_out_then_in() {
+        let t0 = Instant::now();
+        let mut a = Anim::new(t0);
+        a.track_placement(1, 100.0, t0);
+        assert!(a.reloc.is_none(), "first placement never animates");
+        a.track_placement(1, 120.0, t0 + secs(0.1));
+        assert!(a.reloc.is_none(), "sliding within the same spot is not a relocation");
+        a.track_placement(2, 400.0, t0 + secs(0.2));
+        let r = a.reloc.expect("key change relocates");
+        assert_eq!(r.from_s, 120.0);
+        let (old, alpha) = r.stage(t0 + secs(0.2));
+        assert!(old && (alpha - 1.0).abs() < 1e-6);
+        let (old, _) = r.stage(t0 + secs(0.2 + RELOC_HALF_SECS + 0.01));
+        assert!(!old, "second half draws at the new spot");
+        a.track_placement(2, 400.0, t0 + secs(2.0));
+        assert!(a.reloc.is_none(), "finished relocations are cleared");
     }
 
     #[test]

@@ -43,15 +43,21 @@ fn main() {
             .and_then(|s| s.split_once('x'))
             .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
             .unwrap_or((scene::DESIGN_W, scene::DESIGN_H));
+        let count = args
+            .iter()
+            .position(|a| a == "--count")
+            .and_then(|k| args.get(k + 1))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(8usize);
         let sessions = if demo {
             let fake = FakeSource::new();
-            fake.fill(8);
+            fake.fill(count);
             let ids: Vec<String> = fake.snapshot().iter().map(|s| s.session_id.clone()).collect();
-            fake.add_sub(&ids[0], true);
-            fake.add_sub(&ids[0], false);
-            fake.add_sub(&ids[3], true);
-            fake.add_sub(&ids[3], true);
-            fake.add_sub(&ids[4], false);
+            for (i, running) in [(0, true), (0, false), (3, true), (3, true), (4, false)] {
+                if let Some(id) = ids.get(i) {
+                    fake.add_sub(id, running);
+                }
+            }
             fake.snapshot()
         } else {
             ClaudeSource::default().snapshot()

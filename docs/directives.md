@@ -42,5 +42,9 @@
 | 23 | 2026-09-10 | Claude 세션이 사라져도 남은 칩을 위로 당겨 채우지 말 것 (레인 고정) | ✅ | `src/model.rs` (`ChipState.slot`, 새 세션은 가장 낮은 빈 슬롯) |
 | 24 | 2026-09-10 | 오렌지 테마가 아닌 테마(흰색·다크)에서는 idle 칩을 오렌지로 | ✅ | `src/theme.rs` (`chip_idle`/`text_idle`) |
 | 25 | 2026-09-10 | 설정 패널과 테스트 패널은 오른쪽 아래에, 둘이 겹치지 않도록 같은 레이아웃(가로 나열) 안에 배치 | ✅ | `src/ui/panel.rs`, `src/ui/board.rs` |
+| 26 | 2026-09-10 | 테스트 도구의 auto churn이 서브에이전트도 만들고 없애도록 | ✅ | `src/sources.rs` (`FakeSource::churn`) |
+| 27 | 2026-09-10 | 노드가 화면 왼쪽 10% 안쪽에 생성돼야 하면 대신 오른쪽 자리에 만들기 | ✅ | `src/render/scene.rs` (`session_anchor` 후보 순서, 서브 `fits`) |
+| 28 | 2026-09-10 | 창 크기 변경으로 노드가 재배치되면 fade out → fade in | ✅ | `src/model.rs` (`Anim.reloc`), `src/render/scene.rs` |
+| 29 | 2026-09-10 | 노드는 대각선 빗변 위에만 생성. 노드가 겹치지 않게 선 간격 재조정. 두 줄 짝 사이 간격은 훨씬 넓게 | ✅ | `src/render/scene.rs` (`chip_lane` = 짝의 첫 줄, `PAIR_GAP` 30, 대각선 후보만) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기

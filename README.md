@@ -27,7 +27,7 @@ cargo run --release
 - Frameless window: drag anywhere on the board to move it, drag edges to resize. Bigger windows get more lanes and trace stripes; the chips never scale with the window.
 - `⌘+` / `⌘-` / `⌘0` (or ⌘ + wheel) zoom the whole board between 50% and 300%.
 - `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: background (white / orange / dark) and UI size. Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
-- Sessions keep their lane for life: when one ends, the others stay put and the next new session takes the freed lane.
+- Sessions keep their lane for life: when one ends, the others stay put and the next new session takes the freed lane. Chips never sit in the left 10% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
 - Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 
@@ -36,7 +36,7 @@ cargo run --release
 ```sh
 cargo run -- --list                 # print discovered sessions
 cargo run -- --svg out.svg          # render the current board as SVG
-cargo run -- --svg out.svg --demo   # same, with fake sessions in every state
+cargo run -- --svg out.svg --demo   # same, with fake sessions in every state (--count N)
 cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 ```
 
@@ -68,8 +68,8 @@ Press `T` (or click `TEST` in the status bar) to open the test panel. Panels doc
 
 - **SOURCE** switches the board between live sessions and a sandbox.
 - **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at
-  once, clears them, or turns on *auto churn* (random phase changes, arrivals
-  and departures every 1.4 s) to watch the plug/unplug and fade animations.
+  once, clears them, or turns on *auto churn*: every 1.4 s a subagent is
+  spawned, finishes or disappears, a session arrives, leaves or changes phase.
 - **SESSIONS** lists what the board shows; sandbox rows have `W/N/I` phase
   buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
   `RUN/DONE` and `×`; live rows have `→ WARP`. Clicking a sandbox name cycles

@@ -542,8 +542,9 @@ impl FakeSource {
         self.len() == 0
     }
 
-    /// When auto mode is on, randomly retargets / adds / removes a session
-    /// or subagent every `CHURN_INTERVAL`. Returns true if something changed.
+    /// When auto mode is on, every `CHURN_INTERVAL` one random thing happens:
+    /// a subagent is spawned, finished or removed, a session is added or
+    /// removed, or a session changes phase. Returns true if something changed.
     pub fn churn(&self, now: Instant) -> bool {
         let mut st = self.lock();
         if !st.auto {
@@ -553,35 +554,55 @@ impl FakeSource {
             return false;
         }
         st.last_churn = Some(now);
-        let roll = st.next_rand();
+        let roll = st.next_rand() % 100;
         let n = st.sessions.len();
-        match roll % 12 {
-            0 if n < 14 => {
-                let phase = Phase::ALL[(roll / 12 % 3) as usize];
+        let pick = |st: &mut FakeState| (st.next_rand() % st.sessions.len().max(1) as u64) as usize;
+        match roll {
+            // 30%: spawn a subagent under a session that has room.
+            0..=29 if n > 0 => {
+                let idx = pick(&mut st);
+                if st.sessions[idx].subagents.len() < 3 {
+                    let id = st.sessions[idx].session_id.clone();
+                    st.push_sub(&id, true);
+                } else {
+                    // Full: finish one instead so the chain keeps moving.
+                    if let Some(a) = st.sessions[idx].subagents.iter_mut().find(|a| a.running) {
+                        a.running = false;
+                    }
+                }
+            }
+            // 20%: a running subagent finishes (unplugs).
+            30..=49 if n > 0 => {
+                let idx = pick(&mut st);
+                if let Some(a) = st.sessions[idx].subagents.iter_mut().find(|a| a.running) {
+                    a.running = false;
+                } else if !st.sessions[idx].subagents.is_empty() {
+                    st.sessions[idx].subagents.remove(0);
+                }
+            }
+            // 15%: a finished subagent disappears (oldest first).
+            50..=64 if n > 0 => {
+                let idx = pick(&mut st);
+                let subs = &mut st.sessions[idx].subagents;
+                if let Some(pos) = subs.iter().position(|a| !a.running) {
+                    subs.remove(pos);
+                } else if !subs.is_empty() {
+                    subs[0].running = false;
+                }
+            }
+            // 8%: a new session arrives.
+            65..=72 if n < 14 => {
+                let phase = Phase::ALL[(st.next_rand() % 3) as usize];
                 st.push_session(phase);
             }
-            1 if n > 2 => {
-                let idx = (st.next_rand() % n as u64) as usize;
+            // 7%: a session goes away.
+            73..=79 if n > 2 => {
+                let idx = pick(&mut st);
                 st.sessions.remove(idx);
             }
-            2 | 3 if n > 0 => {
-                let idx = (st.next_rand() % n as u64) as usize;
-                let id = st.sessions[idx].session_id.clone();
-                if st.sessions[idx].subagents.len() < 3 {
-                    st.push_sub(&id, true);
-                }
-            }
-            4 if n > 0 => {
-                let idx = (st.next_rand() % n as u64) as usize;
-                let subs = &mut st.sessions[idx].subagents;
-                if let Some(a) = subs.iter_mut().find(|a| a.running) {
-                    a.running = false;
-                } else if !subs.is_empty() {
-                    subs.remove(0);
-                }
-            }
+            // Rest: a session changes phase.
             _ if n > 0 => {
-                let idx = (st.next_rand() % n as u64) as usize;
+                let idx = pick(&mut st);
                 let next = st.sessions[idx].phase().next();
                 st.sessions[idx].set_phase(next);
             }
@@ -652,6 +673,37 @@ mod tests {
         assert!(!src.churn(t0 + Duration::from_millis(100)));
         assert!(src.churn(t0 + CHURN_INTERVAL + Duration::from_millis(1)));
         assert!(src.snapshot().iter().all(|s| s.synthetic));
+    }
+
+    #[test]
+    fn churn_spawns_finishes_and_removes_subagents() {
+        let src = FakeSource::new();
+        src.fill(3);
+        src.set_auto(true);
+        let mut t = Instant::now();
+        let (mut spawned, mut finished, mut removed) = (0, 0, 0);
+        let mut prev = src.snapshot();
+        for _ in 0..300 {
+            t += CHURN_INTERVAL + Duration::from_millis(1);
+            assert!(src.churn(t));
+            let cur = src.snapshot();
+            for s in &cur {
+                if let Some(p) = prev.iter().find(|p| p.session_id == s.session_id) {
+                    spawned += s.subagents.len().saturating_sub(p.subagents.len());
+                    removed += p.subagents.len().saturating_sub(s.subagents.len());
+                    finished += s
+                        .subagents
+                        .iter()
+                        .filter(|a| !a.running && p.subagents.iter().any(|b| b.agent_id == a.agent_id && b.running))
+                        .count();
+                }
+            }
+            prev = cur;
+        }
+        assert!(spawned >= 20, "spawned {spawned}");
+        assert!(finished >= 10, "finished {finished}");
+        assert!(removed >= 10, "removed {removed}");
+        assert!(src.snapshot().iter().all(|s| s.subagents.len() <= 3));
     }
 
     #[test]

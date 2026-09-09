@@ -216,6 +216,11 @@ impl Render for Board {
         self.model.tick(dt, now);
         self.ensure_lanes(w, h);
         self.clamp_scroll();
+        for (target, key, s) in scene::placements(&self.model, &self.layout, &self.lanes) {
+            if let Some(anim) = self.model.anim_mut(target) {
+                anim.track_placement(key, s, now);
+            }
+        }
         self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
         self.model.hovered = self.mouse.and_then(|m| self.hit_test(m));
 

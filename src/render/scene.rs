@@ -15,7 +15,7 @@ use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
 pub const GAP: f32 = 13.0;
-pub const PAIR_GAP: f32 = 9.0;
+pub const PAIR_GAP: f32 = 30.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;
 pub const CORNER_R: f32 = 8.0;
@@ -197,10 +197,16 @@ impl Layout {
         let width = win_w / zoom;
         let height = win_h / zoom;
         let span = width + height - width * ANCHOR;
-        let bands = (span / (width * STRIPE_PITCH)).ceil().max(1.0) as usize;
+        let area_bands = (span / (width * STRIPE_PITCH)).ceil().max(1.0) as usize;
+        // Enough stripes that even the lowest session lane has a diagonal on
+        // screen (its bend moves left by its offset, #27/#29).
+        let last_offset = if chips == 0 { 0.0 } else { lane_offset((2 * (chips - 1)) as i32) };
+        let need = (last_offset + width * LEFT_BOUND - width * ANCHOR) / (width * STRIPE_PITCH);
+        let chip_bands = need.ceil().max(0.0) as usize + 1;
+        let bands = area_bands.max(chip_bands);
         let pitch = (2.0 * GAP + PAIR_GAP) / 2.0;
         let fill = ((height - TOP_PAD - DIAG - BOTTOM_PAD) / pitch).ceil().max(0.0) as usize + 1;
-        let lanes = LEAD_LANES + MIN_LANES.max(chips + 14).max(fill);
+        let lanes = LEAD_LANES + MIN_LANES.max(2 * chips + 14).max(fill);
         Self { zoom, width, height, bands, lanes }
     }
 
@@ -208,9 +214,11 @@ impl Layout {
         TOP_PAD + lane_offset((self.lanes - LEAD_LANES) as i32) + DIAG + BOTTOM_PAD
     }
 
-    /// Lane index (into `build_lanes`) for the `k`-th session.
+    /// Lane index (into `build_lanes`) for session slot `k`: the first lane
+    /// of every pair, so chips on neighbouring diagonals sit a whole pair
+    /// pitch apart and never overlap (#29). The second lane is decorative.
     pub fn chip_lane(k: usize) -> usize {
-        LEAD_LANES + 1 + k
+        LEAD_LANES + 2 * k
     }
 
     pub fn build_lanes(&self) -> Vec<Polyline> {
@@ -246,40 +254,51 @@ pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
     Polyline::rounded(&corners, CORNER_R)
 }
 
-/// Arc length of a session chip's centre on its lane: on the first stripe
-/// whose diagonal is on screen, either riding the diagonal or sitting on
-/// the horizontal just before the bend (so subagents have room to the right).
-pub fn chip_anchor(lane: &Polyline, lane_index: usize, on_diag: bool, layout: &Layout, chip_w: f32) -> f32 {
-    let params = lane_params(lane_index, layout);
-    let (ax, y0) = params
-        .iter()
-        .copied()
-        .find(|(ax, _)| ax + DIAG / 2.0 > 40.0)
-        .unwrap_or(*params.last().unwrap());
-    let target = if on_diag {
-        Pt::new(ax + DIAG / 2.0, y0 + DIAG / 2.0)
-    } else {
-        Pt::new(ax - CORNER_R - 30.0 - chip_w / 2.0, y0)
-    };
-    lane.nearest_s(target)
-}
-
-pub fn hash01(i: usize) -> f32 {
-    let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
-    x ^= x >> 29;
-    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x ^= x >> 32;
-    (x % 10_000) as f32 / 10_000.0
-}
-
+/// Chips never sit inside the left `LEFT_BOUND` of the board (#27) nor past
+/// the right edge; a spot that would is swapped for the next one to the right.
+pub const LEFT_BOUND: f32 = 0.10;
+const EDGE_MARGIN: f32 = 12.0;
 /// Extra upstream room a left-side subagent leaves for the parent's cable.
 const LEFT_GAP: f32 = SUB_GAP + 40.0;
-const EDGE_MARGIN: f32 = 12.0;
 
-/// Projects every session chip and its subagent chain onto their lane.
-/// Subagents alternate right / left of the session chip and avoid the side
-/// where they would run off screen (#22).
-pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: Instant) -> Vec<ChipDraw> {
+fn inside(layout: &Layout, x: f32, w: f32) -> bool {
+    x - w / 2.0 >= layout.width * LEFT_BOUND && x + w / 2.0 <= layout.width - EDGE_MARGIN
+}
+
+/// Where a session chip goes on its lane: `(arc length, placement key)`.
+/// Session chips only ever ride a diagonal (#29); candidates are the
+/// diagonals of each stripe, left to right, and the first one that fits on
+/// screen wins. The key identifies the spot so a change can be animated (#28).
+pub fn session_anchor(lane: &Polyline, lane_index: usize, layout: &Layout, chip_w: f32) -> (f32, u32) {
+    let params = lane_params(lane_index, layout);
+    let cands: Vec<(Pt, u32)> = params
+        .iter()
+        .enumerate()
+        .map(|(b, (ax, y))| (Pt::new(ax + DIAG / 2.0, y + DIAG / 2.0), b as u32))
+        .collect();
+    let pick = cands
+        .iter()
+        .find(|(p, _)| inside(layout, p.x, chip_w))
+        .or_else(|| cands.iter().find(|(p, _)| p.x - chip_w / 2.0 >= layout.width * LEFT_BOUND))
+        .unwrap_or_else(|| cands.last().unwrap());
+    (lane.nearest_s(pick.0), pick.1)
+}
+
+/// A chip's intended spot before any animation is applied.
+struct Placement {
+    target: Target,
+    lane: usize,
+    key: u32,
+    s_c: f32,
+    width: f32,
+    label: String,
+    style: ChipStyle,
+}
+
+/// Lays every session and subagent out on its lane. Subagents alternate
+/// right / left of the session chip and avoid the side where they would run
+/// off screen (#22, #27).
+fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Placement> {
     let mut out = Vec::new();
     for (k, c) in model.chips.iter().enumerate() {
         let lane_idx = Layout::chip_lane(c.slot);
@@ -287,31 +306,12 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
         let label = c.info.label();
         let style = SESSION_STYLE;
         let width = style.width(&label);
-        let on_diag = c.slot % 2 == 0;
-        let s_c = chip_anchor(lane, lane_idx, on_diag, layout, width);
-        let p = smoothstep(c.anim.disconnect);
-        let (center, tangent) = lane.point_at(s_c + p * style.pull);
-        out.push(ChipDraw {
-            target: Target::Session(k),
-            lane: lane_idx,
-            s_c,
-            width,
-            label,
-            p,
-            hover: c.anim.hover_t,
-            alpha: c.anim.alpha(now),
-            phase: c.phase(),
-            center,
-            tangent,
-            style,
-        });
+        let (s_c, key) = session_anchor(lane, lane_idx, layout, width);
+        out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style });
 
         let mut right_edge = s_c + width / 2.0;
         let mut left_edge = s_c - width / 2.0;
-        let fits = |s: f32, w: f32| {
-            let x = lane.point_at(s).0.x;
-            x - w / 2.0 >= EDGE_MARGIN && x + w / 2.0 <= layout.width - EDGE_MARGIN
-        };
+        let fits = |s: f32, w: f32| inside(layout, lane.point_at(s).0.x, w);
         for (j, sub) in c.subs.iter().enumerate() {
             let style = SUB_STYLE;
             let label = sub.info.label();
@@ -330,25 +330,68 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
             } else {
                 left_edge = s_c - width / 2.0;
             }
-            let p = smoothstep(sub.anim.disconnect);
-            let (center, tangent) = lane.point_at(s_c + p * style.pull);
-            out.push(ChipDraw {
-                target: Target::Sub(k, j),
-                lane: lane_idx,
-                s_c,
-                width,
-                label,
-                p,
-                hover: sub.anim.hover_t,
-                alpha: sub.anim.alpha(now).min(c.anim.alpha(now)),
-                phase: sub.info.phase(),
-                center,
-                tangent,
-                style,
-            });
+            // Key: side + ordinal on that side, so flipping sides animates.
+            let key = 100 + j as u32 * 2 + on_right as u32;
+            out.push(Placement { target: Target::Sub(k, j), lane: lane_idx, key, s_c, width, label, style });
         }
     }
     out
+}
+
+/// `(target, placement key, arc length)` for every chip — feed these to
+/// `Anim::track_placement` before drawing so relocations fade (#28).
+pub fn placements(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<(Target, u32, f32)> {
+    place_all(model, layout, lanes).into_iter().map(|p| (p.target, p.key, p.s_c)).collect()
+}
+
+/// Projects every session chip and its subagent chain onto their lane,
+/// applying unplug, hover, appear/fade and relocation animations.
+pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: Instant) -> Vec<ChipDraw> {
+    let mut out = Vec::new();
+    for pl in place_all(model, layout, lanes) {
+        let Some(lane) = lanes.get(pl.lane) else { continue };
+        let Some(anim) = model.anim(pl.target) else { continue };
+        let parent_alpha = match pl.target {
+            Target::Sub(i, _) => model.chips.get(i).map(|c| c.anim.alpha(now)).unwrap_or(1.0),
+            Target::Session(_) => 1.0,
+        };
+        let phase = match pl.target {
+            Target::Session(i) => model.chips[i].phase(),
+            Target::Sub(i, j) => model.chips[i].subs[j].info.phase(),
+        };
+        let (s_c, reloc_alpha) = match anim.reloc {
+            Some(r) => {
+                let (old, a) = r.stage(now);
+                (if old { r.from_s } else { pl.s_c }, a)
+            }
+            None => (pl.s_c, 1.0),
+        };
+        let p = smoothstep(anim.disconnect);
+        let (center, tangent) = lane.point_at(s_c + p * pl.style.pull);
+        out.push(ChipDraw {
+            target: pl.target,
+            lane: pl.lane,
+            s_c,
+            width: pl.width,
+            label: pl.label,
+            p,
+            hover: anim.hover_t,
+            alpha: anim.alpha(now).min(parent_alpha) * reloc_alpha,
+            phase,
+            center,
+            tangent,
+            style: pl.style,
+        });
+    }
+    out
+}
+
+pub fn hash01(i: usize) -> f32 {
+    let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
+    x ^= x >> 29;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 32;
+    (x % 10_000) as f32 / 10_000.0
 }
 
 /// Where a chip's socket sits along the lane.
@@ -663,8 +706,8 @@ mod tests {
         }
         assert_eq!(draws[2].p, 1.0, "finished subagent is unplugged");
         assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first session rides the diagonal");
-        assert!(draws[3].tangent.angle_deg().abs() < 1.0, "second session sits on the horizontal");
-        assert!(draws[3].center.x < lane_params(draws[3].lane, &layout)[0].0, "…before its bend");
+        assert!((draws[3].tangent.angle_deg() - 45.0).abs() < 1.0, "so does the second (#29)");
+        assert_eq!(draws[3].lane - draws[0].lane, 2, "sessions take the first lane of consecutive pairs");
     }
 
     #[test]
@@ -688,6 +731,66 @@ mod tests {
         let parent = draws[0].s_c;
         assert!(draws[1..].iter().any(|d| d.s_c > parent), "some subs sit to the right");
         assert!(draws[1..].iter().any(|d| d.s_c < parent), "some subs sit to the left");
+    }
+
+    #[test]
+    fn chips_near_the_left_edge_move_to_the_right_of_the_bend() {
+        // Many sessions push later lanes' bends far left; those chips must
+        // land right of the bend instead of inside the left 10%.
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 40, 1.0);
+        let lanes = layout.build_lanes();
+        let mut model = BoardModel::new();
+        let list: Vec<_> = (0..40).map(|i| SessionInfo::synthetic(i, "SESSION-LONG-NAME", Phase::Working)).collect();
+        model.apply(list, Instant::now());
+        model.settle();
+        let draws = chip_draws(&model, &layout, &lanes, Instant::now());
+        for d in &draws {
+            assert!(d.center.x - d.width / 2.0 >= layout.width * LEFT_BOUND - 1.0, "{} at x={}", d.label, d.center.x);
+        }
+        let keys: Vec<u32> = placements(&model, &layout, &lanes).iter().map(|p| p.1).collect();
+        assert!(keys.iter().any(|k| *k >= 1), "some chips moved to the next stripe's diagonal");
+        for d in &draws {
+            assert!((d.tangent.angle_deg() - 45.0).abs() < 1.0, "{} rides a diagonal", d.label);
+        }
+    }
+
+    #[test]
+    fn relocation_fades_out_at_the_old_spot_first() {
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 1, 1.0);
+        let lanes = layout.build_lanes();
+        let mut model = BoardModel::new();
+        model.apply(vec![SessionInfo::synthetic(1, "a", Phase::Working)], Instant::now());
+        model.settle();
+        let t0 = Instant::now();
+        let (target, key, s) = placements(&model, &layout, &lanes)[0];
+        model.anim_mut(target).unwrap().track_placement(key, s, t0);
+        // Pretend the chip used to live 200px upstream and its spot changed.
+        model.anim_mut(target).unwrap().track_placement(key + 2, s, t0);
+        let anim = model.anim_mut(target).unwrap();
+        anim.reloc.as_mut().unwrap().from_s = s - 200.0;
+        let early = chip_draws(&model, &layout, &lanes, t0 + std::time::Duration::from_millis(10));
+        assert!((early[0].s_c - (s - 200.0)).abs() < 1e-3, "drawn at the old spot while fading out");
+        assert!(early[0].alpha < 1.0);
+        let late = chip_draws(&model, &layout, &lanes, t0 + std::time::Duration::from_millis(400));
+        assert!((late[0].s_c - s).abs() < 1e-3, "drawn at the new spot afterwards");
+    }
+
+    #[test]
+    fn neighbouring_session_chips_do_not_overlap() {
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 6, 1.0);
+        let lanes = layout.build_lanes();
+        let mut model = BoardModel::new();
+        let list: Vec<_> = (0..6).map(|i| SessionInfo::synthetic(i, "SESSION-LONG-NAME", Phase::Working)).collect();
+        model.apply(list, Instant::now());
+        model.settle();
+        let draws = chip_draws(&model, &layout, &lanes, Instant::now());
+        for (a, b) in draws.iter().zip(draws.iter().skip(1)) {
+            // Both chips are 45° rotated; their separation across the diagonals
+            // is the perpendicular distance between centres.
+            let d = b.center - a.center;
+            let perp = (d.x - d.y).abs() / std::f32::consts::SQRT_2;
+            assert!(perp >= SESSION_STYLE.h + 4.0, "{} and {} are {perp:.1}px apart", a.label, b.label);
+        }
     }
 
     #[test]
