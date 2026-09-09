@@ -15,7 +15,7 @@ fn phase_color(phase: Phase) -> Rgba {
     match phase {
         Phase::Working => PALETTE.text_on,
         Phase::NeedsUser => PALETTE.text_needs,
-        Phase::Idle => PALETTE.text_idle,
+        Phase::Idle => theme::AMBER_DIM,
     }
 }
 
