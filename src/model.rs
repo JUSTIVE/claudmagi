@@ -248,11 +248,15 @@ pub struct ChipState {
     pub info: SessionInfo,
     pub anim: Anim,
     pub subs: Vec<SubState>,
+    /// Lane slot, fixed for the life of the chip: sessions never shift up
+    /// when an earlier one disappears (#23). New sessions take the lowest
+    /// free slot.
+    pub slot: usize,
 }
 
 impl ChipState {
-    fn new(info: SessionInfo, now: Instant) -> Self {
-        let mut chip = Self { info: info.clone(), anim: Anim::new(now), subs: Vec::new() };
+    fn new(info: SessionInfo, now: Instant, slot: usize) -> Self {
+        let mut chip = Self { info: info.clone(), anim: Anim::new(now), subs: Vec::new(), slot };
         chip.merge_subs(&info.subagents, now);
         chip
     }
@@ -321,7 +325,8 @@ impl BoardModel {
                 chip.anim.gone = false;
                 seen[i] = true;
             } else {
-                self.chips.push(ChipState::new(info, now));
+                let slot = self.free_slot();
+                self.chips.push(ChipState::new(info, now, slot));
                 seen.push(true);
             }
         }
@@ -333,6 +338,16 @@ impl BoardModel {
                 }
             }
         }
+    }
+
+    /// Lowest slot not held by any chip (fading ones included).
+    fn free_slot(&self) -> usize {
+        (0..).find(|s| !self.chips.iter().any(|c| c.slot == *s)).unwrap_or(0)
+    }
+
+    /// One past the highest occupied slot: how many lanes the board needs.
+    pub fn slot_span(&self) -> usize {
+        self.chips.iter().map(|c| c.slot + 1).max().unwrap_or(0)
     }
 
     /// Advances animations by `dt` seconds. Returns true when chips were
@@ -493,6 +508,26 @@ mod tests {
         assert_eq!(names, vec!["a", "b", "c"]);
         assert!(m.chips[1].anim.gone);
         assert_eq!(m.live().count(), 2);
+    }
+
+    #[test]
+    fn slots_stay_put_when_an_earlier_session_disappears() {
+        let t0 = Instant::now();
+        let mut m = BoardModel::new();
+        let a = SessionInfo::synthetic(1, "a", Phase::Working);
+        let b = SessionInfo::synthetic(2, "b", Phase::Working);
+        let c = SessionInfo::synthetic(3, "c", Phase::Working);
+        m.apply(vec![a.clone(), b.clone(), c.clone()], t0);
+        assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // a leaves and is dropped; b and c keep their slots.
+        m.apply(vec![b.clone(), c.clone()], t0);
+        m.tick(FADE_SECS + 0.1, t0 + secs(1.0));
+        assert_eq!(m.chips.iter().map(|c| (c.info.name.clone(), c.slot)).collect::<Vec<_>>(),
+                   vec![("b".to_string(), 1), ("c".to_string(), 2)]);
+        assert_eq!(m.slot_span(), 3);
+        // A newcomer takes the freed slot instead of pushing everyone around.
+        m.apply(vec![b, c, SessionInfo::synthetic(4, "d", Phase::Working)], t0 + secs(1.0));
+        assert_eq!(m.chips[2].slot, 0);
     }
 
     #[test]

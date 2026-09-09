@@ -32,6 +32,36 @@ pub const PALETTE: Palette = Palette {
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
 };
 
+/// Reference-clip look: orange board, black traces and packets.
+pub const ORANGE: Palette = Palette {
+    bg: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },
+    packet: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
+    ..PALETTE
+};
+
+/// Dark board: light traces, warm-grey chips so they still read as shapes.
+pub const DARK: Palette = Palette {
+    bg: Rgba { r: 0.078, g: 0.071, b: 0.063, a: 1.0 },       // #141210
+    line: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },     // #EDE7DE
+    chip: Rgba { r: 0.169, g: 0.153, b: 0.141, a: 1.0 },     // #2B2724
+    chip_needs: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 },
+    chip_idle: Rgba { r: 0.220, g: 0.125, b: 0.098, a: 1.0 },
+    outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
+    ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
+    ..PALETTE
+};
+
+impl Palette {
+    pub fn for_theme(theme: crate::settings::BoardTheme) -> Palette {
+        use crate::settings::BoardTheme;
+        match theme {
+            BoardTheme::White => PALETTE,
+            BoardTheme::Orange => ORANGE,
+            BoardTheme::Dark => DARK,
+        }
+    }
+}
+
 pub fn lerp(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let t = t.clamp(0.0, 1.0);
     Rgba {

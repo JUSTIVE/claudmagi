@@ -6,17 +6,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, ScrollWheelEvent, Window, canvas, div, prelude::*, px,
+    App, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, ScrollWheelEvent, SharedString, Stateful, Window, canvas, div, prelude::*, px,
 };
 
 use crate::geom::{Polyline, Pt};
 use crate::model::{BoardModel, Target};
 use crate::render::paint::paint_shapes;
 use crate::render::scene::{self, ChipDraw, Frame, GAP, Layout};
+use crate::settings::Settings;
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
-use crate::theme::{self, PALETTE};
-use crate::ui::devtools::DevState;
+use crate::theme::{self, Palette};
+use crate::ui::panel::PanelState;
 use crate::{mac, warp};
 
 pub const STATUS_H: f32 = 30.0;
@@ -35,14 +36,15 @@ pub struct Board {
     pub(crate) live: Arc<ClaudeSource>,
     pub(crate) sandbox: Arc<FakeSource>,
     pub(crate) mode: Mode,
-    pub(crate) dev: DevState,
+    pub(crate) settings: Settings,
+    pub(crate) dev: PanelState,
+    pub(crate) settings_panel: PanelState,
     layout: Layout,
     lanes: Rc<Vec<Polyline>>,
     draws: Vec<ChipDraw>,
     scroll_y: f32,
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
-    mouse_px: Option<Pt>,
     pressed: Option<Target>,
     title: String,
     drag_anchor: Option<(f64, f64)>,
@@ -74,19 +76,21 @@ impl Board {
         })
         .detach();
 
+        let settings = Settings::load();
         let now = Instant::now();
         Self {
             model: BoardModel::new(),
             live: Arc::new(ClaudeSource::default()),
             sandbox: Arc::new(FakeSource::new()),
             mode: Mode::Live,
-            dev: DevState::default(),
-            layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0),
+            layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0, settings.zoom),
+            settings,
+            dev: PanelState::default(),
+            settings_panel: PanelState::default(),
             lanes: Rc::new(Vec::new()),
             draws: Vec::new(),
             scroll_y: 0.0,
             mouse: None,
-            mouse_px: None,
             pressed: None,
             title: sources::machine_user(),
             drag_anchor: None,
@@ -103,6 +107,10 @@ impl Board {
         }
     }
 
+    pub(crate) fn palette(&self) -> Palette {
+        Palette::for_theme(self.settings.theme)
+    }
+
     pub(crate) fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
         if self.mode != mode {
             self.mode = mode;
@@ -112,8 +120,24 @@ impl Board {
         }
     }
 
+    /// Multiplies the zoom by `factor` (or resets it when `factor` is 0).
+    pub(crate) fn zoom_by(&mut self, factor: f32, cx: &mut Context<Self>) {
+        let next = if factor == 0.0 { 1.0 } else { self.settings.zoom * factor };
+        self.set_zoom(next, cx);
+    }
+
+    pub(crate) fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        let zoom = zoom.clamp(scene::USER_ZOOM_MIN, scene::USER_ZOOM_MAX);
+        if (zoom - self.settings.zoom).abs() > 1e-4 {
+            self.settings.zoom = zoom;
+            self.settings.save();
+        }
+        self.model.set_notice(format!("zoom {:.0}%", zoom * 100.0), Instant::now());
+        cx.notify();
+    }
+
     fn ensure_lanes(&mut self, win_w: f32, win_h: f32) {
-        let layout = Layout::new(win_w, win_h, self.model.chips.len());
+        let layout = Layout::new(win_w, win_h, self.model.slot_span(), self.settings.zoom);
         if layout == self.layout && !self.lanes.is_empty() {
             return;
         }
@@ -195,6 +219,7 @@ impl Render for Board {
         self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
         self.model.hovered = self.mouse.and_then(|m| self.hit_test(m));
 
+        let palette = self.palette();
         let frame = Frame {
             lanes: self.lanes.clone(),
             chips: self.draws.clone(),
@@ -203,11 +228,11 @@ impl Render for Board {
             layout: self.layout,
             title: self.title.clone(),
             pan_x: 0.0,
-            palette: PALETTE,
+            palette,
         };
         window.request_animation_frame();
 
-        let ink = theme::hsla(PALETTE.ink);
+        let ink = theme::hsla(palette.ink);
         let summary = self.model.summary();
         let detail = self.model.detail();
         let mode_tag = match self.mode {
@@ -215,6 +240,7 @@ impl Render for Board {
             Mode::Sandbox => Some("SANDBOX"),
         };
         let dev_open = self.dev.open;
+        let settings_open = self.settings_panel.open;
 
         div()
             .relative()
@@ -222,23 +248,29 @@ impl Render for Board {
             .track_focus(&self.focus_handle)
             .when(self.model.hovered.is_some(), |d| d.cursor_pointer())
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let win_w = f32::from(window.viewport_size().width);
+                let cmd = ev.keystroke.modifiers.platform;
                 match ev.keystroke.key.as_str() {
+                    "escape" if this.settings_panel.open => this.settings_panel.open = false,
                     "escape" if this.dev.open => this.dev.open = false,
                     "escape" => cx.quit(),
-                    "t" => this.toggle_devtools(f32::from(window.viewport_size().width)),
+                    "t" => this.toggle_devtools(win_w),
+                    "," if cmd => this.toggle_settings(win_w),
+                    "=" | "+" => this.zoom_by(scene::USER_ZOOM_STEP, cx),
+                    "-" | "_" => this.zoom_by(1.0 / scene::USER_ZOOM_STEP, cx),
+                    "0" if cmd => this.zoom_by(0.0, cx),
                     _ => return,
                 }
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 let m_px = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
-                this.mouse_px = Some(m_px);
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
                 this.model.hovered = this.hit_test(m);
                 if ev.pressed_button == Some(MouseButton::Left) {
-                    if let Some(offset) = this.dev.drag {
-                        this.dev.pos = Some(m_px - offset);
+                    if this.dev.drag.is_some() || this.settings_panel.drag.is_some() {
+                        this.drag_panels(m_px);
                     } else if let Some(anchor) = this.drag_anchor {
                         let cur = mac::mouse_location();
                         let (dx, dy) = (cur.0 - anchor.0, cur.1 - anchor.1);
@@ -278,12 +310,18 @@ impl Render for Board {
                     }
                     this.pressed = None;
                     this.drag_anchor = None;
-                    this.dev.drag = None;
+                    this.end_panel_drags();
                     cx.notify();
                 }),
             )
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _, cx| {
                 let delta = ev.delta.pixel_delta(px(GAP));
+                if ev.modifiers.platform {
+                    // ⌘ + wheel zooms, like a browser.
+                    let factor = (1.0 - f32::from(delta.y) / 300.0).clamp(0.8, 1.25);
+                    this.zoom_by(factor, cx);
+                    return;
+                }
                 this.scroll_y -= f32::from(delta.y) / this.layout.zoom;
                 cx.notify();
             }))
@@ -310,9 +348,9 @@ impl Render for Board {
                     .items_center()
                     .justify_between()
                     .gap_4()
-                    .bg(theme::hsla(PALETTE.bg))
+                    .bg(theme::hsla(palette.bg))
                     .border_t_1()
-                    .border_color(theme::hsla(theme::with_alpha(PALETTE.ink, 0.35)))
+                    .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
                     .font_family("Menlo")
                     .text_size(px(11.))
                     .text_color(ink)
@@ -328,8 +366,8 @@ impl Render for Board {
                                     div()
                                         .px_1p5()
                                         .rounded_sm()
-                                        .bg(theme::hsla(PALETTE.ink))
-                                        .text_color(theme::hsla(PALETTE.text_needs))
+                                        .bg(theme::hsla(palette.ink))
+                                        .text_color(theme::hsla(palette.bg))
                                         .child(tag),
                                 )
                             }),
@@ -337,24 +375,57 @@ impl Render for Board {
                     .child(div().flex_1().overflow_hidden().text_right().child(detail))
                     .child(
                         div()
-                            .id("dev-toggle")
                             .flex_none()
-                            .px_2()
-                            .py_0p5()
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(theme::hsla(theme::with_alpha(PALETTE.ink, 0.6)))
-                            .cursor_pointer()
-                            .when(dev_open, |d| d.bg(theme::hsla(PALETTE.ink)).text_color(theme::hsla(PALETTE.text_on)))
-                            .hover(|s| s.bg(theme::hsla(theme::with_alpha(PALETTE.ink, 0.15))))
-                            .child("TEST")
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_devtools(f32::from(window.viewport_size().width));
-                                cx.notify();
-                            })),
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(status_button(
+                                "settings-toggle",
+                                "SETTINGS",
+                                settings_open,
+                                palette,
+                                cx.listener(|this, _, window, cx| {
+                                    this.toggle_settings(f32::from(window.viewport_size().width));
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(status_button(
+                                "dev-toggle",
+                                "TEST",
+                                dev_open,
+                                palette,
+                                cx.listener(|this, _, window, cx| {
+                                    this.toggle_devtools(f32::from(window.viewport_size().width));
+                                    cx.notify();
+                                }),
+                            )),
                     ),
             )
             .when(dev_open, |d| d.child(self.render_devtools(cx)))
+            .when(settings_open, |d| d.child(self.render_settings(cx)))
     }
+}
+
+/// Small bordered button for the status bar.
+fn status_button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    active: bool,
+    palette: Palette,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex_none()
+        .px_2()
+        .py_0p5()
+        .rounded_sm()
+        .border_1()
+        .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.6)))
+        .cursor_pointer()
+        .when(active, |d| d.bg(theme::hsla(palette.ink)).text_color(theme::hsla(palette.bg)))
+        .hover(move |s| s.bg(theme::hsla(theme::with_alpha(palette.ink, 0.15))))
+        .child(label.into())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(on_click)
 }

@@ -1,30 +1,15 @@
 //! Floating test tools: switch between live and sandbox data, and create /
 //! retarget / destroy synthetic sessions to exercise every board state.
 
-use gpui::{ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div, prelude::*, px};
+use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::geom::Pt;
 use crate::model::Phase;
 use crate::theme::{self, PALETTE, Rgba};
 use crate::ui::board::{Board, Mode};
+use crate::ui::panel::{Which, button, c, dim, section};
 
 pub const PANEL_W: f32 = 330.0;
-
-#[derive(Default)]
-pub struct DevState {
-    pub open: bool,
-    pub pos: Option<Pt>,
-    /// Mouse offset from the panel origin while the header is being dragged.
-    pub drag: Option<Pt>,
-}
-
-fn c(rgba: Rgba) -> gpui::Hsla {
-    theme::hsla(rgba)
-}
-
-fn dim(alpha: f32) -> gpui::Hsla {
-    theme::hsla(theme::with_alpha(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }, alpha))
-}
 
 fn phase_color(phase: Phase) -> Rgba {
     match phase {
@@ -34,36 +19,13 @@ fn phase_color(phase: Phase) -> Rgba {
     }
 }
 
-fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, active: bool) -> Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .px_2()
-        .py_0p5()
-        .rounded_sm()
-        .border_1()
-        .border_color(dim(if active { 0.9 } else { 0.25 }))
-        .cursor_pointer()
-        .when(active, |d| d.bg(dim(0.92)).text_color(c(PALETTE.chip)))
-        .when(!active, |d| d.text_color(dim(0.85)).hover(|s| s.bg(dim(0.12))))
-        .child(label.into())
-}
-
-fn section(title: &'static str) -> gpui::Div {
-    div().flex().flex_col().gap_1p5().px_3().py_2().border_t_1().border_color(dim(0.12)).child(
-        div().text_color(c(PALETTE.text_on)).text_size(px(10.)).child(title),
-    )
-}
-
 impl Board {
     pub(crate) fn toggle_devtools(&mut self, win_w: f32) {
-        self.dev.open = !self.dev.open;
-        if self.dev.open && self.dev.pos.is_none() {
-            self.dev.pos = Some(Pt::new((win_w - PANEL_W - 18.0).max(8.0), 18.0));
-        }
+        let default_pos = Pt::new((win_w - PANEL_W - 18.0).max(8.0), 18.0);
+        self.dev.toggle(default_pos);
     }
 
     pub(crate) fn render_devtools(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let pos = self.dev.pos.unwrap_or(Pt::new(20.0, 20.0));
         let mode = self.mode;
         let sandbox = self.sandbox.clone();
         let auto = sandbox.auto();
@@ -74,58 +36,7 @@ impl Board {
             .map(|(i, chip)| (i, chip.info.clone()))
             .collect();
 
-        let mut panel = div()
-            .absolute()
-            .left(px(pos.x))
-            .top(px(pos.y))
-            .w(px(PANEL_W))
-            .flex()
-            .flex_col()
-            .rounded_lg()
-            .border_1()
-            .border_color(c(theme::with_alpha(PALETTE.text_on, 0.45)))
-            .bg(c(theme::with_alpha(PALETTE.chip, 0.96)))
-            .shadow_lg()
-            .font_family("Menlo")
-            .text_size(px(11.))
-            .text_color(dim(0.85))
-            // Keep clicks and wheel events off the board underneath.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            // Header doubles as the drag handle.
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .py_2()
-                    .cursor_grab()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, ev: &MouseDownEvent, _, cx| {
-                            let m = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
-                            let pos = this.dev.pos.unwrap_or_default();
-                            this.dev.drag = Some(m - pos);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
-                    .child(div().text_color(c(PALETTE.text_on)).child("TEST TOOLS"))
-                    .child(
-                        div()
-                            .id("dev-close")
-                            .px_1p5()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(dim(0.12)))
-                            .child("×")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.dev.open = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
+        let mut panel = self.panel_chrome(Which::Dev, "TEST TOOLS", PANEL_W, cx)
             // Data source.
             .child(
                 section("SOURCE").child(

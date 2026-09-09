@@ -28,7 +28,11 @@ pub const SUB_GAP: f32 = 44.0;
 
 pub const DESIGN_W: f32 = 980.0;
 pub const DESIGN_H: f32 = 620.0;
-pub const MAX_ZOOM: f32 = 2.6;
+/// User zoom (⌘+ / ⌘-) is the only scaling: the board never grows with the
+/// window (#19); bigger windows simply show more lanes and stripes.
+pub const USER_ZOOM_MIN: f32 = 0.5;
+pub const USER_ZOOM_MAX: f32 = 3.0;
+pub const USER_ZOOM_STEP: f32 = 1.15;
 /// Extra lanes above lane 0 whose diagonals fill the top-right corner.
 pub const LEAD_LANES: usize = 8;
 /// Where the first diagonal stripe meets the top edge, as a fraction of width.
@@ -171,8 +175,8 @@ pub fn lane_offset(i: i32) -> f32 {
 }
 
 /// Board geometry derived from the window size. All layout happens in
-/// "design units"; `zoom` maps them to window pixels so a fullscreen 4K
-/// board keeps the density of the reference clip instead of a sparse corner.
+/// "design units"; `zoom` (user-controlled) maps them to window pixels.
+/// A bigger window gets more lanes and stripes, not bigger chips.
 ///
 /// Every lane is one global staircase: lane `i` bends exactly as far left
 /// as it sits lower than lane `i - 1`, so the bends form 45° stripes running
@@ -188,8 +192,8 @@ pub struct Layout {
 }
 
 impl Layout {
-    pub fn new(win_w: f32, win_h: f32, chips: usize) -> Self {
-        let zoom = ((win_w * win_h) / (DESIGN_W * DESIGN_H)).sqrt().clamp(1.0, MAX_ZOOM);
+    pub fn new(win_w: f32, win_h: f32, chips: usize, user_zoom: f32) -> Self {
+        let zoom = user_zoom.clamp(USER_ZOOM_MIN, USER_ZOOM_MAX);
         let width = win_w / zoom;
         let height = win_h / zoom;
         let span = width + height - width * ANCHOR;
@@ -268,16 +272,22 @@ pub fn hash01(i: usize) -> f32 {
     (x % 10_000) as f32 / 10_000.0
 }
 
+/// Extra upstream room a left-side subagent leaves for the parent's cable.
+const LEFT_GAP: f32 = SUB_GAP + 40.0;
+const EDGE_MARGIN: f32 = 12.0;
+
 /// Projects every session chip and its subagent chain onto their lane.
+/// Subagents alternate right / left of the session chip and avoid the side
+/// where they would run off screen (#22).
 pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: Instant) -> Vec<ChipDraw> {
     let mut out = Vec::new();
     for (k, c) in model.chips.iter().enumerate() {
-        let lane_idx = Layout::chip_lane(k);
+        let lane_idx = Layout::chip_lane(c.slot);
         let Some(lane) = lanes.get(lane_idx) else { continue };
         let label = c.info.label();
         let style = SESSION_STYLE;
         let width = style.width(&label);
-        let on_diag = k % 2 == 0;
+        let on_diag = c.slot % 2 == 0;
         let s_c = chip_anchor(lane, lane_idx, on_diag, layout, width);
         let p = smoothstep(c.anim.disconnect);
         let (center, tangent) = lane.point_at(s_c + p * style.pull);
@@ -296,13 +306,30 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
             style,
         });
 
-        // Subagents hang off to the right along the same trace.
-        let mut trailing = s_c + width / 2.0;
+        let mut right_edge = s_c + width / 2.0;
+        let mut left_edge = s_c - width / 2.0;
+        let fits = |s: f32, w: f32| {
+            let x = lane.point_at(s).0.x;
+            x - w / 2.0 >= EDGE_MARGIN && x + w / 2.0 <= layout.width - EDGE_MARGIN
+        };
         for (j, sub) in c.subs.iter().enumerate() {
             let style = SUB_STYLE;
             let label = sub.info.label();
             let width = style.width(&label);
-            let s_c = trailing + SUB_GAP + width / 2.0;
+            let right_s = right_edge + SUB_GAP + width / 2.0;
+            let left_s = left_edge - LEFT_GAP - width / 2.0;
+            let prefer_right = j % 2 == 0;
+            let (s_c, on_right) = match (fits(right_s, width), fits(left_s, width)) {
+                (true, true) => (if prefer_right { right_s } else { left_s }, prefer_right),
+                (true, false) => (right_s, true),
+                (false, true) => (left_s, false),
+                (false, false) => (right_s, true),
+            };
+            if on_right {
+                right_edge = s_c + width / 2.0;
+            } else {
+                left_edge = s_c - width / 2.0;
+            }
             let p = smoothstep(sub.anim.disconnect);
             let (center, tangent) = lane.point_at(s_c + p * style.pull);
             out.push(ChipDraw {
@@ -319,7 +346,6 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
                 tangent,
                 style,
             });
-            trailing = s_c + width / 2.0;
         }
     }
     out
@@ -573,14 +599,26 @@ mod tests {
     use crate::model::{SessionInfo, SubagentInfo};
 
     #[test]
-    fn layout_fills_big_windows_with_more_lanes_and_stripes() {
-        let small = Layout::new(DESIGN_W, DESIGN_H, 3);
-        let big = Layout::new(3840.0, 2160.0, 3);
+    fn layout_fills_big_windows_with_more_lanes_and_stripes_not_zoom() {
+        let small = Layout::new(DESIGN_W, DESIGN_H, 3, 1.0);
+        let big = Layout::new(3840.0, 2160.0, 3, 1.0);
         assert_eq!(small.zoom, 1.0);
-        assert!(big.zoom > 1.0 && big.zoom <= MAX_ZOOM);
+        assert_eq!(big.zoom, 1.0, "the board never scales with the window (#19)");
         assert!(big.lanes > small.lanes);
         assert!(big.bands >= small.bands);
-        assert!(big.content_height() * big.zoom >= 2160.0 - BOTTOM_PAD * big.zoom);
+        assert!(big.content_height() >= 2160.0 - BOTTOM_PAD);
+    }
+
+    #[test]
+    fn user_zoom_scales_the_board_and_refills_lanes() {
+        let base = Layout::new(DESIGN_W, DESIGN_H, 3, 1.0);
+        let out = Layout::new(DESIGN_W, DESIGN_H, 3, 0.5);
+        let inn = Layout::new(DESIGN_W, DESIGN_H, 3, 2.0);
+        assert!((out.zoom - 0.5).abs() < 1e-6 && (inn.zoom - 2.0).abs() < 1e-6);
+        assert!(out.lanes > base.lanes, "zoomed out: more lanes to fill the same window");
+        assert!(inn.width < base.width);
+        let clamped = Layout::new(DESIGN_W, DESIGN_H, 3, 99.0);
+        assert!((clamped.zoom - USER_ZOOM_MAX).abs() < 1e-6);
     }
 
     #[test]
@@ -589,7 +627,7 @@ mod tests {
         assert_eq!(lane_offset(1), GAP);
         assert_eq!(lane_offset(2), 2.0 * GAP + PAIR_GAP);
         assert_eq!(lane_offset(-1), -GAP - PAIR_GAP);
-        let layout = Layout::new(1920.0, 1080.0, 8);
+        let layout = Layout::new(1920.0, 1080.0, 8, 1.0);
         for i in 1..layout.lanes {
             let a = lane_params(i - 1, &layout);
             let b = lane_params(i, &layout);
@@ -603,7 +641,7 @@ mod tests {
 
     #[test]
     fn subagents_chain_to_the_right_of_their_session() {
-        let layout = Layout::new(DESIGN_W, DESIGN_H, 2);
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 2, 1.0);
         let lanes = layout.build_lanes();
         let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
         a.subagents.push(SubagentInfo::synthetic(1, "Explore", "", true));
@@ -616,9 +654,13 @@ mod tests {
         assert_eq!(draws[0].target, Target::Session(0));
         assert_eq!(draws[1].target, Target::Sub(0, 0));
         assert_eq!(draws[2].target, Target::Sub(0, 1));
-        assert!(draws[1].s_c > draws[0].s_c + draws[0].width / 2.0, "sub sits after the parent");
-        assert!(draws[2].s_c > draws[1].s_c, "subs are ordered along the trace");
+        assert!(draws[1].s_c > draws[0].s_c + draws[0].width / 2.0, "first sub sits to the right");
+        assert!(draws[2].s_c < draws[0].s_c - draws[0].width / 2.0, "second sub sits to the left");
         assert_eq!(draws[1].lane, draws[0].lane, "same lane as the parent");
+        for d in &draws {
+            let x = d.center.x;
+            assert!(x - d.width / 2.0 >= 0.0 && x + d.width / 2.0 <= layout.width, "{} stays on screen", d.label);
+        }
         assert_eq!(draws[2].p, 1.0, "finished subagent is unplugged");
         assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first session rides the diagonal");
         assert!(draws[3].tangent.angle_deg().abs() < 1.0, "second session sits on the horizontal");
@@ -626,8 +668,31 @@ mod tests {
     }
 
     #[test]
+    fn subagents_spill_to_the_other_side_instead_of_off_screen() {
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 1, 1.0);
+        let lanes = layout.build_lanes();
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        for i in 0..8 {
+            a.subagents.push(SubagentInfo::synthetic(i, "general-purpose", "", true));
+        }
+        let mut model = BoardModel::new();
+        model.apply(vec![a], Instant::now());
+        model.settle();
+        let draws = chip_draws(&model, &layout, &lanes, Instant::now());
+        let on_screen = draws
+            .iter()
+            .filter(|d| d.center.x - d.width / 2.0 >= 0.0 && d.center.x + d.width / 2.0 <= layout.width)
+            .count();
+        // Right-only chaining would fit ~3; both sides fit twice that.
+        assert!(on_screen >= 6, "{on_screen} of {} chips fit the width", draws.len());
+        let parent = draws[0].s_c;
+        assert!(draws[1..].iter().any(|d| d.s_c > parent), "some subs sit to the right");
+        assert!(draws[1..].iter().any(|d| d.s_c < parent), "some subs sit to the left");
+    }
+
+    #[test]
     fn splicing_a_lane_with_two_chips_keeps_the_trace_continuous() {
-        let layout = Layout::new(DESIGN_W, DESIGN_H, 1);
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 1, 1.0);
         let lanes = layout.build_lanes();
         let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
         a.subagents.push(SubagentInfo::synthetic(1, "Explore", "", true));

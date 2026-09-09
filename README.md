@@ -2,7 +2,7 @@
 
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/).
 
-Every running `claude` process becomes a chip riding on a trace, and the subagents it spawns hang off to the right of it on the same trace. While Claude is
+Every running `claude` process becomes a chip riding on a trace, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
 session needs you (permission prompt, question, dialog) or finishes its turn, the
 trace goes slack and the chip pulls out of its socket. Click a chip to jump to the
@@ -24,7 +24,10 @@ bundle, and falls back to `~/Applications` if `/Applications` is not writable.
 cargo run --release
 ```
 
-- Frameless window: drag anywhere on the board to move it, drag edges to resize. Bigger windows zoom the board (up to 2.6×) and add more trace stripes so a fullscreen 4K display stays as dense as the reference clip.
+- Frameless window: drag anywhere on the board to move it, drag edges to resize. Bigger windows get more lanes and trace stripes; the chips never scale with the window.
+- `⌘+` / `⌘-` / `⌘0` (or ⌘ + wheel) zoom the whole board between 50% and 300%.
+- `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: background (white / orange / dark) and UI size. Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
+- Sessions keep their lane for life: when one ends, the others stay put and the next new session takes the freed lane.
 - Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 
@@ -50,7 +53,8 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths, or serialised to SVG for headless checks. |
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
-| UI | `ui/devtools.rs` | Floating test tools (below). |
+| UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
+| Data | `settings.rs` | Theme + zoom, persisted as JSON. |
 | Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Stroke font, polylines, palette, AppKit shims, Warp focus. |
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·

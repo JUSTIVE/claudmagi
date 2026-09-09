@@ -3,6 +3,7 @@ mod geom;
 mod mac;
 mod model;
 mod render;
+mod settings;
 mod sources;
 mod theme;
 mod ui;
@@ -29,6 +30,12 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--svg") {
         let out = args.get(i + 1).cloned().unwrap_or_else(|| "claudmagi.svg".into());
         let demo = args.iter().any(|a| a == "--demo");
+        let user_zoom = args
+            .iter()
+            .position(|a| a == "--zoom")
+            .and_then(|k| args.get(k + 1))
+            .and_then(|z| z.parse().ok())
+            .unwrap_or(1.0);
         let (w, h) = args
             .iter()
             .position(|a| a == "--size")
@@ -49,7 +56,7 @@ fn main() {
         } else {
             ClaudeSource::default().snapshot()
         };
-        let svg = render_svg(&sessions, w, h, demo);
+        let svg = render_svg(&sessions, w, h, demo, user_zoom);
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
         return;
@@ -127,12 +134,14 @@ fn main() {
 }
 
 /// Headless still frame with every animation settled.
-fn render_svg(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool) -> String {
-    render_svg_titled(list, width, height, demo_hover, sources::machine_user())
+fn render_svg(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, user_zoom: f32) -> String {
+    let layout = scene::Layout::new(width, height, list.len(), user_zoom);
+    render_frame(list, layout, demo_hover, sources::machine_user(), (0.0, 0.0), theme::PALETTE, width, height)
 }
 
+#[allow(dead_code)]
 fn render_svg_titled(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, title: String) -> String {
-    let layout = scene::Layout::new(width, height, list.len());
+    let layout = scene::Layout::new(width, height, list.len(), 1.0);
     render_frame(list, layout, demo_hover, title, (0.0, 0.0), theme::PALETTE, width, height)
 }
 
