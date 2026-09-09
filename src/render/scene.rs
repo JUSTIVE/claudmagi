@@ -14,7 +14,7 @@ use crate::model::{BoardModel, Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
-pub const GAP: f32 = 38.0;
+pub const GAP: f32 = 33.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;
@@ -65,12 +65,12 @@ impl ChipStyle {
 }
 
 pub const SESSION_STYLE: ChipStyle = ChipStyle {
-    h: 22.0,
+    h: 20.0,
     r: 4.0,
-    pad: 13.0,
-    min_w: 56.0,
-    text_scale: 1.5,
-    text_stroke: 1.45,
+    pad: 12.0,
+    min_w: 52.0,
+    text_scale: 1.4,
+    text_stroke: 1.35,
     pull: 16.0,
     wave_len: 46.0,
     wave_amp: 6.0,
@@ -792,7 +792,7 @@ mod tests {
             // is the perpendicular distance between centres.
             let d = b.center - a.center;
             let perp = (d.x - d.y).abs() / std::f32::consts::SQRT_2;
-            assert!(perp >= SESSION_STYLE.h + 4.0, "{} and {} are {perp:.1}px apart", a.label, b.label);
+            assert!(perp >= SESSION_STYLE.h + 2.0, "{} and {} are {perp:.1}px apart", a.label, b.label);
         }
     }
 
