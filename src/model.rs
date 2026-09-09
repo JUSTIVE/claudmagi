@@ -101,6 +101,9 @@ pub struct SessionInfo {
     /// True for sessions invented by the test tools; never focused for real.
     pub synthetic: bool,
     pub subagents: Vec<SubagentInfo>,
+    /// Where the session runs: `warp:<pane uuid>`, `term:<program>` or
+    /// `desktop`. Sessions sharing a group sit together on the board (#41).
+    pub group: String,
 }
 
 impl SessionInfo {
@@ -121,9 +124,20 @@ impl SessionInfo {
             warp_session_uuid: None,
             synthetic: true,
             subagents: Vec::new(),
+            group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
         };
         s.set_phase(phase);
         s
+    }
+
+    /// Human label for the group.
+    pub fn group_label(&self) -> String {
+        match self.group.split_once(':') {
+            Some(("warp", uuid)) => format!("warp pane {}", &uuid[..uuid.len().min(8)]),
+            Some(("term", prog)) => prog.to_string(),
+            Some(("sandbox", n)) => format!("sandbox group {n}"),
+            _ => self.group.clone(),
+        }
     }
 
     pub fn key(&self) -> (i32, &str) {
@@ -311,15 +325,16 @@ pub struct ChipState {
     pub info: SessionInfo,
     pub anim: Anim,
     pub subs: Vec<SubState>,
-    /// Lane slot, fixed for the life of the chip: sessions never shift up
-    /// when an earlier one disappears (#23). New sessions take the lowest
-    /// free slot.
+    /// Lane slot, derived from the group blocks (see `assign_slots`).
     pub slot: usize,
+    /// Position inside the group's block, fixed for the life of the chip:
+    /// sessions never shift up when an earlier one disappears (#23).
+    pub gslot: usize,
 }
 
 impl ChipState {
-    fn new(info: SessionInfo, now: Instant, slot: usize) -> Self {
-        let mut chip = Self { info: info.clone(), anim: Anim::new(now), subs: Vec::new(), slot };
+    fn new(info: SessionInfo, now: Instant, gslot: usize) -> Self {
+        let mut chip = Self { info: info.clone(), anim: Anim::new(now), subs: Vec::new(), slot: gslot, gslot };
         chip.merge_subs(&info.subagents, now);
         chip
     }
@@ -363,12 +378,17 @@ impl Target {
     }
 }
 
+/// Empty lanes between session groups (#41).
+pub const GROUP_GAP: usize = 5;
+
 /// Everything the renderer needs, updated by `apply` (data) and `tick` (time).
 #[derive(Default)]
 pub struct BoardModel {
     pub chips: Vec<ChipState>,
     pub hovered: Option<Target>,
     pub notice: Option<(String, Instant)>,
+    /// Groups in order of first appearance; each owns a block of lanes.
+    pub groups: Vec<String>,
 }
 
 impl BoardModel {
@@ -388,8 +408,11 @@ impl BoardModel {
                 chip.anim.gone = false;
                 seen[i] = true;
             } else {
-                let slot = self.free_slot();
-                self.chips.push(ChipState::new(info, now, slot));
+                let gslot = self.free_gslot(&info.group);
+                if !self.groups.contains(&info.group) {
+                    self.groups.push(info.group.clone());
+                }
+                self.chips.push(ChipState::new(info, now, gslot));
                 seen.push(true);
             }
         }
@@ -401,11 +424,29 @@ impl BoardModel {
                 }
             }
         }
+        self.assign_slots();
     }
 
-    /// Lowest slot not held by any chip (fading ones included).
-    fn free_slot(&self) -> usize {
-        (0..).find(|s| !self.chips.iter().any(|c| c.slot == *s)).unwrap_or(0)
+    /// Lowest in-group position not held by any chip of `group` (fading ones
+    /// included).
+    fn free_gslot(&self, group: &str) -> usize {
+        (0..).find(|g| !self.chips.iter().any(|c| c.info.group == group && c.gslot == *g)).unwrap_or(0)
+    }
+
+    /// Lays the groups out as consecutive blocks separated by `GROUP_GAP`
+    /// empty lanes. Inside a block chips keep their `gslot`; a block only
+    /// moves when an earlier group grows or vanishes entirely.
+    pub fn assign_slots(&mut self) {
+        self.groups.retain(|g| self.chips.iter().any(|c| &c.info.group == g));
+        let mut offset = 0;
+        for group in &self.groups {
+            let mut span = 0;
+            for c in self.chips.iter_mut().filter(|c| &c.info.group == group) {
+                c.slot = offset + c.gslot;
+                span = span.max(c.gslot + 1);
+            }
+            offset += span + GROUP_GAP;
+        }
     }
 
     /// One past the highest occupied slot: how many lanes the board needs.
@@ -443,7 +484,10 @@ impl BoardModel {
         }
         let before = self.chips.len();
         self.chips.retain(|c| !c.anim.dead());
-        dropped |= self.chips.len() != before;
+        if self.chips.len() != before {
+            dropped = true;
+            self.assign_slots();
+        }
         if let Some((_, at)) = &self.notice {
             if now.saturating_duration_since(*at) > Duration::from_secs(NOTICE_SECS) {
                 self.notice = None;
@@ -521,6 +565,7 @@ impl BoardModel {
                     parts.push(tty.clone());
                 }
                 parts.push(if info.synthetic { "sandbox".into() } else { format!("pid {}", info.pid) });
+                parts.push(info.group_label());
                 parts.join(" · ")
             }
             Target::Sub(_, j) => {
@@ -591,9 +636,12 @@ mod tests {
     fn slots_stay_put_when_an_earlier_session_disappears() {
         let t0 = Instant::now();
         let mut m = BoardModel::new();
-        let a = SessionInfo::synthetic(1, "a", Phase::Working);
-        let b = SessionInfo::synthetic(2, "b", Phase::Working);
-        let c = SessionInfo::synthetic(3, "c", Phase::Working);
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
+        let mut c = SessionInfo::synthetic(3, "c", Phase::Working);
+        for s in [&mut a, &mut b, &mut c] {
+            s.group = "sandbox:0".into();
+        }
         m.apply(vec![a.clone(), b.clone(), c.clone()], t0);
         assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1, 2]);
         // a leaves and is dropped; b and c keep their slots.
@@ -603,8 +651,30 @@ mod tests {
                    vec![("b".to_string(), 1), ("c".to_string(), 2)]);
         assert_eq!(m.slot_span(), 3);
         // A newcomer takes the freed slot instead of pushing everyone around.
-        m.apply(vec![b, c, SessionInfo::synthetic(4, "d", Phase::Working)], t0 + secs(1.0));
+        let mut d = SessionInfo::synthetic(4, "d", Phase::Working);
+        d.group = "sandbox:0".into();
+        m.apply(vec![b, c, d], t0 + secs(1.0));
         assert_eq!(m.chips[2].slot, 0);
+    }
+
+    #[test]
+    fn groups_form_blocks_with_a_big_gap_between_them() {
+        let t0 = Instant::now();
+        let mut m = BoardModel::new();
+        let mut warp1 = SessionInfo::synthetic(1, "w1", Phase::Working);
+        warp1.group = "warp:aaaa".into();
+        let mut warp2 = SessionInfo::synthetic(2, "w2", Phase::Working);
+        warp2.group = "warp:aaaa".into();
+        let mut desk = SessionInfo::synthetic(3, "d1", Phase::Working);
+        desk.group = "desktop".into();
+        m.apply(vec![warp1.clone(), desk.clone(), warp2.clone()], t0);
+        let slots: Vec<(String, usize)> = m.chips.iter().map(|c| (c.info.name.clone(), c.slot)).collect();
+        assert_eq!(slots, vec![("w1".into(), 0), ("d1".into(), 2 + GROUP_GAP), ("w2".into(), 1)]);
+        // The warp group emptying collapses the gap; the desktop block moves up.
+        m.apply(vec![desk], t0);
+        m.tick(FADE_SECS + 0.1, t0 + secs(1.0));
+        assert_eq!(m.chips[0].slot, 0);
+        assert_eq!(m.groups, vec!["desktop".to_string()]);
     }
 
     #[test]

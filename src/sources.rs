@@ -256,6 +256,11 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                 warp_session_uuid: env.get("WARP_TERMINAL_SESSION_UUID").cloned(),
                 synthetic: false,
                 subagents: Vec::new(),
+                group: match (env.get("WARP_TERMINAL_SESSION_UUID"), env.get("TERM_PROGRAM")) {
+                    (Some(uuid), _) => format!("warp:{uuid}"),
+                    (None, Some(prog)) => format!("term:{prog}"),
+                    (None, None) => "desktop".into(),
+                },
             }
         })
         .collect();

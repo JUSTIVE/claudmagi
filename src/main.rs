@@ -120,7 +120,12 @@ fn main() {
             items: vec![MenuItem::action("Quit claudmagi", Quit)],
         }]);
 
-        let bounds = Bounds::centered(None, size(px(scene::DESIGN_W), px(scene::DESIGN_H)), cx);
+        // CLAUDMAGI_WINDOW=WxH opens at a given size (memory / layout checks).
+        let (win_w, win_h) = std::env::var("CLAUDMAGI_WINDOW")
+            .ok()
+            .and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))
+            .unwrap_or((scene::DESIGN_W, scene::DESIGN_H));
+        let bounds = Bounds::centered(None, size(px(win_w), px(win_h)), cx);
         cx.open_window(
             WindowOptions {
                 titlebar: None,
@@ -153,13 +158,17 @@ fn render_svg(
     user_zoom: f32,
     palette: theme::Palette,
 ) -> String {
-    let layout = scene::Layout::new(width, height, list.len(), user_zoom);
+    let mut model = BoardModel::new();
+    model.apply(list.to_vec(), Instant::now());
+    let layout = scene::Layout::new(width, height, model.slot_span(), user_zoom);
     render_frame(list, layout, demo_hover, sources::machine_user(), (0.0, 0.0), palette, width, height)
 }
 
 #[allow(dead_code)]
 fn render_svg_titled(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, title: String) -> String {
-    let layout = scene::Layout::new(width, height, list.len(), 1.0);
+    let mut model = BoardModel::new();
+    model.apply(list.to_vec(), Instant::now());
+    let layout = scene::Layout::new(width, height, model.slot_span(), 1.0);
     render_frame(list, layout, demo_hover, title, (0.0, 0.0), theme::PALETTE, width, height)
 }
 

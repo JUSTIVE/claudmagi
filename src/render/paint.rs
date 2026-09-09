@@ -13,9 +13,10 @@ use crate::geom::Pt;
 use crate::render::scene::Shape;
 use crate::theme;
 
-/// Cache upper bound; positions shift while scrolling, so it is flushed
-/// rather than evicted when it grows past this.
-const CACHE_LIMIT: usize = 6000;
+/// Vertex budget for the cache (≈ 10 MB at 32 bytes a vertex). While the
+/// window is resized or scrolled every frame mints new geometry, so entries
+/// not used this frame are dropped once the budget is exceeded (#40).
+const CACHE_BUDGET: usize = 320_000;
 /// Rounded rects narrower than this (the packets) move every frame and are
 /// cheap to build, so they bypass the cache.
 const CACHE_MIN_W: f32 = 12.0;
@@ -134,16 +135,47 @@ fn build(shape: &Shape) -> Option<Path<Pixels>> {
     }
 }
 
+/// Rough vertex count of a shape's tessellation, for the budget.
+fn cost_of(shape: &Shape) -> usize {
+    match shape {
+        Shape::Rect { .. } => 0,
+        Shape::Stroke { pieces, .. } => pieces.iter().map(|p| p.len()).sum::<usize>() * 14,
+        Shape::RoundedRect { .. } => 48,
+        Shape::Text { text, .. } => text.len() * 70,
+    }
+}
+
+struct Entry {
+    path: Path<Pixels>,
+    cost: usize,
+    last_used: u64,
+}
+
 #[derive(Default)]
 pub struct PathCache {
-    paths: HashMap<u64, Path<Pixels>>,
+    paths: HashMap<u64, Entry>,
+    total: usize,
+    frame: u64,
 }
 
 impl PathCache {
-    pub fn paint(&mut self, shapes: &[Shape], window: &mut Window) {
-        if self.paths.len() > CACHE_LIMIT {
-            self.paths.clear();
+    /// Drops everything not used this frame once over budget.
+    fn trim(&mut self) {
+        if self.total <= CACHE_BUDGET {
+            return;
         }
+        let frame = self.frame;
+        self.paths.retain(|_, e| e.last_used == frame);
+        self.total = self.paths.values().map(|e| e.cost).sum();
+        if self.total > CACHE_BUDGET {
+            self.paths.clear();
+            self.total = 0;
+        }
+    }
+
+    pub fn paint(&mut self, shapes: &[Shape], window: &mut Window) {
+        self.frame += 1;
+        let frame = self.frame;
         for shape in shapes {
             let color = match shape {
                 Shape::Rect { x, y, w, h, color } => {
@@ -158,12 +190,17 @@ impl PathCache {
                     if !self.paths.contains_key(&key) {
                         match build(shape) {
                             Some(p) => {
-                                self.paths.insert(key, p);
+                                let cost = cost_of(shape);
+                                self.total += cost;
+                                self.paths.insert(key, Entry { path: p, cost, last_used: frame });
                             }
                             None => continue,
                         }
                     }
-                    self.paths.get(&key).cloned()
+                    self.paths.get_mut(&key).map(|e| {
+                        e.last_used = frame;
+                        e.path.clone()
+                    })
                 }
                 None => build(shape),
             };
@@ -171,6 +208,7 @@ impl PathCache {
                 window.paint_path(path, theme::hsla(color));
             }
         }
+        self.trim();
     }
 }
 

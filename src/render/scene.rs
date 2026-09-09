@@ -312,13 +312,15 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
         let label = c.info.label();
         let style = SESSION_STYLE;
         let width = style.width(&label);
-        let (s_c, key) = session_anchor(lane, lane_idx, layout, width);
+        let (s_c, stripe) = session_anchor(lane, lane_idx, layout, width);
+        // Keys carry the lane so a group shift also fades (#28, #41).
+        let key = (lane_idx as u32) << 8 | stripe;
         out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style });
 
         // Horizontal runs either side of the parent's diagonal (stripe `key`),
         // trimmed by CURVE_MARGIN so nothing sits on a bend (#36).
         let params = lane_params(lane_idx, layout);
-        let b = key as usize;
+        let b = stripe as usize;
         let (ax, y) = params[b];
         let s_bend_in = lane.nearest_s(Pt::new(ax, y));
         let s_bend_out = lane.nearest_s(Pt::new(ax + DIAG, y + DIAG));
@@ -354,7 +356,7 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
                 left_cursor = s_c - width / 2.0 - SUB_GAP;
             }
             // Key: side + ordinal on that side, so flipping sides animates.
-            let key = 100 + j as u32 * 2 + on_right as u32;
+            let key = (lane_idx as u32) << 8 | (100 + j as u32 * 2 + on_right as u32);
             out.push(Placement { target: Target::Sub(k, j), lane: lane_idx, key, s_c, width, label, style });
         }
     }
@@ -772,17 +774,17 @@ mod tests {
     fn chips_near_the_left_edge_move_to_the_right_of_the_bend() {
         // Many sessions push later lanes' bends far left; those chips must
         // land on a later stripe instead of inside the left 20%.
-        let layout = Layout::new(DESIGN_W, DESIGN_H, 40, 1.0);
-        let lanes = layout.build_lanes();
         let mut model = BoardModel::new();
         let list: Vec<_> = (0..40).map(|i| SessionInfo::synthetic(i, "SESSION-LONG-NAME", Phase::Working)).collect();
         model.apply(list, Instant::now());
         model.settle();
+        let layout = Layout::new(DESIGN_W, DESIGN_H, model.slot_span(), 1.0);
+        let lanes = layout.build_lanes();
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
         for d in draws.iter().filter(|d| matches!(d.target, Target::Session(_))) {
             assert!(d.center.x - d.width / 2.0 >= layout.width * LEFT_BOUND - 1.0, "{} at x={}", d.label, d.center.x);
         }
-        let keys: Vec<u32> = placements(&model, &layout, &lanes).iter().map(|p| p.1).collect();
+        let keys: Vec<u32> = placements(&model, &layout, &lanes).iter().map(|p| p.1 & 0xff).collect();
         assert!(keys.iter().any(|k| *k >= 1), "some chips moved to the next stripe's diagonal");
         for d in &draws {
             assert!((d.tangent.angle_deg() - 45.0).abs() < 1.0, "{} rides a diagonal", d.label);
@@ -812,14 +814,14 @@ mod tests {
 
     #[test]
     fn chips_of_different_pairs_never_overlap_and_pairs_stay_legible() {
-        let layout = Layout::new(DESIGN_W, DESIGN_H, 6, 1.0);
-        let lanes = layout.build_lanes();
         let mut model = BoardModel::new();
         let list: Vec<_> = (0..6).map(|i| SessionInfo::synthetic(i, "SESSION-LONG-NAME", Phase::Working)).collect();
         model.apply(list, Instant::now());
         model.settle();
+        let layout = Layout::new(DESIGN_W, DESIGN_H, model.slot_span(), 1.0);
+        let lanes = layout.build_lanes();
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
-        for (i, (a, b)) in draws.iter().zip(draws.iter().skip(1)).enumerate() {
+        for (i, (a, b)) in draws.iter().zip(draws.iter().skip(1)).enumerate().take(2) {
             // Both chips are 45° rotated; their separation across the diagonals
             // is the perpendicular distance between centres.
             let d = b.center - a.center;

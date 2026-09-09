@@ -24,10 +24,10 @@ bundle, and falls back to `~/Applications` if `/Applications` is not writable.
 cargo run --release
 ```
 
-- Frameless window: drag anywhere on the board to move it, drag edges to resize. Bigger windows get more lanes and trace stripes; the chips never scale with the window.
+- Frameless window: drag anywhere on the board to move it, drag edges to resize. `CLAUDMAGI_WINDOW=WxH` opens at a given size. Bigger windows get more lanes and trace stripes; the chips never scale with the window.
 - `⌘+` / `⌘-` / `⌘0` (or ⌘ + wheel) zoom the whole board between 50% and 300%.
 - `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: background (white / orange / dark) and UI size. Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
-- Sessions keep their lane for life: when one ends, the others stay put and the next new session takes the freed lane. Chips never sit in the left 20% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
+- Sessions are grouped by where they run (each Warp pane, other terminals, the Claude desktop app) with a wide gap between groups. Inside a group a session keeps its lane for life: when one ends, the others stay put and the next new session takes the freed lane. Chips never sit in the left 20% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
 - Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 
