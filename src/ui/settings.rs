@@ -2,7 +2,6 @@
 
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
-use crate::geom::Pt;
 use crate::render::scene;
 use crate::settings::BoardTheme;
 use crate::ui::board::Board;
@@ -12,9 +11,8 @@ pub const PANEL_W: f32 = 300.0;
 const ZOOM_PRESETS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 
 impl Board {
-    pub(crate) fn toggle_settings(&mut self, win_w: f32) {
-        let default_pos = Pt::new((win_w - PANEL_W - 18.0).max(8.0), 18.0);
-        self.settings_panel.toggle(default_pos);
+    pub(crate) fn toggle_settings(&mut self) {
+        self.settings_panel.toggle();
     }
 
     pub(crate) fn set_theme(&mut self, theme: BoardTheme, cx: &mut Context<Self>) {

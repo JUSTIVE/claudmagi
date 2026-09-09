@@ -3,7 +3,6 @@
 
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
-use crate::geom::Pt;
 use crate::model::Phase;
 use crate::theme::{self, PALETTE, Rgba};
 use crate::ui::board::{Board, Mode};
@@ -20,9 +19,8 @@ fn phase_color(phase: Phase) -> Rgba {
 }
 
 impl Board {
-    pub(crate) fn toggle_devtools(&mut self, win_w: f32) {
-        let default_pos = Pt::new((win_w - PANEL_W - 18.0).max(8.0), 18.0);
-        self.dev.toggle(default_pos);
+    pub(crate) fn toggle_devtools(&mut self) {
+        self.dev.toggle();
     }
 
     pub(crate) fn render_devtools(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -211,7 +209,7 @@ impl Board {
                 .border_color(dim(0.12))
                 .text_size(px(10.))
                 .text_color(dim(0.45))
-                .child("T toggles this panel · drag header to move · Esc closes"),
+                .child("T toggles this panel · Esc closes"),
         )
     }
 }

@@ -1,30 +1,19 @@
-//! Shared chrome for the floating panels (test tools, settings): position,
-//! header drag, close button, and the small widgets they are built from.
+//! Shared chrome for the docked panels (test tools, settings): title bar,
+//! close button, and the small widgets they are built from.
 
-use gpui::{ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, SharedString, Stateful, div, prelude::*, px};
+use gpui::{ClickEvent, Context, ElementId, MouseButton, SharedString, Stateful, div, prelude::*, px};
 
-use crate::geom::Pt;
 use crate::theme::{self, PALETTE, Rgba};
 use crate::ui::board::Board;
 
 #[derive(Default)]
 pub struct PanelState {
     pub open: bool,
-    pub pos: Option<Pt>,
-    /// Mouse offset from the panel origin while the header is being dragged.
-    pub drag: Option<Pt>,
 }
 
 impl PanelState {
-    pub fn toggle(&mut self, default_pos: Pt) {
+    pub fn toggle(&mut self) {
         self.open = !self.open;
-        if self.open && self.pos.is_none() {
-            self.pos = Some(default_pos);
-        }
-    }
-
-    pub fn pos(&self) -> Pt {
-        self.pos.unwrap_or(Pt::new(20.0, 20.0))
     }
 }
 
@@ -71,8 +60,10 @@ impl Board {
         }
     }
 
-    /// The floating container: positioned, dark, with a draggable header and
-    /// a close button. Append body children to the returned element.
+    /// A docked panel: dark card with a title bar and a close button. The
+    /// board lays the open panels out side by side in the bottom-right
+    /// corner (#25), so they never overlap. Append body children to the
+    /// returned element.
     pub(crate) fn panel_chrome(
         &mut self,
         which: Which,
@@ -80,16 +71,13 @@ impl Board {
         width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let pos = self.panel_mut(which).pos();
         let close_id: &'static str = match which {
             Which::Dev => "dev-close",
             Which::Settings => "settings-close",
         };
         div()
-            .absolute()
-            .left(px(pos.x))
-            .top(px(pos.y))
             .w(px(width))
+            .flex_none()
             .flex()
             .flex_col()
             .rounded_lg()
@@ -110,18 +98,6 @@ impl Board {
                     .justify_between()
                     .px_3()
                     .py_2()
-                    .cursor_grab()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                            let m = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
-                            let panel = this.panel_mut(which);
-                            let pos = panel.pos();
-                            panel.drag = Some(m - pos);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }),
-                    )
                     .child(div().text_color(c(PALETTE.text_on)).child(title))
                     .child(
                         div()
@@ -137,20 +113,5 @@ impl Board {
                             })),
                     ),
             )
-    }
-
-    /// Moves whichever panel is being dragged to follow the mouse.
-    pub(crate) fn drag_panels(&mut self, mouse_px: Pt) {
-        for which in [Which::Dev, Which::Settings] {
-            let panel = self.panel_mut(which);
-            if let Some(offset) = panel.drag {
-                panel.pos = Some(mouse_px - offset);
-            }
-        }
-    }
-
-    pub(crate) fn end_panel_drags(&mut self) {
-        self.dev.drag = None;
-        self.settings_panel.drag = None;
     }
 }

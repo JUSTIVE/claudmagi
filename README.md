@@ -64,7 +64,7 @@ environment via `sysctl KERN_PROCARGS2`.
 
 ## Test tools
 
-Press `T` (or click `TEST` in the status bar) to open a floating panel:
+Press `T` (or click `TEST` in the status bar) to open the test panel. Panels dock in the bottom-right corner above the status bar, side by side with the settings panel, so they never overlap:
 
 - **SOURCE** switches the board between live sessions and a sandbox.
 - **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at
@@ -73,7 +73,7 @@ Press `T` (or click `TEST` in the status bar) to open a floating panel:
 - **SESSIONS** lists what the board shows; sandbox rows have `W/N/I` phase
   buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
   `RUN/DONE` and `×`; live rows have `→ WARP`. Clicking a sandbox name cycles
-  its phase. Drag the header to move the panel; `Esc` closes it.
+  its phase. `Esc` closes it.
 
 ## Layout
 

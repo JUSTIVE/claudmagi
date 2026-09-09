@@ -247,15 +247,14 @@ impl Render for Board {
             .size_full()
             .track_focus(&self.focus_handle)
             .when(self.model.hovered.is_some(), |d| d.cursor_pointer())
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
-                let win_w = f32::from(window.viewport_size().width);
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let cmd = ev.keystroke.modifiers.platform;
                 match ev.keystroke.key.as_str() {
                     "escape" if this.settings_panel.open => this.settings_panel.open = false,
                     "escape" if this.dev.open => this.dev.open = false,
                     "escape" => cx.quit(),
-                    "t" => this.toggle_devtools(win_w),
-                    "," if cmd => this.toggle_settings(win_w),
+                    "t" => this.toggle_devtools(),
+                    "," if cmd => this.toggle_settings(),
                     "=" | "+" => this.zoom_by(scene::USER_ZOOM_STEP, cx),
                     "-" | "_" => this.zoom_by(1.0 / scene::USER_ZOOM_STEP, cx),
                     "0" if cmd => this.zoom_by(0.0, cx),
@@ -264,14 +263,11 @@ impl Render for Board {
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
-                let m_px = Pt::new(f32::from(ev.position.x), f32::from(ev.position.y));
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
                 this.model.hovered = this.hit_test(m);
                 if ev.pressed_button == Some(MouseButton::Left) {
-                    if this.dev.drag.is_some() || this.settings_panel.drag.is_some() {
-                        this.drag_panels(m_px);
-                    } else if let Some(anchor) = this.drag_anchor {
+                    if let Some(anchor) = this.drag_anchor {
                         let cur = mac::mouse_location();
                         let (dx, dy) = (cur.0 - anchor.0, cur.1 - anchor.1);
                         this.drag_anchor = Some(cur);
@@ -310,7 +306,6 @@ impl Render for Board {
                     }
                     this.pressed = None;
                     this.drag_anchor = None;
-                    this.end_panel_drags();
                     cx.notify();
                 }),
             )
@@ -384,8 +379,8 @@ impl Render for Board {
                                 "SETTINGS",
                                 settings_open,
                                 palette,
-                                cx.listener(|this, _, window, cx| {
-                                    this.toggle_settings(f32::from(window.viewport_size().width));
+                                cx.listener(|this, _, _, cx| {
+                                    this.toggle_settings();
                                     cx.notify();
                                 }),
                             ))
@@ -394,15 +389,31 @@ impl Render for Board {
                                 "TEST",
                                 dev_open,
                                 palette,
-                                cx.listener(|this, _, window, cx| {
-                                    this.toggle_devtools(f32::from(window.viewport_size().width));
+                                cx.listener(|this, _, _, cx| {
+                                    this.toggle_devtools();
                                     cx.notify();
                                 }),
                             )),
                     ),
             )
-            .when(dev_open, |d| d.child(self.render_devtools(cx)))
-            .when(settings_open, |d| d.child(self.render_settings(cx)))
+            // Panels dock in the bottom-right corner, side by side (#25).
+            .when(dev_open || settings_open, |d| {
+                let mut dock = div()
+                    .absolute()
+                    .right(px(18.))
+                    .bottom(px(STATUS_H + 12.))
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .gap_3();
+                if settings_open {
+                    dock = dock.child(self.render_settings(cx));
+                }
+                if dev_open {
+                    dock = dock.child(self.render_devtools(cx));
+                }
+                d.child(dock)
+            })
     }
 }
 
