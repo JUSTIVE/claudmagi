@@ -62,7 +62,12 @@ fn main() {
         } else {
             ClaudeSource::default().snapshot()
         };
-        let svg = render_svg(&sessions, w, h, demo, user_zoom);
+        let palette = match args.iter().position(|a| a == "--theme").and_then(|k| args.get(k + 1)).map(|s| s.as_str()) {
+            Some("orange") => theme::ORANGE,
+            Some("dark") => theme::DARK,
+            _ => theme::PALETTE,
+        };
+        let svg = render_svg(&sessions, w, h, demo, user_zoom, palette);
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
         return;
@@ -140,9 +145,16 @@ fn main() {
 }
 
 /// Headless still frame with every animation settled.
-fn render_svg(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, user_zoom: f32) -> String {
+fn render_svg(
+    list: &[SessionInfo],
+    width: f32,
+    height: f32,
+    demo_hover: bool,
+    user_zoom: f32,
+    palette: theme::Palette,
+) -> String {
     let layout = scene::Layout::new(width, height, list.len(), user_zoom);
-    render_frame(list, layout, demo_hover, sources::machine_user(), (0.0, 0.0), theme::PALETTE, width, height)
+    render_frame(list, layout, demo_hover, sources::machine_user(), (0.0, 0.0), palette, width, height)
 }
 
 #[allow(dead_code)]

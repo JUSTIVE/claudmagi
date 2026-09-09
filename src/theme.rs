@@ -46,11 +46,13 @@ pub const ORANGE: Palette = Palette {
     ..PALETTE
 };
 
-/// Dark board: light traces, warm-grey chips so they still read as shapes.
+/// Dark board: light traces; working chips are white with a deep green label
+/// (#32), so they pop the way black chips do on the white board.
 pub const DARK: Palette = Palette {
     bg: Rgba { r: 0.078, g: 0.071, b: 0.063, a: 1.0 },       // #141210
     line: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },     // #EDE7DE
-    chip: Rgba { r: 0.169, g: 0.153, b: 0.141, a: 1.0 },     // #2B2724
+    chip: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+    text_on: Rgba { r: 0.078, g: 0.545, b: 0.318, a: 1.0 },  // #148B51
     chip_needs: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 },
     outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },

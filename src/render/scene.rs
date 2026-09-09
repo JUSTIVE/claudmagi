@@ -14,8 +14,8 @@ use crate::model::{BoardModel, Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
-pub const GAP: f32 = 13.0;
-pub const PAIR_GAP: f32 = 30.0;
+pub const GAP: f32 = 38.0;
+pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
 pub const DIAG: f32 = 128.0;
 pub const CORNER_R: f32 = 8.0;
@@ -200,13 +200,13 @@ impl Layout {
         let area_bands = (span / (width * STRIPE_PITCH)).ceil().max(1.0) as usize;
         // Enough stripes that even the lowest session lane has a diagonal on
         // screen (its bend moves left by its offset, #27/#29).
-        let last_offset = if chips == 0 { 0.0 } else { lane_offset((2 * (chips - 1)) as i32) };
+        let last_offset = if chips == 0 { 0.0 } else { lane_offset((chips - 1) as i32) };
         let need = (last_offset + width * LEFT_BOUND - width * ANCHOR) / (width * STRIPE_PITCH);
         let chip_bands = need.ceil().max(0.0) as usize + 1;
         let bands = area_bands.max(chip_bands);
         let pitch = (2.0 * GAP + PAIR_GAP) / 2.0;
         let fill = ((height - TOP_PAD - DIAG - BOTTOM_PAD) / pitch).ceil().max(0.0) as usize + 1;
-        let lanes = LEAD_LANES + MIN_LANES.max(2 * chips + 14).max(fill);
+        let lanes = LEAD_LANES + MIN_LANES.max(chips + 14).max(fill);
         Self { zoom, width, height, bands, lanes }
     }
 
@@ -214,11 +214,11 @@ impl Layout {
         TOP_PAD + lane_offset((self.lanes - LEAD_LANES) as i32) + DIAG + BOTTOM_PAD
     }
 
-    /// Lane index (into `build_lanes`) for session slot `k`: the first lane
-    /// of every pair, so chips on neighbouring diagonals sit a whole pair
-    /// pitch apart and never overlap (#29). The second lane is decorative.
+    /// Lane index (into `build_lanes`) for session slot `k`: every lane
+    /// carries a session (#31); `GAP` is wide enough that chips on the two
+    /// lanes of a pair never overlap.
     pub fn chip_lane(k: usize) -> usize {
-        LEAD_LANES + 2 * k
+        LEAD_LANES + k
     }
 
     pub fn build_lanes(&self) -> Vec<Polyline> {
@@ -658,7 +658,9 @@ mod tests {
         let out = Layout::new(DESIGN_W, DESIGN_H, 3, 0.5);
         let inn = Layout::new(DESIGN_W, DESIGN_H, 3, 2.0);
         assert!((out.zoom - 0.5).abs() < 1e-6 && (inn.zoom - 2.0).abs() < 1e-6);
-        assert!(out.lanes > base.lanes, "zoomed out: more lanes to fill the same window");
+        assert!(out.lanes >= base.lanes, "zoomed out never needs fewer lanes");
+        let tall = Layout::new(DESIGN_W, 2400.0, 3, 0.5);
+        assert!(tall.lanes > base.lanes, "zoomed out on a tall window needs more lanes");
         assert!(inn.width < base.width);
         let clamped = Layout::new(DESIGN_W, DESIGN_H, 3, 99.0);
         assert!((clamped.zoom - USER_ZOOM_MAX).abs() < 1e-6);
@@ -707,7 +709,7 @@ mod tests {
         assert_eq!(draws[2].p, 1.0, "finished subagent is unplugged");
         assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first session rides the diagonal");
         assert!((draws[3].tangent.angle_deg() - 45.0).abs() < 1.0, "so does the second (#29)");
-        assert_eq!(draws[3].lane - draws[0].lane, 2, "sessions take the first lane of consecutive pairs");
+        assert_eq!(draws[3].lane - draws[0].lane, 1, "sessions take consecutive lanes");
     }
 
     #[test]
@@ -726,8 +728,9 @@ mod tests {
             .iter()
             .filter(|d| d.center.x - d.width / 2.0 >= 0.0 && d.center.x + d.width / 2.0 <= layout.width)
             .count();
-        // Right-only chaining would fit ~3; both sides fit twice that.
-        assert!(on_screen >= 6, "{on_screen} of {} chips fit the width", draws.len());
+        // Right-only chaining would fit ~3; both sides fit noticeably more
+        // even with the left 20% off limits.
+        assert!(on_screen >= 5, "{on_screen} of {} chips fit the width", draws.len());
         let parent = draws[0].s_c;
         assert!(draws[1..].iter().any(|d| d.s_c > parent), "some subs sit to the right");
         assert!(draws[1..].iter().any(|d| d.s_c < parent), "some subs sit to the left");

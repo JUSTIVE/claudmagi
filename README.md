@@ -36,7 +36,7 @@ cargo run --release
 ```sh
 cargo run -- --list                 # print discovered sessions
 cargo run -- --svg out.svg          # render the current board as SVG
-cargo run -- --svg out.svg --demo   # same, with fake sessions in every state (--count N)
+cargo run -- --svg out.svg --demo   # same, with fake sessions in every state (--count N, --theme dark|orange, --zoom 1.5)
 cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 ```
 
