@@ -395,7 +395,8 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
     let mut out = Vec::new();
     let (width, height) = (f.layout.width, f.layout.height);
 
-    out.push(Shape::Rect { x: origin.x, y: origin.y, w: width, h: height, color: pal.bg });
+    // Cover twice the layout width, like the traces, so panned renders (icon) stay filled.
+    out.push(Shape::Rect { x: origin.x, y: origin.y, w: width * 2.0, h: height, color: pal.bg });
 
     let mut by_lane: HashMap<usize, Vec<&ChipDraw>> = HashMap::new();
     for c in &f.chips {
