@@ -6,6 +6,7 @@ use gpui::{Hsla, rgb};
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub bg: Rgba,
+    pub packet: Rgba,
     pub line: Rgba,
     pub chip: Rgba,
     pub chip_needs: Rgba,
@@ -18,7 +19,8 @@ pub struct Palette {
 }
 
 pub const PALETTE: Palette = Palette {
-    bg: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },       // #F04A0E
+    bg: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },             // white (#16)
+    packet: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },   // #F04A0E, the bumps on the traces (#16)
     line: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },     // #120A05
     chip: Rgba { r: 0.055, g: 0.043, b: 0.039, a: 1.0 },     // #0E0B0A
     chip_needs: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410

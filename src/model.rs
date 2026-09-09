@@ -43,6 +43,46 @@ impl Phase {
     }
 }
 
+/// A subagent spawned by a session (the `Agent` tool). Lives in the parent
+/// process, so it is discovered from the session's transcript directory.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubagentInfo {
+    pub agent_id: String,
+    pub agent_type: String,
+    pub description: String,
+    pub running: bool,
+    /// Unix millis of the transcript's creation / last write.
+    pub started_at: u64,
+    pub updated_at: u64,
+}
+
+impl SubagentInfo {
+    pub fn synthetic(seq: u32, agent_type: &str, description: &str, running: bool) -> Self {
+        Self {
+            agent_id: format!("fake-agent-{seq:04}"),
+            agent_type: agent_type.to_string(),
+            description: description.to_string(),
+            running,
+            started_at: seq as u64,
+            updated_at: seq as u64,
+        }
+    }
+
+    pub fn phase(&self) -> Phase {
+        if self.running { Phase::Working } else { Phase::Idle }
+    }
+
+    /// Short uppercase label for the chip: the last segment of the agent type.
+    pub fn label(&self) -> String {
+        let base = self.agent_type.rsplit(':').next().unwrap_or(&self.agent_type);
+        let mut s: String = base.chars().take(12).collect::<String>().to_ascii_uppercase();
+        if s.is_empty() {
+            s = "AGENT".into();
+        }
+        s
+    }
+}
+
 /// One Claude Code session as reported by a `SessionSource`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionInfo {
@@ -60,6 +100,7 @@ pub struct SessionInfo {
     pub warp_session_uuid: Option<String>,
     /// True for sessions invented by the test tools; never focused for real.
     pub synthetic: bool,
+    pub subagents: Vec<SubagentInfo>,
 }
 
 impl SessionInfo {
@@ -79,6 +120,7 @@ impl SessionInfo {
             warp_focus_url: None,
             warp_session_uuid: None,
             synthetic: true,
+            subagents: Vec::new(),
         };
         s.set_phase(phase);
         s
@@ -149,26 +191,21 @@ pub const HOVER_SECS: f32 = 0.12;
 pub const FADE_SECS: f32 = 0.35;
 pub const NOTICE_SECS: u64 = 5;
 
-/// A session plus its animated presentation state.
+/// Animated presentation state shared by session and subagent chips.
 #[derive(Clone, Debug)]
-pub struct ChipState {
-    pub info: SessionInfo,
+pub struct Anim {
     /// 0 = plugged in, 1 = pulled out of the socket.
     pub disconnect: f32,
     pub hover_t: f32,
     pub born: Instant,
-    /// The session disappeared; fade out then drop.
+    /// The underlying thing disappeared; fade out then drop.
     pub gone: bool,
     pub fade: f32,
 }
 
-impl ChipState {
-    fn new(info: SessionInfo, now: Instant) -> Self {
-        Self { info, disconnect: 0.0, hover_t: 0.0, born: now, gone: false, fade: 0.0 }
-    }
-
-    pub fn phase(&self) -> Phase {
-        self.info.phase()
+impl Anim {
+    fn new(now: Instant) -> Self {
+        Self { disconnect: 0.0, hover_t: 0.0, born: now, gone: false, fade: 0.0 }
     }
 
     pub fn age(&self, now: Instant) -> f32 {
@@ -180,8 +217,82 @@ impl ChipState {
         crate::geom::ease_out(self.age(now) / APPEAR_SECS) * self.fade
     }
 
-    fn target_disconnect(&self, now: Instant) -> f32 {
-        if self.phase() == Phase::Working || self.age(now) < UNPLUG_DELAY_SECS { 0.0 } else { 1.0 }
+    fn step(&mut self, phase: Phase, hovered: bool, dt: f32, now: Instant) {
+        let target_p = if phase == Phase::Working || self.age(now) < UNPLUG_DELAY_SECS { 0.0 } else { 1.0 };
+        approach(&mut self.disconnect, target_p, dt / UNPLUG_SECS);
+        approach(&mut self.hover_t, if hovered { 1.0 } else { 0.0 }, dt / HOVER_SECS);
+        approach(&mut self.fade, if self.gone { 0.0 } else { 1.0 }, dt / FADE_SECS);
+    }
+
+    fn settle(&mut self, phase: Phase) {
+        self.born = Instant::now() - Duration::from_secs(60);
+        self.fade = 1.0;
+        self.disconnect = if phase == Phase::Working { 0.0 } else { 1.0 };
+        self.hover_t = 0.0;
+    }
+
+    fn dead(&self) -> bool {
+        self.gone && self.fade <= 0.001
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SubState {
+    pub info: SubagentInfo,
+    pub anim: Anim,
+}
+
+/// A session plus its animated presentation state and subagents.
+#[derive(Clone, Debug)]
+pub struct ChipState {
+    pub info: SessionInfo,
+    pub anim: Anim,
+    pub subs: Vec<SubState>,
+}
+
+impl ChipState {
+    fn new(info: SessionInfo, now: Instant) -> Self {
+        let mut chip = Self { info: info.clone(), anim: Anim::new(now), subs: Vec::new() };
+        chip.merge_subs(&info.subagents, now);
+        chip
+    }
+
+    pub fn phase(&self) -> Phase {
+        self.info.phase()
+    }
+
+    fn merge_subs(&mut self, list: &[SubagentInfo], now: Instant) {
+        let mut seen = vec![false; self.subs.len()];
+        for info in list {
+            if let Some(i) = self.subs.iter().position(|s| s.info.agent_id == info.agent_id) {
+                self.subs[i].info = info.clone();
+                self.subs[i].anim.gone = false;
+                seen[i] = true;
+            } else {
+                self.subs.push(SubState { info: info.clone(), anim: Anim::new(now) });
+                seen.push(true);
+            }
+        }
+        for (i, s) in seen.iter().enumerate() {
+            if !s {
+                self.subs[i].anim.gone = true;
+            }
+        }
+    }
+}
+
+/// Something on the board that can be hovered or clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Target {
+    Session(usize),
+    Sub(usize, usize),
+}
+
+impl Target {
+    pub fn session(self) -> usize {
+        match self {
+            Target::Session(i) | Target::Sub(i, _) => i,
+        }
     }
 }
 
@@ -189,7 +300,7 @@ impl ChipState {
 #[derive(Default)]
 pub struct BoardModel {
     pub chips: Vec<ChipState>,
-    pub hovered: Option<usize>,
+    pub hovered: Option<Target>,
     pub notice: Option<(String, Instant)>,
 }
 
@@ -204,8 +315,10 @@ impl BoardModel {
         let mut seen = vec![false; self.chips.len()];
         for info in list {
             if let Some(i) = self.chips.iter().position(|c| c.info.key() == info.key()) {
-                self.chips[i].info = info;
-                self.chips[i].gone = false;
+                let chip = &mut self.chips[i];
+                chip.merge_subs(&info.subagents, now);
+                chip.info = info;
+                chip.anim.gone = false;
                 seen[i] = true;
             } else {
                 self.chips.push(ChipState::new(info, now));
@@ -214,7 +327,10 @@ impl BoardModel {
         }
         for (i, s) in seen.iter().enumerate() {
             if !s {
-                self.chips[i].gone = true;
+                self.chips[i].anim.gone = true;
+                for sub in &mut self.chips[i].subs {
+                    sub.anim.gone = true;
+                }
             }
         }
     }
@@ -223,47 +339,52 @@ impl BoardModel {
     /// dropped (callers may want to relayout).
     pub fn tick(&mut self, dt: f32, now: Instant) -> bool {
         let hovered = self.hovered;
+        let mut dropped = false;
         for (i, c) in self.chips.iter_mut().enumerate() {
-            let target_p = c.target_disconnect(now);
-            approach(&mut c.disconnect, target_p, dt / UNPLUG_SECS);
-            let target_h = if hovered == Some(i) { 1.0 } else { 0.0 };
-            approach(&mut c.hover_t, target_h, dt / HOVER_SECS);
-            let target_f = if c.gone { 0.0 } else { 1.0 };
-            approach(&mut c.fade, target_f, dt / FADE_SECS);
+            c.anim.step(c.info.phase(), hovered == Some(Target::Session(i)), dt, now);
+            for (j, s) in c.subs.iter_mut().enumerate() {
+                s.anim.step(s.info.phase(), hovered == Some(Target::Sub(i, j)), dt, now);
+            }
+            let before = c.subs.len();
+            c.subs.retain(|s| !s.anim.dead());
+            dropped |= c.subs.len() != before;
         }
         let before = self.chips.len();
-        self.chips.retain(|c| !(c.gone && c.fade <= 0.001));
+        self.chips.retain(|c| !c.anim.dead());
+        dropped |= self.chips.len() != before;
         if let Some((_, at)) = &self.notice {
             if now.saturating_duration_since(*at) > Duration::from_secs(NOTICE_SECS) {
                 self.notice = None;
             }
         }
-        if self.chips.len() != before {
+        if dropped {
             self.hovered = None;
-            true
-        } else {
-            false
         }
+        dropped
     }
 
     /// Jumps every animation to its resting state (headless renders, tests).
     pub fn settle(&mut self) {
-        let far = Instant::now() - Duration::from_secs(60);
-        self.chips.retain(|c| !c.gone);
+        self.chips.retain(|c| !c.anim.gone);
         for c in &mut self.chips {
-            c.born = far;
-            c.fade = 1.0;
-            c.disconnect = if c.phase() == Phase::Working { 0.0 } else { 1.0 };
-            c.hover_t = 0.0;
+            c.anim.settle(c.info.phase());
+            c.subs.retain(|s| !s.anim.gone);
+            for s in &mut c.subs {
+                s.anim.settle(s.info.phase());
+            }
         }
     }
 
     pub fn live(&self) -> impl Iterator<Item = &ChipState> {
-        self.chips.iter().filter(|c| !c.gone)
+        self.chips.iter().filter(|c| !c.anim.gone)
     }
 
     pub fn count(&self, phase: Phase) -> usize {
         self.live().filter(|c| c.phase() == phase).count()
+    }
+
+    pub fn live_subagents(&self) -> usize {
+        self.live().map(|c| c.subs.iter().filter(|s| !s.anim.gone).count()).sum()
     }
 
     pub fn summary(&self) -> String {
@@ -271,36 +392,57 @@ impl BoardModel {
         if n == 0 {
             return "NO LIVE CLAUDE CODE SESSIONS".to_string();
         }
-        format!(
+        let mut s = format!(
             "{} SESSION{} · {} WORKING · {} NEEDS INPUT · {} IDLE",
             n,
             if n == 1 { "" } else { "S" },
             self.count(Phase::Working),
             self.count(Phase::NeedsUser),
             self.count(Phase::Idle)
-        )
+        );
+        let subs = self.live_subagents();
+        if subs > 0 {
+            s.push_str(&format!(" · {subs} SUBAGENT{}", if subs == 1 { "" } else { "S" }));
+        }
+        s
     }
 
     pub fn detail(&self) -> String {
         if let Some((msg, _)) = &self.notice {
             return msg.clone();
         }
-        let Some(c) = self.hovered.and_then(|i| self.chips.get(i)) else { return String::new() };
+        let Some(target) = self.hovered else { return String::new() };
+        let Some(c) = self.chips.get(target.session()) else { return String::new() };
         let info = &c.info;
-        let mut parts = vec![info.label(), info.short_cwd()];
-        parts.push(match info.phase() {
-            Phase::Working => "working".into(),
-            Phase::NeedsUser => match &info.waiting_for {
-                Some(w) => format!("needs you: {w}"),
-                None => "waiting for your answer".into(),
-            },
-            Phase::Idle => "idle".into(),
-        });
-        if let Some(tty) = &info.tty {
-            parts.push(tty.clone());
+        match target {
+            Target::Session(_) => {
+                let mut parts = vec![info.label(), info.short_cwd()];
+                parts.push(match info.phase() {
+                    Phase::Working => "working".into(),
+                    Phase::NeedsUser => match &info.waiting_for {
+                        Some(w) => format!("needs you: {w}"),
+                        None => "waiting for your answer".into(),
+                    },
+                    Phase::Idle => "idle".into(),
+                });
+                if let Some(tty) = &info.tty {
+                    parts.push(tty.clone());
+                }
+                parts.push(if info.synthetic { "sandbox".into() } else { format!("pid {}", info.pid) });
+                parts.join(" · ")
+            }
+            Target::Sub(_, j) => {
+                let Some(sub) = c.subs.get(j) else { return String::new() };
+                let s = &sub.info;
+                format!(
+                    "{} ⟵ {} · {} · {}",
+                    s.agent_type,
+                    info.label(),
+                    if s.description.is_empty() { "(no description)" } else { &s.description },
+                    if s.running { "running" } else { "done" }
+                )
+            }
         }
-        parts.push(if info.synthetic { "sandbox".into() } else { format!("pid {}", info.pid) });
-        parts.join(" · ")
     }
 
     pub fn set_notice(&mut self, msg: impl Into<String>, now: Instant) {
@@ -349,7 +491,7 @@ mod tests {
         m.apply(vec![c.clone(), a.clone()], t0);
         let names: Vec<_> = m.chips.iter().map(|c| c.info.name.clone()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
-        assert!(m.chips[1].gone);
+        assert!(m.chips[1].anim.gone);
         assert_eq!(m.live().count(), 2);
     }
 
@@ -359,9 +501,9 @@ mod tests {
         let mut m = BoardModel::new();
         m.apply(vec![SessionInfo::synthetic(1, "a", Phase::Working)], t0);
         m.tick(1.0, t0 + secs(1.0));
-        assert_eq!(m.chips[0].fade, 1.0);
+        assert_eq!(m.chips[0].anim.fade, 1.0);
         m.apply(vec![], t0 + secs(1.0));
-        assert!(m.chips[0].gone);
+        assert!(m.chips[0].anim.gone);
         let dropped = m.tick(FADE_SECS + 0.1, t0 + secs(2.0));
         assert!(dropped);
         assert!(m.chips.is_empty());
@@ -373,28 +515,55 @@ mod tests {
         let mut m = BoardModel::new();
         m.apply(vec![SessionInfo::synthetic(1, "a", Phase::Idle)], t0);
         m.tick(0.3, t0 + secs(0.3));
-        assert_eq!(m.chips[0].disconnect, 0.0, "still plugged in while appearing");
+        assert_eq!(m.chips[0].anim.disconnect, 0.0, "still plugged in while appearing");
         m.tick(1.0, t0 + secs(2.0));
-        assert_eq!(m.chips[0].disconnect, 1.0);
+        assert_eq!(m.chips[0].anim.disconnect, 1.0);
         // Back to work: plugs in again.
         let mut a = m.chips[0].info.clone();
         a.set_phase(Phase::Working);
         m.apply(vec![a], t0 + secs(2.0));
         m.tick(1.0, t0 + secs(3.0));
-        assert_eq!(m.chips[0].disconnect, 0.0);
+        assert_eq!(m.chips[0].anim.disconnect, 0.0);
+    }
+
+    #[test]
+    fn subagents_follow_their_session_and_unplug_when_done() {
+        let t0 = Instant::now();
+        let mut m = BoardModel::new();
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        a.subagents.push(SubagentInfo::synthetic(1, "Explore", "look around", true));
+        a.subagents.push(SubagentInfo::synthetic(2, "oh-my-claudecode:executor", "build it", true));
+        m.apply(vec![a.clone()], t0);
+        assert_eq!(m.chips[0].subs.len(), 2);
+        assert_eq!(m.chips[0].subs[1].info.label(), "EXECUTOR");
+        assert_eq!(m.live_subagents(), 2);
+
+        // First agent finishes, second disappears entirely.
+        a.subagents[0].running = false;
+        a.subagents.truncate(1);
+        m.apply(vec![a.clone()], t0 + secs(1.0));
+        m.tick(2.0, t0 + secs(3.0));
+        assert_eq!(m.chips[0].subs.len(), 1, "vanished subagent was faded out and dropped");
+        assert_eq!(m.chips[0].subs[0].anim.disconnect, 1.0, "finished subagent is unplugged");
+
+        // Session goes away: its subagents go with it.
+        m.apply(vec![], t0 + secs(3.0));
+        assert!(m.chips[0].subs[0].anim.gone);
+        m.tick(1.0, t0 + secs(4.0));
+        assert!(m.chips.is_empty());
     }
 
     #[test]
     fn settle_resolves_every_animation() {
         let t0 = Instant::now();
         let mut m = BoardModel::new();
-        m.apply(
-            vec![SessionInfo::synthetic(1, "a", Phase::Idle), SessionInfo::synthetic(2, "b", Phase::Working)],
-            t0,
-        );
+        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
+        b.subagents.push(SubagentInfo::synthetic(9, "Explore", "", false));
+        m.apply(vec![SessionInfo::synthetic(1, "a", Phase::Idle), b], t0);
         m.settle();
-        assert_eq!(m.chips[0].disconnect, 1.0);
-        assert_eq!(m.chips[1].disconnect, 0.0);
-        assert!(m.chips.iter().all(|c| c.alpha(Instant::now()) > 0.99));
+        assert_eq!(m.chips[0].anim.disconnect, 1.0);
+        assert_eq!(m.chips[1].anim.disconnect, 0.0);
+        assert_eq!(m.chips[1].subs[0].anim.disconnect, 1.0);
+        assert!(m.chips.iter().all(|c| c.anim.alpha(Instant::now()) > 0.99));
     }
 }

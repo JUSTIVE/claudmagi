@@ -11,10 +11,10 @@ use gpui::{
 };
 
 use crate::geom::{Polyline, Pt};
-use crate::model::BoardModel;
+use crate::model::{BoardModel, Target};
 use crate::render::paint::paint_shapes;
-use crate::render::scene::{self, CHIP_H, ChipDraw, Frame, GAP, Layout};
-use crate::sources::{ClaudeSource, FakeSource, SessionSource};
+use crate::render::scene::{self, ChipDraw, Frame, GAP, Layout};
+use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, PALETTE};
 use crate::ui::devtools::DevState;
 use crate::{mac, warp};
@@ -43,7 +43,8 @@ pub struct Board {
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
     mouse_px: Option<Pt>,
-    pressed: Option<usize>,
+    pressed: Option<Target>,
+    title: String,
     drag_anchor: Option<(f64, f64)>,
     started: Instant,
     last_tick: Instant,
@@ -76,7 +77,7 @@ impl Board {
         let now = Instant::now();
         Self {
             model: BoardModel::new(),
-            live: Arc::new(ClaudeSource),
+            live: Arc::new(ClaudeSource::default()),
             sandbox: Arc::new(FakeSource::new()),
             mode: Mode::Live,
             dev: DevState::default(),
@@ -87,6 +88,7 @@ impl Board {
             mouse: None,
             mouse_px: None,
             pressed: None,
+            title: sources::machine_user(),
             drag_anchor: None,
             started: now,
             last_tick: now,
@@ -129,9 +131,9 @@ impl Board {
     }
 
     /// Hit test in design units.
-    fn hit_test(&self, m: Pt) -> Option<usize> {
-        let mut best: Option<(f32, usize)> = None;
-        for (i, d) in self.draws.iter().enumerate() {
+    fn hit_test(&self, m: Pt) -> Option<Target> {
+        let mut best: Option<(f32, Target)> = None;
+        for d in &self.draws {
             if d.alpha < 0.4 {
                 continue;
             }
@@ -139,19 +141,20 @@ impl Board {
             let rel = m - center;
             let lx = rel.dot(d.tangent);
             let ly = rel.dot(d.tangent.perp());
-            if lx.abs() <= d.width / 2.0 + 3.0 && ly.abs() <= CHIP_H / 2.0 + 3.0 {
+            if lx.abs() <= d.width / 2.0 + 3.0 && ly.abs() <= d.style.h / 2.0 + 3.0 {
                 let dist = lx.abs() + ly.abs();
                 if best.is_none_or(|(bd, _)| dist < bd) {
-                    best = Some((dist, i));
+                    best = Some((dist, d.target));
                 }
             }
         }
-        best.map(|(_, i)| i)
+        best.map(|(_, t)| t)
     }
 
-    /// Jumps to the session's terminal (chip click / test panel).
-    pub(crate) fn activate(&mut self, index: usize, cx: &mut Context<Self>) {
-        let Some(chip) = self.model.chips.get(index) else { return };
+    /// Jumps to the session's terminal (chip click / test panel). Subagent
+    /// chips jump to their parent session.
+    pub(crate) fn activate(&mut self, target: Target, cx: &mut Context<Self>) {
+        let Some(chip) = self.model.chips.get(target.session()) else { return };
         let info = chip.info.clone();
         let label = info.label();
         if info.synthetic {
@@ -198,6 +201,9 @@ impl Render for Board {
             scroll_y: self.scroll_y,
             t: now.duration_since(self.started).as_secs_f32(),
             layout: self.layout,
+            title: self.title.clone(),
+            pan_x: 0.0,
+            palette: PALETTE,
         };
         window.request_animation_frame();
 

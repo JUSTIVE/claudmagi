@@ -219,23 +219,70 @@ impl Board {
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
                 row = row.child(
+                    button(SharedString::from(format!("add-sub-{i}")), "+SUB", false)
+                        .on_click(move |_, _, _| {
+                            sb.add_sub(&sid, true);
+                        }),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                row = row.child(
                     button(SharedString::from(format!("remove-{i}")), "×", false).on_click(move |_, _, _| sb.remove(&sid)),
                 );
             } else {
+                let sid = info.session_id.clone();
                 row = row.child(
                     button(SharedString::from(format!("focus-{i}")), "→ WARP", false).on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
-                            if let Some(idx) = this.model.chips.iter().position(|c| c.info.session_id == info.session_id) {
-                                this.activate(idx, cx);
+                            if let Some(idx) = this.model.chips.iter().position(|c| c.info.session_id == sid) {
+                                this.activate(crate::model::Target::Session(idx), cx);
                             }
                         },
                     )),
                 );
             }
             list = list.child(row);
+
+            // Subagents, indented under their session.
+            for (j, sub) in info.subagents.iter().enumerate() {
+                let sub_phase = sub.phase();
+                let mut sub_row = div().flex().items_center().gap_1().pl_3().child(
+                    div()
+                        .flex_1()
+                        .overflow_hidden()
+                        .text_size(px(10.))
+                        .text_color(c(theme::with_alpha(phase_color(sub_phase), 0.85)))
+                        .child(format!(
+                            "└ {} · {} · {}",
+                            sub.label(),
+                            if sub.description.is_empty() { "-" } else { sub.description.as_str() },
+                            if sub.running { "running" } else { "done" }
+                        )),
+                );
+                if info.synthetic {
+                    let sb = sandbox.clone();
+                    let aid = sub.agent_id.clone();
+                    let running = sub.running;
+                    sub_row = sub_row.child(
+                        button(
+                            SharedString::from(format!("sub-toggle-{i}-{j}")),
+                            if running { "DONE" } else { "RUN" },
+                            false,
+                        )
+                        .on_click(move |_, _, _| sb.set_sub_running(&aid, !running)),
+                    );
+                    let sb = sandbox.clone();
+                    let aid = sub.agent_id.clone();
+                    sub_row = sub_row.child(
+                        button(SharedString::from(format!("sub-remove-{i}-{j}")), "×", false)
+                            .on_click(move |_, _, _| sb.remove_sub(&aid)),
+                    );
+                }
+                list = list.child(sub_row);
+            }
         }
         let title: &'static str = match mode {
-            Mode::Sandbox => "SESSIONS · click a name to cycle its phase",
+            Mode::Sandbox => "SESSIONS · click a name to cycle · +SUB adds a subagent",
             Mode::Live => "SESSIONS",
         };
         let count = if mode == Mode::Sandbox { sandbox.len() } else { self.model.live().count() };

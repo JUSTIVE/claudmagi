@@ -39,18 +39,41 @@ fn main() {
         let sessions = if demo {
             let fake = FakeSource::new();
             fake.fill(8);
+            let ids: Vec<String> = fake.snapshot().iter().map(|s| s.session_id.clone()).collect();
+            fake.add_sub(&ids[0], true);
+            fake.add_sub(&ids[0], false);
+            fake.add_sub(&ids[3], true);
+            fake.add_sub(&ids[3], true);
+            fake.add_sub(&ids[4], false);
             fake.snapshot()
         } else {
-            ClaudeSource.snapshot()
+            ClaudeSource::default().snapshot()
         };
         let svg = render_svg(&sessions, w, h, demo);
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
         return;
     }
+    if let Some(i) = args.iter().position(|a| a == "--icon") {
+        // App icon: a square board with a single chip and no badge.
+        let out = args.get(i + 1).cloned().unwrap_or_else(|| "icon.svg".into());
+        let mut chip = SessionInfo::synthetic(1, "MAGI", model::Phase::Working);
+        chip.subagents.push(model::SubagentInfo::synthetic(1, "AGENT", "", true));
+        // Bold version of the board on the reference orange: few lanes, thick
+        // traces, the chip near the centre.
+        let zoom = 3.0;
+        let layout = scene::Layout { zoom, width: 176.0, height: 1024.0 / zoom, bands: 1, lanes: scene::LEAD_LANES + 10 };
+        let mut palette = theme::PALETTE;
+        palette.bg = theme::hex(0xF04A0E);
+        palette.packet = palette.line;
+        let svg = render_frame(&[chip], layout, false, String::new(), (0.0, -26.0), palette, 1024.0, 1024.0);
+        std::fs::write(&out, svg).expect("write icon svg");
+        println!("wrote {out}");
+        return;
+    }
     if let Some(i) = args.iter().position(|a| a == "--focus") {
         let key = args.get(i + 1).cloned().unwrap_or_default().to_ascii_uppercase();
-        let list = ClaudeSource.snapshot();
+        let list = ClaudeSource::default().snapshot();
         match list.iter().find(|s| s.label() == key || s.pid.to_string() == key) {
             Some(s) => println!("{:?}", warp::focus(s)),
             None => eprintln!("no session matching {key:?}; try --list"),
@@ -58,7 +81,7 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--list") {
-        for s in ClaudeSource.snapshot() {
+        for s in ClaudeSource::default().snapshot() {
             println!(
                 "{:<14} {:<12} {:<40} {:?} {}",
                 s.label(),
@@ -105,17 +128,35 @@ fn main() {
 
 /// Headless still frame with every animation settled.
 fn render_svg(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool) -> String {
+    render_svg_titled(list, width, height, demo_hover, sources::machine_user())
+}
+
+fn render_svg_titled(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, title: String) -> String {
+    let layout = scene::Layout::new(width, height, list.len());
+    render_frame(list, layout, demo_hover, title, (0.0, 0.0), theme::PALETTE, width, height)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_frame(
+    list: &[SessionInfo],
+    layout: scene::Layout,
+    demo_hover: bool,
+    title: String,
+    pan: (f32, f32),
+    palette: theme::Palette,
+    width: f32,
+    height: f32,
+) -> String {
     let now = Instant::now();
     let mut model = BoardModel::new();
     model.apply(list.to_vec(), now);
     model.settle();
     if demo_hover && model.chips.len() > 1 {
-        model.chips[1].hover_t = 1.0;
+        model.chips[1].anim.hover_t = 1.0;
     }
-    let layout = scene::Layout::new(width, height, model.chips.len());
     let lanes = Rc::new(layout.build_lanes());
     let chips = scene::chip_draws(&model, &layout, &lanes, now);
-    let frame = scene::Frame { lanes, chips, scroll_y: 0.0, t: 3.7, layout };
+    let frame = scene::Frame { lanes, chips, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
     render::svg::to_svg(&shapes, width, height)
 }

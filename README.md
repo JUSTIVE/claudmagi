@@ -2,13 +2,23 @@
 
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/).
 
-Every running `claude` process becomes a chip riding on a trace. While Claude is
+Every running `claude` process becomes a chip riding on a trace, and the subagents it spawns hang off to the right of it on the same trace. While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
 session needs you (permission prompt, question, dialog) or finishes its turn, the
 trace goes slack and the chip pulls out of its socket. Click a chip to jump to the
 Warp tab that hosts that session.
 
-## Run
+## Install
+
+```sh
+tools/bundle.sh          # release build → claudmagi.app → /Applications
+open -a claudmagi
+```
+
+The script renders the icon from the board itself (`--icon`), ad-hoc signs the
+bundle, and falls back to `~/Applications` if `/Applications` is not writable.
+
+## Run from source
 
 ```sh
 cargo run --release
@@ -36,7 +46,7 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | Layer | Module | Role |
 |-------|--------|------|
 | Data | `model.rs` | `SessionInfo` (facts), `Phase`, `BoardModel` (animated chip state: `apply` a snapshot, `tick` time). Pure Rust, unit-tested. |
-| Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json` + the process env; `FakeSource` is the in-memory sandbox the test tools edit. |
+| Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json`, the process env, and each session's `projects/<slug>/<session>/subagents/` transcripts; `FakeSource` is the in-memory sandbox the test tools edit. |
 | Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths, or serialised to SVG for headless checks. |
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
@@ -57,8 +67,9 @@ Press `T` (or click `TEST` in the status bar) to open a floating panel:
   once, clears them, or turns on *auto churn* (random phase changes, arrivals
   and departures every 1.4 s) to watch the plug/unplug and fade animations.
 - **SESSIONS** lists what the board shows; sandbox rows have `W/N/I` phase
-  buttons and `×`, live rows have `→ WARP`. Clicking a sandbox name cycles its
-  phase. Drag the header to move the panel; `Esc` closes it.
+  buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
+  `RUN/DONE` and `×`; live rows have `→ WARP`. Clicking a sandbox name cycles
+  its phase. Drag the header to move the panel; `Esc` closes it.
 
 ## Layout
 

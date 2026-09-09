@@ -30,5 +30,11 @@
 | # | 날짜 | 지시 | 상태 | 반영 위치 |
 |---|------|------|------|-----------|
 | 11 | 2026-09-10 | 마우스를 올렸을 때 하이라이트(칩 외곽선)를 흰색이 아니라 검은색으로 | ✅ | `src/theme.rs` (`outline`) |
+| 12 | 2026-09-10 | 서브에이전트(세션 안에서 Agent 도구로 띄운 에이전트)도 보드에 보이게 | ✅ | `src/sources.rs` (subagents dir), `src/model.rs` (`SubState`), `src/render/scene.rs` |
+| 13 | 2026-09-10 | 한 줄(레인)당 에이전트 하나. 서브에이전트는 부모 세션 칩의 오른쪽, 같은 선 위에 매달리게 | ✅ | `src/render/scene.rs` (`chip_draws` chain, left-horizontal anchor) |
+| 14 | 2026-09-10 | 선이 모두 균일해서 밋밋함. 원본처럼 두 줄씩 짝지어 짝 사이 간격을 더 띄운다 | ✅ | `src/render/scene.rs` (`lane_offset`, GAP 13 + PAIR_GAP 9) |
+| 15 | 2026-09-10 | 제목 배지에 "CLAUDMAGI" 대신 머신 사용자 이름을 표시 | ✅ | `src/sources.rs` (`machine_user`), `Frame.title` |
+| 16 | 2026-09-10 | 배경을 주황 대신 흰색으로. 선 위를 흐르는 작은 요철(패킷)은 주황색으로 | ✅ | `src/theme.rs` (`bg` white, `packet` orange) |
+| 17 | 2026-09-10 | "설치한 앱이 목록에 보이지 않아" → "이 앱을 빌드해서 설치해줘": claudmagi를 macOS 앱 번들로 빌드해 /Applications에 설치한다 (Launchpad·Dock에 보이도록) | ✅ | `tools/bundle.sh`, `tools/round_icon.swift`, `--icon` |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기
