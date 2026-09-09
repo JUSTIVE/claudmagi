@@ -254,9 +254,9 @@ pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
     Polyline::rounded(&corners, CORNER_R)
 }
 
-/// Chips never sit inside the left `LEFT_BOUND` of the board (#27) nor past
+/// Chips never sit inside the left `LEFT_BOUND` of the board (#27, 20% since #30) nor past
 /// the right edge; a spot that would is swapped for the next one to the right.
-pub const LEFT_BOUND: f32 = 0.10;
+pub const LEFT_BOUND: f32 = 0.20;
 const EDGE_MARGIN: f32 = 12.0;
 /// Extra upstream room a left-side subagent leaves for the parent's cable.
 const LEFT_GAP: f32 = SUB_GAP + 40.0;
@@ -736,7 +736,7 @@ mod tests {
     #[test]
     fn chips_near_the_left_edge_move_to_the_right_of_the_bend() {
         // Many sessions push later lanes' bends far left; those chips must
-        // land right of the bend instead of inside the left 10%.
+        // land on a later stripe instead of inside the left 20%.
         let layout = Layout::new(DESIGN_W, DESIGN_H, 40, 1.0);
         let lanes = layout.build_lanes();
         let mut model = BoardModel::new();
