@@ -32,6 +32,10 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$NAME.icns"
 
+# The embedded D-DIN face is under the SIL OFL 1.1, which asks that every
+# copy carry the notice; ship it beside the icon. (#55)
+cp assets/fonts/OFL.txt "$APP/Contents/Resources/OFL.txt"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

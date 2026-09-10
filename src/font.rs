@@ -1,11 +1,13 @@
-//! Text on the board: Helvetica glyph outlines, filled, so labels can ride
-//! the chips at any angle (#47). `scale` keeps the meaning it had with the
-//! old stroke font — the cap height is `GLYPH_H * scale` px — so the chip
-//! styles and the title badge did not have to change.
+//! Text on the board: D-DIN glyph outlines, filled, so labels can ride the
+//! chips at any angle (#47). `scale` keeps the meaning it had with the old
+//! stroke font — the cap height is `GLYPH_H * scale` px — so the chip styles
+//! and the title badge did not have to change.
 //!
-//! The face is read once from the system font file with `ttf-parser`; the
-//! bytes are leaked on purpose so the parsed face can live for the whole
-//! process.
+//! The face is compiled into the binary (#55) rather than read from
+//! `/System/Library/Fonts`, so the board looks the same on any machine and
+//! the bundle carries no path dependency. D-DIN is © 2017 Datto Inc. under
+//! the SIL Open Font License 1.1, which permits exactly this embedding; the
+//! notice travels in `assets/fonts/OFL.txt` and in the file's own name table.
 
 use std::sync::OnceLock;
 
@@ -18,12 +20,9 @@ pub const GLYPH_H: f32 = 6.0;
 /// Advance per character when no font file could be loaded, in grid units.
 const FALLBACK_ADVANCE: f32 = 5.7;
 
-/// Font files to try, first hit wins. Index 0 of `Helvetica.ttc` is Regular.
-const CANDIDATES: &[(&str, u32)] = &[
-    ("/System/Library/Fonts/Helvetica.ttc", 0),
-    ("/System/Library/Fonts/HelveticaNeue.ttc", 0),
-    ("/System/Library/Fonts/Supplemental/Arial.ttf", 0),
-];
+/// The board typeface, embedded so it is always present. Also handed to gpui
+/// (`ui::register_fonts`) so the status bar and panels use the same face.
+pub const FONT_TTF: &[u8] = include_bytes!("../assets/fonts/D-DIN.ttf");
 
 struct Loaded {
     face: Face<'static>,
@@ -34,23 +33,16 @@ struct Loaded {
 fn loaded() -> Option<&'static Loaded> {
     static FACE: OnceLock<Option<Loaded>> = OnceLock::new();
     FACE.get_or_init(|| {
-        for (path, index) in CANDIDATES {
-            let Ok(bytes) = std::fs::read(path) else { continue };
-            let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-            let Ok(face) = Face::parse(data, *index) else { continue };
-            let upem = face.units_per_em() as f32;
-            let cap = face.capital_height().map(|c| c as f32).filter(|c| *c > 0.0).unwrap_or(upem * 0.72);
-            return Some(Loaded { face, cap });
-        }
-        None
+        let face = Face::parse(FONT_TTF, 0).ok()?;
+        let upem = face.units_per_em() as f32;
+        let cap = face.capital_height().map(|c| c as f32).filter(|c| *c > 0.0).unwrap_or(upem * 0.72);
+        Some(Loaded { face, cap })
     })
     .as_ref()
 }
 
 /// Name of the face in use, for diagnostics.
 pub fn face_name() -> Option<String> {
-    // Apple's Helvetica carries Mac Roman name records only, which
-    // `Name::to_string` does not decode; ASCII is all we need here.
     loaded()?
         .face
         .names()
@@ -210,9 +202,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn helvetica_loads_and_lays_out_text() {
-        let name = face_name().expect("a system Helvetica (or fallback) face");
-        assert!(name.to_ascii_lowercase().contains("helvetica") || name.to_ascii_lowercase().contains("arial"), "{name}");
+    fn the_embedded_face_loads_and_lays_out_text() {
+        let name = face_name().expect("the embedded face parses");
+        assert!(name.to_ascii_lowercase().contains("din"), "{name}");
         assert_eq!(measure("", 1.5), 0.0);
         let w1 = measure("CLAUDMAGI", 1.5);
         let w2 = measure("CLAUDMAGI-8B", 1.5);

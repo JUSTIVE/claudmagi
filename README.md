@@ -56,7 +56,7 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
-| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Stroke font, polylines, palette, AppKit shims, Warp focus. |
+| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims, Warp focus. |
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
 otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp
@@ -75,6 +75,18 @@ Press `T` (or click `TEST` in the status bar) to open the test panel. Panels doc
   buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
   `RUN/DONE` and `×`; live rows have `→ WARP`. Clicking a sandbox name cycles
   its phase. `Esc` closes it.
+
+## Fonts
+
+The board and the gpui UI are both set in **D-DIN**, compiled into the binary
+from `assets/fonts/D-DIN.ttf` so there is no system-font dependency.
+
+> D-DIN is Copyright © 2017 Datto Inc. (<https://www.datto.com/fonts/d-din>),
+> with Reserved Font Name "D-DIN", drawn by Charles Nix at Monotype after the
+> DIN 1451 standard. It is licensed under the SIL Open Font License, Version
+> 1.1, which permits bundling and embedding it in software. The full licence is
+> in [`assets/fonts/OFL.txt`](assets/fonts/OFL.txt) and ships inside the app
+> bundle at `Contents/Resources/OFL.txt`.
 
 ## Layout
 

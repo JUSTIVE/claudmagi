@@ -128,6 +128,7 @@ fn main() {
     }
 
     Application::new().run(|cx: &mut App| {
+        ui::register_fonts(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![Menu {

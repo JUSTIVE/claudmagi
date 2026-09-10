@@ -4,7 +4,7 @@
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::model::Phase;
-use crate::theme::{self, PALETTE, Rgba, UI_ACCENT};
+use crate::theme::{self, PALETTE, Rgba};
 use crate::ui::board::{Board, Mode};
 use crate::ui::panel::{Which, button, c, dim, section};
 
@@ -12,7 +12,7 @@ pub const PANEL_W: f32 = 330.0;
 
 fn phase_color(phase: Phase) -> Rgba {
     match phase {
-        Phase::Working => UI_ACCENT,
+        Phase::Working => PALETTE.text_on,
         Phase::NeedsUser => PALETTE.packet, // the needs-input chip's orange (#50)
         Phase::Idle => theme::AMBER_DIM,
     }

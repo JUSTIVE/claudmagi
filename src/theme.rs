@@ -4,8 +4,9 @@ pub use gpui::Rgba;
 use gpui::{Hsla, rgb};
 
 /// Typeface for the gpui-drawn UI (status bar, panels). The board's chip
-/// labels are drawn from the same face's outlines in `font.rs`. (#46, #47)
-pub const UI_FONT: &str = "Helvetica";
+/// labels are drawn from the same face's outlines in `font.rs`; the family is
+/// registered with gpui at startup from the embedded file. (#46, #47, #55)
+pub const UI_FONT: &str = "D-DIN";
 
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
@@ -29,16 +30,12 @@ pub const PALETTE: Palette = Palette {
     chip: Rgba { r: 0.055, g: 0.043, b: 0.039, a: 1.0 },     // #0E0B0A
     chip_needs: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 }, // #F04A0E — the waiting chip is the loud one (#50)
     chip_idle: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410 — a finished session sinks into maroon (#50)
-    text_on: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },  // #F04A0E — orange label on the black chip (#51)
+    text_on: Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 },  // #3BE38A
     text_needs: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink on the orange needs-input chip
     text_idle: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 }, // #FFB03A
     outline: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },   // hover ring: black (#11)
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
 };
-
-/// Accent for the docked panels' chrome (titles, borders, the working dot).
-/// Fixed: the panels are a dark card in every board theme. (#51)
-pub const UI_ACCENT: Rgba = Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 }; // #3BE38A
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
 /// and for the panels' session lists.
@@ -53,7 +50,6 @@ pub const ORANGE: Palette = Palette {
     packet: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
     chip_needs: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410
     text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 },   // #FFB03A
-    text_on: UI_ACCENT, // orange would read as a hole in the orange board (#51)
     chip_idle: Rgba { r: 0.165, g: 0.078, b: 0.063, a: 1.0 }, // #2A1410
     text_idle: AMBER_DIM,
     ..PALETTE
