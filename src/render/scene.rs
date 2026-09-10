@@ -191,6 +191,8 @@ pub struct TicketDraw {
     pub alpha: f32,
     pub hover: f32,
     pub url: Option<String>,
+    /// Deep link into the Linear desktop app, tried before the web URL (#60).
+    pub app_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -674,6 +676,7 @@ pub fn ticket_draws(model: &BoardModel, lanes: &[Lane], chips: &[ChipDraw]) -> V
             alpha: c.alpha,
             hover: 0.0,
             url: (!session.info.synthetic).then(|| t.url()).flatten(),
+            app_url: (!session.info.synthetic).then(|| t.app_url()).flatten(),
         });
     }
     out

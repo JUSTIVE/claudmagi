@@ -104,12 +104,32 @@ impl Ticket {
         self.key.clone()
     }
 
-    /// Where a click goes: Linear's own URL, else one built from a slug seen
+    /// The web URL: Linear's own when known, else one built from a slug seen
     /// in the transcript.
     pub fn url(&self) -> Option<String> {
         self.canonical_url
             .clone()
             .or_else(|| self.workspace.as_ref().map(|w| format!("https://linear.app/{w}/issue/{}", self.key)))
+    }
+
+    /// The workspace slug, preferring the one inside Linear's own URL.
+    fn slug(&self) -> Option<String> {
+        let from_url = self
+            .canonical_url
+            .as_deref()
+            .and_then(|u| u.strip_prefix("https://linear.app/"))
+            .and_then(|rest| rest.split('/').next())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        from_url.or_else(|| self.workspace.clone())
+    }
+
+    /// Deep link into the desktop app. macOS routes the `linear` scheme to
+    /// Linear.app, which registers it at runtime rather than in its
+    /// Info.plist. The canonical URL's trailing title slug is dropped: the
+    /// key alone resolves, and the slug carries non-ASCII (#60).
+    pub fn app_url(&self) -> Option<String> {
+        Some(format!("linear://{}/issue/{}", self.slug()?, self.key))
     }
 
     pub fn new(key: String, workspace: Option<String>) -> Self {
@@ -358,6 +378,19 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_app_link_drops_the_title_slug() {
+        let mut t = Ticket::new("PJM-1953".into(), Some("fallback".into()));
+        t.canonical_url = Some("https://linear.app/cookieplace/issue/PJM-1953/combobox-list".into());
+        assert_eq!(t.app_url().as_deref(), Some("linear://cookieplace/issue/PJM-1953"));
+        assert_eq!(t.url().as_deref(), Some("https://linear.app/cookieplace/issue/PJM-1953/combobox-list"));
+
+        // Orca closed: the slug seen in the transcript still builds a link.
+        let bare = Ticket::new("PJM-1953".into(), Some("cookieplace".into()));
+        assert_eq!(bare.app_url().as_deref(), Some("linear://cookieplace/issue/PJM-1953"));
+        assert_eq!(Ticket::new("PJM-1".into(), None).app_url(), None, "no workspace, no link");
+    }
 
     #[test]
     fn issue_keys_need_a_team_and_a_number() {

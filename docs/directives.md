@@ -59,5 +59,6 @@
 | 57 | 2026-09-10 | 커넥터 클릭하면 PR 열기 · PR 앞의 핀을 지우고 노드 색상으로 구분 · PR 노드는 오른쪽 끝에 붙이기 · 왼쪽 끝에 연관된 Linear 노드 | ✅ | `src/ticket.rs`(신규), `src/render/scene.rs` (`TicketDraw`, `PR_EDGE`/`TICKET_EDGE` 도킹, `splice_lane`에 시작 지점), `src/ui/board.rs` (`hit_pr`/`hit_ticket`/`open_link`), `src/pr.rs` (`url`, `open`), `src/sources.rs` (`attach_links` 2패스), `src/ui/devtools.rs`, `src/model.rs`, `src/theme.rs` |
 | 58 | 2026-09-10 | test 패널에서 PR 상태를 직접 고를 수 있게 + PR 색 재지정(fail 오렌지 / open 테두리 그린 / approved 채움 그린 / merged 채움 검정, 라이트 기준이고 나머지 테마는 알아서) + Linear 상태 가져오기 | ✅ | `src/pr.rs` (`Look::Approved`, `reviewDecision`), `src/ticket.rs` (`Status`, `fetch` via `orca linear issue`, TTL 60초·실패 5분), `src/theme.rs` (`alarm`/`on_alarm`), `src/render/scene.rs`, `src/ui/devtools.rs` (링크 노드 전용 두 줄), `src/main.rs`. Orca 앱이 실행 중일 때만 Linear 상태가 온다 |
 | 59 | 2026-09-10 | 처음 로드 후 Warp pane 정보 오기 전의 잘못된 레이아웃 렌더 막기 | ✅ | `src/sources.rs`: 실패한 조회를 `unwrap_or_default()`로 '탭 없음'으로 5초간 캐시하던 것이 원인. 마지막으로 성공한 맵을 유지하고 실패는 400ms 뒤 재시도(`WARP_TABS_RETRY`), 첫 스냅샷은 답이 올 때까지 최대 1.5초 기다린다(`warp_tabs_settled`, 프로세스당 한 번) |
+| 60 | 2026-09-10 | Linear 노드는 웹 말고 앱으로 열기 | ✅ | `src/ticket.rs` (`app_url`: `linear://<slug>/issue/<KEY>`, 제목 슬러그는 버림), `src/ui/board.rs` (`open_link`가 딥링크 먼저·웹 폴백), `src/render/scene.rs` (`TicketDraw.app_url`) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

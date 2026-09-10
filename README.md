@@ -74,7 +74,7 @@ something corroborates it — a `linear.app` link, a `[ABC-123]` tag in the PR
 title, or a team prefix the board has seen in a real link — otherwise the PR
 title's tag. Status comes from `orca linear issue <KEY> --json`, which needs the
 Orca app to be running; with Orca closed the node falls back to showing just
-the key. Clicking either node opens it in the browser.
+the key. Clicking a PR node opens it in the browser; a Linear node opens in the desktop app through `linear://`, falling back to the web.
 `claudmagi --prs` prints what resolved.
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·

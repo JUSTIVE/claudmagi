@@ -274,20 +274,39 @@ impl Board {
         })
     }
 
-    /// Opens a link node in the browser, reporting what happened in the status
-    /// bar the way a chip's Warp jump does (#57).
-    fn open_link(&mut self, label: String, url: Option<String>, what: &'static str, cx: &mut Context<Self>) {
-        let Some(url) = url else {
+    /// Opens a link node, reporting what happened in the status bar the way a
+    /// chip's Warp jump does (#57). `first` is tried before `then`, so a
+    /// Linear node can prefer its desktop app and still land somewhere if the
+    /// scheme is not registered (#60).
+    fn open_link(
+        &mut self,
+        label: String,
+        first: Option<String>,
+        then: Option<String>,
+        what: &'static str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(url) = first.or(then.clone()) else {
             self.model.set_notice(format!("{label}: no {what} to open"), Instant::now());
             cx.notify();
             return;
         };
+        let fallback = then.filter(|f| *f != url);
         cx.spawn(async move |this, cx| {
             let opened = cx.background_executor().spawn({
                 let url = url.clone();
-                async move { crate::pr::open(&url) }
+                async move {
+                    match crate::pr::open(&url) {
+                        Ok(true) => (Ok(true), url),
+                        other => match fallback {
+                            Some(web) => (crate::pr::open(&web), web),
+                            None => (other, url),
+                        },
+                    }
+                }
             });
-            let msg = match opened.await {
+            let (result, url) = opened.await;
+            let msg = match result {
                 Ok(true) => format!("→ {label} ({url})"),
                 Ok(false) => format!("{label}: `open` refused {url}"),
                 Err(e) => format!("{label}: {e}"),
@@ -305,14 +324,14 @@ impl Board {
     fn open_pr(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(p) = self.prs.get(i) else { return };
         let (label, url) = (p.label.clone(), p.url.clone());
-        self.open_link(label, url, "pull request", cx);
+        self.open_link(label, None, url, "pull request", cx);
     }
 
     /// Opens a Linear node's issue in the browser (#57).
     fn open_ticket(&mut self, i: usize, cx: &mut Context<Self>) {
         let Some(t) = self.tickets.get(i) else { return };
-        let (label, url) = (t.label.clone(), t.url.clone());
-        self.open_link(label, url, "Linear issue", cx);
+        let (label, app, web) = (t.label.clone(), t.app_url.clone(), t.url.clone());
+        self.open_link(label, app, web, "Linear issue", cx);
     }
 
     /// Jumps to the session's terminal (chip click / test panel). Subagent
