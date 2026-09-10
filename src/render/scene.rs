@@ -17,14 +17,25 @@ use crate::theme::{self, Palette, Rgba};
 pub const GAP: f32 = 22.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
+/// Vertical drop of a diagonal. The first diagonal of lane `i` is
+/// `DIAG + i * DIAG_GROWTH` (clamped to `DIAG_MIN` and to what fits before
+/// the next stripe), so the traces fan out from top to bottom (#45); every
+/// later stripe uses plain `DIAG`.
 pub const DIAG: f32 = 128.0;
+pub const DIAG_GROWTH: f32 = 12.0;
+pub const DIAG_MIN: f32 = 24.0;
 pub const CORNER_R: f32 = 8.0;
 pub const TOP_PAD: f32 = 54.0;
 pub const BOTTOM_PAD: f32 = 34.0;
-pub const MIN_LANES: usize = 24;
+/// Empty lanes drawn below the last session (#45): the board is exactly
+/// `LEAD_LANES + sessions + TRAIL_LANES` lanes, never padded to the window.
+pub const TRAIL_LANES: usize = 6;
 pub const TITLE_SCALE: f32 = 2.6;
 /// Path distance between a chip's trailing edge and the next subagent chip.
 pub const SUB_GAP: f32 = 44.0;
+/// The two session chips of a lane pair are staggered along their diagonal
+/// by this much (total), so they read as offset rather than side by side.
+pub const PAIR_STAGGER: f32 = 36.0;
 
 pub const DESIGN_W: f32 = 980.0;
 pub const DESIGN_H: f32 = 620.0;
@@ -174,6 +185,20 @@ pub fn lane_offset(i: i32) -> f32 {
     pair * (2.0 * GAP + PAIR_GAP) + odd * GAP
 }
 
+/// Vertical drop of lane `i`'s first diagonal (#45). Grows by `DIAG_GROWTH`
+/// per lane, but never so long that the diagonal would reach past the
+/// start of the next stripe on a board `width` wide.
+pub fn first_diag(i: i32, width: f32) -> f32 {
+    let cap = ((width * STRIPE_PITCH + DIAG) / 2.0 - 2.0 * CORNER_R).max(DIAG_MIN);
+    (DIAG + i as f32 * DIAG_GROWTH).clamp(DIAG_MIN, cap)
+}
+
+/// Vertical offset of lane `i` once past its first diagonal, measured as if
+/// that diagonal were `DIAG` long: the lane spacing after the fan.
+pub fn fanned_offset(i: i32, width: f32) -> f32 {
+    lane_offset(i) + first_diag(i, width) - DIAG
+}
+
 /// Board geometry derived from the window size. All layout happens in
 /// "design units"; `zoom` (user-controlled) maps them to window pixels.
 /// A bigger window gets more lanes and stripes, not bigger chips.
@@ -199,19 +224,17 @@ impl Layout {
         let span = width + height - width * ANCHOR;
         let area_bands = (span / (width * STRIPE_PITCH)).ceil().max(1.0) as usize;
         // Enough stripes that even the lowest session lane has a diagonal on
-        // screen (its bend moves left by its offset, #27/#29).
-        let last_offset = if chips == 0 { 0.0 } else { lane_offset((chips - 1) as i32) };
+        // screen (its bends move left by its fanned offset, #27/#29).
+        let last_offset = if chips == 0 { 0.0 } else { fanned_offset((chips - 1) as i32, width) };
         let need = (last_offset + width * LEFT_BOUND - width * ANCHOR) / (width * STRIPE_PITCH);
         let chip_bands = need.ceil().max(0.0) as usize + 1;
         let bands = area_bands.max(chip_bands);
-        let pitch = (2.0 * GAP + PAIR_GAP) / 2.0;
-        let fill = ((height - TOP_PAD - DIAG - BOTTOM_PAD) / pitch).ceil().max(0.0) as usize + 1;
-        let lanes = LEAD_LANES + MIN_LANES.max(chips + 14).max(fill);
+        let lanes = LEAD_LANES + chips + TRAIL_LANES;
         Self { zoom, width, height, bands, lanes }
     }
 
     pub fn content_height(&self) -> f32 {
-        TOP_PAD + lane_offset((self.lanes - LEAD_LANES) as i32) + DIAG + BOTTOM_PAD
+        TOP_PAD + fanned_offset((self.lanes - LEAD_LANES) as i32, self.width) + DIAG + BOTTOM_PAD
     }
 
     /// Lane index (into `build_lanes`) for session slot `k`: every lane
@@ -226,16 +249,44 @@ impl Layout {
     }
 }
 
-/// For lane `idx`, one `(ax, y0)` per stripe: where that stripe's diagonal
-/// starts. `ax` may be off screen on either side. The first `LEAD_LANES`
-/// lanes sit above the top padding.
-pub fn lane_params(idx: usize, layout: &Layout) -> Vec<(f32, f32)> {
-    let off = lane_offset(idx as i32 - LEAD_LANES as i32);
+/// One diagonal of a lane: it starts at `(ax, y)` and drops `d` while
+/// moving `d` to the right.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stripe {
+    pub ax: f32,
+    pub y: f32,
+    pub d: f32,
+}
+
+impl Stripe {
+    /// Where the diagonal ends (the bend back to horizontal).
+    pub fn end(&self) -> Pt {
+        Pt::new(self.ax + self.d, self.y + self.d)
+    }
+
+    pub fn mid(&self) -> Pt {
+        Pt::new(self.ax + self.d / 2.0, self.y + self.d / 2.0)
+    }
+}
+
+/// For lane `idx`, one `Stripe` per band: where that stripe's diagonal
+/// starts and how far it drops. `ax` may be off screen on either side. The
+/// first `LEAD_LANES` lanes sit above the top padding. The first diagonal
+/// grows down the board (#45); from the second stripe on, every lane bends
+/// exactly as far left as it sits lower, so stripes stay 45° and never cross.
+pub fn lane_params(idx: usize, layout: &Layout) -> Vec<Stripe> {
+    let i = idx as i32 - LEAD_LANES as i32;
+    let off = lane_offset(i);
+    let fanned = fanned_offset(i, layout.width);
     (0..layout.bands)
         .map(|b| {
-            let ax = layout.width * (ANCHOR + b as f32 * STRIPE_PITCH) - off;
-            let y = TOP_PAD + off + b as f32 * DIAG;
-            (ax, y)
+            if b == 0 {
+                Stripe { ax: layout.width * ANCHOR - off, y: TOP_PAD + off, d: first_diag(i, layout.width) }
+            } else {
+                let ax = layout.width * (ANCHOR + b as f32 * STRIPE_PITCH) - fanned;
+                let y = TOP_PAD + fanned + b as f32 * DIAG;
+                Stripe { ax, y, d: DIAG }
+            }
         })
         .collect()
 }
@@ -243,14 +294,14 @@ pub fn lane_params(idx: usize, layout: &Layout) -> Vec<(f32, f32)> {
 pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
     let params = lane_params(i, layout);
     let mut corners = Vec::with_capacity(2 + params.len() * 2);
-    let (ax0, y0) = params[0];
-    corners.push(Pt::new((-24.0f32).min(ax0 - 1.0), y0));
-    for (ax, y) in &params {
-        corners.push(Pt::new(*ax, *y));
-        corners.push(Pt::new(ax + DIAG, y + DIAG));
+    let first = params[0];
+    corners.push(Pt::new((-24.0f32).min(first.ax - 1.0), first.y));
+    for st in &params {
+        corners.push(Pt::new(st.ax, st.y));
+        corners.push(st.end());
     }
-    let (ax_last, y_last) = *params.last().unwrap();
-    corners.push(Pt::new((layout.width * 2.0 + 24.0).max(ax_last + DIAG + 1.0), y_last + DIAG));
+    let last = params.last().unwrap().end();
+    corners.push(Pt::new((layout.width * 2.0 + 24.0).max(last.x + 1.0), last.y));
     Polyline::rounded(&corners, CORNER_R)
 }
 
@@ -275,19 +326,29 @@ fn inside_sub(layout: &Layout, x: f32, w: f32) -> bool {
 /// Session chips only ever ride a diagonal (#29); candidates are the
 /// diagonals of each stripe, left to right, and the first one that fits on
 /// screen wins. The key identifies the spot so a change can be animated (#28).
+/// Within a lane pair the upper lane sits `PAIR_STAGGER / 2` further down
+/// the diagonal and the lower lane the same distance back, so the two chips
+/// are offset along the trace instead of lining up shoulder to shoulder.
 pub fn session_anchor(lane: &Polyline, lane_index: usize, layout: &Layout, chip_w: f32) -> (f32, u32) {
     let params = lane_params(lane_index, layout);
-    let cands: Vec<(Pt, u32)> = params
-        .iter()
-        .enumerate()
-        .map(|(b, (ax, y))| (Pt::new(ax + DIAG / 2.0, y + DIAG / 2.0), b as u32))
-        .collect();
+    let stagger = session_stagger(lane_index);
+    // Along a 45° diagonal, an arc-length shift `d` moves (d/√2, d/√2).
+    let d = stagger / std::f32::consts::SQRT_2;
+    let cands: Vec<(Pt, u32)> =
+        params.iter().enumerate().map(|(b, st)| (st.mid() + Pt::new(d, d), b as u32)).collect();
     let pick = cands
         .iter()
         .find(|(p, _)| inside(layout, p.x, chip_w))
         .or_else(|| cands.iter().find(|(p, _)| p.x - chip_w / 2.0 >= layout.width * LEFT_BOUND))
         .unwrap_or_else(|| cands.last().unwrap());
     (lane.nearest_s(pick.0), pick.1)
+}
+
+/// Signed arc-length shift of a session chip from its diagonal's midpoint:
+/// the upper lane of a pair (even slot) goes forward, the lower lane back.
+pub fn session_stagger(lane_index: usize) -> f32 {
+    let slot = lane_index as i32 - LEAD_LANES as i32;
+    if slot.rem_euclid(2) == 0 { PAIR_STAGGER / 2.0 } else { -PAIR_STAGGER / 2.0 }
 }
 
 /// A chip's intended spot before any animation is applied.
@@ -321,15 +382,15 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
         // trimmed by CURVE_MARGIN so nothing sits on a bend (#36).
         let params = lane_params(lane_idx, layout);
         let b = stripe as usize;
-        let (ax, y) = params[b];
-        let s_bend_in = lane.nearest_s(Pt::new(ax, y));
-        let s_bend_out = lane.nearest_s(Pt::new(ax + DIAG, y + DIAG));
+        let st = params[b];
+        let s_bend_in = lane.nearest_s(Pt::new(st.ax, st.y));
+        let s_bend_out = lane.nearest_s(st.end());
         let right_limit = match params.get(b + 1) {
-            Some((nax, ny)) => lane.nearest_s(Pt::new(*nax, *ny)) - CURVE_MARGIN,
+            Some(next) => lane.nearest_s(Pt::new(next.ax, next.y)) - CURVE_MARGIN,
             None => lane.length(),
         };
         let left_limit = match b.checked_sub(1).and_then(|pb| params.get(pb)) {
-            Some((pax, py)) => lane.nearest_s(Pt::new(pax + DIAG, py + DIAG)) + CURVE_MARGIN,
+            Some(prev) => lane.nearest_s(prev.end()) + CURVE_MARGIN,
             None => 0.0,
         };
         let mut right_cursor = s_bend_out + CURVE_MARGIN;
@@ -667,25 +728,26 @@ mod tests {
     use crate::model::{SessionInfo, SubagentInfo};
 
     #[test]
-    fn layout_fills_big_windows_with_more_lanes_and_stripes_not_zoom() {
+    fn layout_fills_big_windows_with_more_stripes_not_lanes_or_zoom() {
         let small = Layout::new(DESIGN_W, DESIGN_H, 3, 1.0);
         let big = Layout::new(3840.0, 2160.0, 3, 1.0);
         assert_eq!(small.zoom, 1.0);
         assert_eq!(big.zoom, 1.0, "the board never scales with the window (#19)");
-        assert!(big.lanes > small.lanes);
-        assert!(big.bands >= small.bands);
-        assert!(big.content_height() >= 2160.0 - BOTTOM_PAD);
+        assert_eq!(small.lanes, LEAD_LANES + 3 + TRAIL_LANES, "sessions + 6 lanes, no filler (#45)");
+        assert_eq!(big.lanes, small.lanes, "a bigger window adds no lanes");
+        assert!(big.bands >= small.bands, "stripes scale with the width instead");
+        assert!(Layout::new(DESIGN_W, 2400.0, 3, 1.0).bands > small.bands, "a tall window adds stripes");
+        assert_eq!(Layout::new(DESIGN_W, DESIGN_H, 10, 1.0).lanes, LEAD_LANES + 16);
     }
 
     #[test]
-    fn user_zoom_scales_the_board_and_refills_lanes() {
+    fn user_zoom_scales_the_board_and_keeps_the_lane_count() {
         let base = Layout::new(DESIGN_W, DESIGN_H, 3, 1.0);
         let out = Layout::new(DESIGN_W, DESIGN_H, 3, 0.5);
         let inn = Layout::new(DESIGN_W, DESIGN_H, 3, 2.0);
         assert!((out.zoom - 0.5).abs() < 1e-6 && (inn.zoom - 2.0).abs() < 1e-6);
-        assert!(out.lanes >= base.lanes, "zoomed out never needs fewer lanes");
-        let tall = Layout::new(DESIGN_W, 2400.0, 3, 0.5);
-        assert!(tall.lanes > base.lanes, "zoomed out on a tall window needs more lanes");
+        assert_eq!(out.lanes, base.lanes);
+        assert_eq!(inn.lanes, base.lanes);
         assert!(inn.width < base.width);
         let clamped = Layout::new(DESIGN_W, DESIGN_H, 3, 99.0);
         assert!((clamped.zoom - USER_ZOOM_MAX).abs() < 1e-6);
@@ -702,11 +764,83 @@ mod tests {
             let a = lane_params(i - 1, &layout);
             let b = lane_params(i, &layout);
             for (pa, pb) in a.iter().zip(b.iter()) {
-                let dy = pb.1 - pa.1;
+                let dy = pb.y - pa.y;
                 assert!(dy > 0.0);
-                assert!((pa.0 - pb.0 - dy).abs() < 1e-3, "bend moves left exactly as far as the lane drops");
+                assert!((pa.ax - pb.ax - dy).abs() < 1e-3, "bend moves left exactly as far as the lane drops");
+                // Parallel 45° diagonals: the lower lane's end sits below and
+                // left of the upper lane's, so the lower lane is still on its
+                // diagonal when the upper one has gone horizontal.
+                assert!(pb.end().y > pa.end().y);
             }
         }
+    }
+
+    #[test]
+    fn first_diagonal_grows_down_the_board_and_later_stripes_stay_regular() {
+        let layout = Layout::new(1920.0, 1080.0, 8, 1.0);
+        assert!(layout.bands >= 2, "wide window has a second stripe to compare");
+        let lead = lane_params(0, &layout);
+        let top = lane_params(LEAD_LANES, &layout);
+        let low = lane_params(LEAD_LANES + 7, &layout);
+        assert!((top[0].d - DIAG).abs() < 1e-6, "lane 0 keeps the base diagonal");
+        assert!(lead[0].d < top[0].d, "lead lanes above it are shorter");
+        assert!((low[0].d - (DIAG + 7.0 * DIAG_GROWTH)).abs() < 1e-6, "each lane adds DIAG_GROWTH");
+        assert!((low[1].d - DIAG).abs() < 1e-6, "the second stripe is not fanned");
+        // The fan widens the lane spacing on the right: after the first
+        // diagonal the lanes are DIAG_GROWTH further apart than on the left.
+        let a = lane_params(LEAD_LANES + 2, &layout);
+        let b = lane_params(LEAD_LANES + 3, &layout);
+        let left_gap = b[0].y - a[0].y;
+        let right_gap = b[0].end().y - a[0].end().y;
+        assert!((right_gap - left_gap - DIAG_GROWTH).abs() < 1e-6);
+        // And the second stripe of a lane starts after its first diagonal ends.
+        for i in 0..layout.lanes {
+            let p = lane_params(i, &layout);
+            assert!(p[1].ax > p[0].end().x, "lane {i}: stripes do not overlap");
+            assert!((p[1].y - p[0].end().y).abs() < 1e-6, "lane {i}: horizontal joins the stripes");
+        }
+        // Narrow boards cap the fan so the first diagonal never runs into the
+        // next stripe.
+        let narrow = Layout::new(400.0, 800.0, 30, 2.0);
+        for i in 0..narrow.lanes {
+            let p = lane_params(i, &narrow);
+            assert!(p[1].ax > p[0].end().x, "narrow lane {i}: capped diagonal fits");
+        }
+    }
+
+    #[test]
+    fn paired_sessions_are_staggered_along_the_diagonal() {
+        // Synthetic sessions group in threes, so six of them give slots
+        // 0..3 and 8..11 (GROUP_GAP = 5): pairs (0,1) and (8,9).
+        let layout = Layout::new(DESIGN_W, DESIGN_H, 6, 1.0);
+        let lanes = layout.build_lanes();
+        let infos: Vec<_> = (1..=6).map(|i| SessionInfo::synthetic(i, "s", Phase::Working)).collect();
+        let mut model = BoardModel::new();
+        model.apply(infos, Instant::now());
+        model.settle();
+        let slots: Vec<usize> = model.chips.iter().map(|c| c.slot).collect();
+        assert_eq!(slots, vec![0, 1, 2, 8, 9, 10]);
+        let draws = chip_draws(&model, &layout, &lanes, Instant::now());
+        assert_eq!(draws.len(), 6);
+        let along = |d: &ChipDraw| (d.center.x + d.center.y) / std::f32::consts::SQRT_2;
+        // Lanes 0/1 form a pair, so do 8/9: the upper chip sits further down
+        // the diagonal than its partner by PAIR_STAGGER, less the half step
+        // by which the lower lane's longer first diagonal moves its midpoint
+        // forward (#45).
+        let expected = PAIR_STAGGER - DIAG_GROWTH / std::f32::consts::SQRT_2;
+        for pair in [(0usize, 1usize), (3, 4)] {
+            let (upper, lower) = (&draws[pair.0], &draws[pair.1]);
+            assert!((upper.tangent.angle_deg() - 45.0).abs() < 1.0);
+            assert!((lower.tangent.angle_deg() - 45.0).abs() < 1.0);
+            let got = along(upper) - along(lower);
+            assert!((got - expected).abs() < 1.5, "pair {pair:?}: stagger {got} vs {expected}");
+        }
+        // Lane spacing is purely perpendicular to the diagonal, so consecutive
+        // lanes zigzag: lane 1 (back) to lane 2 (forward) is the stagger
+        // again, this time plus the fan's half step.
+        let (a, b) = (&draws[1], &draws[2]);
+        let expected = PAIR_STAGGER + DIAG_GROWTH / std::f32::consts::SQRT_2;
+        assert!((along(b) - along(a) - expected).abs() < 1.5, "lanes alternate forward / back");
     }
 
     #[test]
