@@ -7,6 +7,7 @@ mod settings;
 mod sources;
 mod theme;
 mod ui;
+mod usage;
 mod warp;
 
 use std::rc::Rc;
@@ -95,6 +96,19 @@ fn main() {
         match list.iter().find(|s| s.label() == key || s.pid.to_string() == key) {
             Some(s) => println!("{:?}", warp::focus(s)),
             None => eprintln!("no session matching {key:?}; try --list"),
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "--usage") {
+        match usage::fetch() {
+            Ok(u) => {
+                println!("{}", u.label(usage::now_secs()));
+                println!("five_hour: {:?}\nseven_day: {:?}", u.five_hour, u.seven_day);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

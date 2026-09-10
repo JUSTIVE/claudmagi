@@ -34,6 +34,7 @@
 - 세션 소스는 `SessionSource` 트레이트로 추상화: 실제(`ClaudeSource`) / 가상(`FakeSource`). (#10)
 - UI 안에 테스트 도구(`T` 키 / 상태바 `TEST`): 소스 전환, 가상 세션·서브에이전트 생성·삭제·상태 변경. auto churn은 서브에이전트 생성·완료·삭제도 섞는다. (#10, #12, #26)
 - Warp의 탭/pane 구조는 상태 DB(`~/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite`)에 있다: `terminal_panes.uuid`(BLOB, hex = `WARP_TERMINAL_SESSION_UUID`) → `pane_nodes.tab_id` → `tabs.window_id`. `~/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite`는 빈 껍데기. 숨은 `warpctrl`(Warp Control CLI, JSON 출력)도 있지만 Warp 로컬 제어 서버가 꺼져 있으면 `no_instance`로 실패하고 문서화된 켜는 방법이 없다 → 폴백으로만 쓴다. (#43)
+- 상태바 오른쪽에 Claude 플랜 사용량(`/usage`와 같은 숫자): `5H 22% ↻2H10M · 7D 16% ↻3D`. 토큰은 로그인 키체인 `Claude Code-credentials`(없으면 `~/.claude/.credentials.json`)에서 `security`로, 요청은 `curl`로 `api.anthropic.com/api/oauth/usage`에 1분마다. 로그인이 없으면 표시하지 않고 폴링도 멈춘다; 실패하면 마지막 값을 유지하고 15분 지나면 흐리게. 토큰 갱신은 하지 않는다(Claude Code가 한다). `--usage`로 터미널에서 확인. (#48)
 - 시각 검증은 `--svg --demo --size WxH [--theme dark] [--zoom z] [--count n]` + `tools/svg2png.swift`로 한다(화면 캡처 권한 불필요).
 - 성능: 경로 테셀레이션을 기하 해시로 캐시(정점 예산 32만), 30fps 타이머 갱신, 세션 폴링 1초. CPU 66%→8%, 큰 창에서도 메모리 ≈ 95MB. (#38, #40)
 
@@ -52,5 +53,6 @@
 | 45 | 2026-09-10 | 시안처럼 첫 꺾이는 빗변의 길이를 아래로 갈수록 점점 늘리기 + 선은 인스턴스 +6개까지만 | ✅ | `src/render/scene.rs` (`first_diag`/`fanned_offset`, `DIAG_GROWTH` 12, `DIAG_MIN` 24, `Stripe`; `TRAIL_LANES` 6, `MIN_LANES`·높이 채우기 제거) |
 | 46 | 2026-09-10 | UI(상태바·패널) 폰트를 헬베티카로 | ✅ | `src/theme.rs` (`UI_FONT = "Helvetica"`), `src/ui/board.rs`, `src/ui/panel.rs` |
 | 47 | 2026-09-10 | 모든 요소를 헬베티카로 — 보드 위 칩 라벨·제목 배지까지 | ✅ | `src/font.rs` (자체 스트로크 폰트 → `/System/Library/Fonts/Helvetica.ttc` Regular 글리프 외곽선을 `ttf-parser`로 읽어 채우기 경로로; `scale`은 캡 높이 6·scale px 유지), `src/render/paint.rs`, `src/render/svg.rs` |
+| 48 | 2026-09-10 | 새 워크트리에서 상태바에 Claude usage 넣기, 끝나면 리모트에 push | ✅ | `src/usage.rs` (키체인 → `curl` → `Usage`, ISO-8601 파서, 카운트다운), `src/ui/board.rs` (1분 폴링, 상태바 배지), `src/main.rs` (`--usage`) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기
