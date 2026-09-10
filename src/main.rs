@@ -101,11 +101,12 @@ fn main() {
     if args.iter().any(|a| a == "--list") {
         for s in ClaudeSource::default().snapshot() {
             println!(
-                "{:<14} {:<12} {:<40} {:?} {}",
+                "{:<14} {:<12} {:<40} {:?} {:<18} {}",
                 s.label(),
                 s.phase().label(),
                 s.short_cwd(),
                 s.tty,
+                s.group_label(),
                 s.warp_focus_url.as_deref().unwrap_or("-")
             );
         }
