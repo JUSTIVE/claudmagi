@@ -64,8 +64,9 @@ Pull requests: a session's PR is read out of its own transcript — the last
 the checkout's `origin`. `cwd → branch` cannot do this job when several
 sessions share one checkout. One ticket often has several PRs, so a session's are chained along the right
 edge with the newest outermost and the oldest folded into a `+n` badge when the
-chain runs long. State comes from `gh pr view`, and the trace runs into the
-leftmost connector of that chain, where the body's colour
+chain runs long. State comes from `gh pr view` on a small pool of worker threads — never
+inside the session poll — and the trace runs into the leftmost connector of
+that chain, where the body's colour
 is the whole signal — hollow draft, green outline open, filled green approved,
 orange failing, black merged, faint closed — with a yellow border laid over
 any of them while CI is still running.

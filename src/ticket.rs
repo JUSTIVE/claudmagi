@@ -7,6 +7,9 @@
 //! a `linear.app` link in the transcript or the ticket tag GitHub PR titles
 //! carry. Sessions named something else fall back to those two sources.
 //!
+//! Status is fetched on a worker thread, like the PR side and for the same
+//! reason (#64): it must not sit inside the session poll.
+//!
 //! Status comes from `orca linear issue <KEY> --json`, which works whenever
 //! the Orca app is running — unlike `warpctrl` in #43, this one has a
 //! documented way to turn it on. With Orca closed the CLI answers
@@ -17,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::pr::tail;
@@ -29,8 +32,8 @@ pub const TTL: Duration = Duration::from_secs(60);
 /// How long a failure sticks. Orca is usually closed rather than briefly
 /// unhappy, and retrying every minute per ticket would be pure noise.
 pub const MISS_TTL: Duration = Duration::from_secs(5 * 60);
-/// `orca` calls allowed per snapshot, matching the `gh` ration.
-const FETCH_BUDGET: usize = 2;
+/// How long the worker idles when everything is fresh.
+const IDLE: Duration = Duration::from_millis(500);
 
 /// Linear's canonical workflow state types, which every custom status maps on
 /// to. Names and colours are per team; the type is not.
@@ -273,7 +276,38 @@ fn team_of(key: &str) -> Option<String> {
     key.split_once('-').map(|(t, _)| t.to_string())
 }
 
+/// The shared half of the tracker, so a worker thread can fill it (#64).
+#[derive(Default)]
+struct Shared {
+    wanted: Mutex<Vec<String>>,
+    seen: Mutex<HashMap<String, (Option<Ticket>, Instant)>>,
+}
+
+impl Shared {
+    /// One worker only here: `orca` talks to a single local app, and asking
+    /// it three things at once buys nothing.
+    fn due(&self) -> Option<String> {
+        let wanted = self.wanted.lock().ok()?;
+        let seen = self.seen.lock().ok()?;
+        let now = Instant::now();
+        let stale = |key: &String| {
+            seen.get(key).is_some_and(|(hit, at)| {
+                let ttl = if hit.is_some() { TTL } else { MISS_TTL };
+                now.duration_since(*at) >= ttl
+            })
+        };
+        wanted.iter().find(|k| !seen.contains_key(*k)).or_else(|| wanted.iter().find(|k| stale(k))).cloned()
+    }
+
+    fn store(&self, key: String, issue: Option<Ticket>) {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(key, (issue, Instant::now()));
+        }
+    }
+}
+
 /// Per-session issue resolution, rescanned only when a transcript grows.
+#[derive(Default)]
 pub struct Tracker {
     /// session id → (transcript size when scanned, keys, workspace).
     seen: Mutex<HashMap<String, (u64, Vec<String>, Option<String>)>>,
@@ -282,23 +316,10 @@ pub struct Tracker {
     /// Team prefixes that have appeared in a real `linear.app` link, pooled
     /// across sessions — the board's answer to "is this a Linear team?".
     teams: Mutex<HashSet<String>>,
-    /// Issue key → what Orca last said, and when. `None` is cached too, for
-    /// longer, so a closed Orca is not re-asked constantly (#58).
-    issues: Mutex<HashMap<String, (Option<Ticket>, Instant)>>,
-    /// `orca` calls allowed per snapshot; `--prs` lifts it.
-    pub budget: usize,
-}
-
-impl Default for Tracker {
-    fn default() -> Self {
-        Self {
-            budget: FETCH_BUDGET,
-            seen: Mutex::default(),
-            workspace: Mutex::default(),
-            teams: Mutex::default(),
-            issues: Mutex::default(),
-        }
-    }
+    shared: Arc<Shared>,
+    /// Fetch inline instead of on the worker, for the one-shot diagnostics.
+    pub eager: bool,
+    started: Mutex<bool>,
 }
 
 impl Tracker {
@@ -325,16 +346,8 @@ impl Tracker {
         }
     }
 
-    /// The issue for a session, from what `scan` has pooled so far, with its
-    /// Linear status when Orca could be reached (#58).
-    pub fn pick(
-        &self,
-        session_id: &str,
-        name: &str,
-        pr_titles: &[String],
-        budget: &mut usize,
-        now: Instant,
-    ) -> Option<Ticket> {
+    /// The issue key for a session, from what `scan` has pooled so far.
+    pub fn key_for(&self, session_id: &str, name: &str, pr_titles: &[String]) -> Option<String> {
         let linked = self
             .seen
             .lock()
@@ -342,9 +355,15 @@ impl Tracker {
             .and_then(|m| m.get(session_id).map(|(_, keys, _)| keys.clone()))
             .unwrap_or_default();
         let teams = self.teams.lock().map(|t| t.clone()).unwrap_or_default();
-        let key = choose(name, pr_titles, &linked, &teams)?;
+        choose(name, pr_titles, &linked, &teams)
+    }
+
+    /// The issue with whatever status the worker has managed to fetch.
+    pub fn pick(&self, session_id: &str, name: &str, pr_titles: &[String]) -> Option<Ticket> {
+        let key = self.key_for(session_id, name, pr_titles)?;
         let workspace = self.workspace();
-        Some(match self.state(&key, budget, now) {
+        let cached = self.shared.seen.lock().ok().and_then(|m| m.get(&key).and_then(|(hit, _)| hit.clone()));
+        Some(match cached {
             Some(mut issue) => {
                 issue.workspace = workspace;
                 issue
@@ -353,25 +372,39 @@ impl Tracker {
         })
     }
 
-    /// Cached Linear state for an issue, rationed like the PR fetches.
-    fn state(&self, key: &str, budget: &mut usize, now: Instant) -> Option<Ticket> {
-        if let Ok(map) = self.issues.lock() {
-            if let Some((hit, at)) = map.get(key) {
-                let ttl = if hit.is_some() { TTL } else { MISS_TTL };
-                if now.duration_since(*at) < ttl {
-                    return hit.clone();
+    /// Declares the issue keys the board is showing (#64).
+    pub fn want(&self, keys: Vec<String>) {
+        if let Ok(mut wanted) = self.shared.wanted.lock() {
+            *wanted = keys;
+        }
+        if self.eager {
+            while let Some(key) = self.shared.due() {
+                let got = fetch(&key);
+                self.shared.store(key, got);
+            }
+            return;
+        }
+        self.start_worker();
+    }
+
+    fn start_worker(&self) {
+        let Ok(mut started) = self.started.lock() else { return };
+        if *started {
+            return;
+        }
+        *started = true;
+        let shared = Arc::clone(&self.shared);
+        std::thread::spawn(move || {
+            loop {
+                match shared.due() {
+                    Some(key) => {
+                        let got = fetch(&key);
+                        shared.store(key, got);
+                    }
+                    None => std::thread::sleep(IDLE),
                 }
             }
-        }
-        if *budget == 0 {
-            return self.issues.lock().ok()?.get(key).and_then(|(hit, _)| hit.clone());
-        }
-        *budget -= 1;
-        let fetched = fetch(key);
-        if let Ok(mut map) = self.issues.lock() {
-            map.insert(key.to_string(), (fetched.clone(), now));
-        }
-        fetched
+        });
     }
 
     /// The most-seen workspace slug. Example text in skills and docs mentions

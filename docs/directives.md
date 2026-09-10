@@ -63,5 +63,6 @@
 | 61 | 2026-09-10 | Linear 완료 + PR 머지 + Claude idle 이면 선을 볼드로 | ✅ | `src/render/scene.rs` (`DONE_LINE_W` 2.9, `done_lanes`, `Frame.done_lanes`), `src/ui/board.rs`, `src/main.rs`(데모에 끝난 레인 하나) |
 | 62 | 2026-09-10 | CI가 돌고 있는 PR은 노란색 보더 | ✅ | `src/pr.rs` (`pending` 집계, `running()`; CheckRun `status` vs StatusContext `state`), `src/theme.rs` (`busy`), `src/render/scene.rs` (보더 오버레이 1.7px), `src/sources.rs`·`src/ui/devtools.rs` (`CI` 토글), `src/main.rs` |
 | 63 | 2026-09-10 | 하나의 티켓에 PR이 여러 개일 수 있음 | ✅ | 수집은 세션 단위, 배치는 가로 연결. `src/model.rs` (`pr` → `prs: Vec`), `src/pr.rs` (`scan_transcript` → 전부, `MAX_PER_SESSION` 4), `src/render/scene.rs` (`PR_CHAIN_GAP`/`PR_CHAIN_SPAN`, 넘치면 `+n` 배지; `done_lanes`는 '머지 하나 이상 + 진행 중 없음'), `src/ui/devtools.rs` (`+` 버튼), `src/sources.rs` (`add_pr`) |
+| 64 | 2026-09-10 | PR이 로드가 안 됨 | ✅ | 렌더는 정상이었고 원인은 조회가 1초 세션 폴링 안에 있던 것. `gh` 한 건 ≈1.2초 × 스냅샷당 2건이라 다 뜨는 데 20초+. `src/pr.rs`·`src/ticket.rs`: 배급 제거하고 워커 스레드로 분리(`Shared{wanted,seen,inflight}`, `want()`가 보드가 보는 것만 선언, PR 3워커·Linear 1워커), `snapshot()`은 캐시만 읽는다. `--prs`/`--svg`는 `eager`로 인라인 조회 |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

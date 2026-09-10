@@ -576,8 +576,8 @@ impl ClaudeSource {
     /// `--prs` diagnostic. The board never wants this: it would stall the poll.
     pub fn eager() -> Self {
         let mut s = Self::default();
-        s.prs.budget = usize::MAX;
-        s.tickets.budget = usize::MAX;
+        s.prs.eager = true;
+        s.tickets.eager = true;
         s
     }
 
@@ -596,25 +596,34 @@ impl ClaudeSource {
     /// (#56). The ticket is resolved after the PR because a PR title's tag is
     /// one of the things that corroborates it (#57).
     fn attach_links(&self, list: &mut [SessionInfo]) {
-        let mut budget = self.prs.budget;
-        let now = Instant::now();
         let paths: Vec<Option<PathBuf>> = list.iter().map(|s| self.transcript(s)).collect();
+        let mut want_prs = Vec::new();
         for (s, transcript) in list.iter_mut().zip(&paths) {
-            s.prs = self
-                .prs
-                .resolve(&s.session_id, &s.cwd, transcript.as_deref())
-                .iter()
-                .filter_map(|id| self.prs.state(id, &mut budget, now))
-                .collect();
+            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref());
+            s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
+            want_prs.extend(refs);
             // Pool every transcript's Linear links before judging any of them,
             // so the team prefixes are all known by the time we pick (#57).
             self.tickets.scan(&s.session_id, transcript.as_deref());
         }
-        let mut ticket_budget = self.tickets.budget;
-        for s in list.iter_mut() {
-            let titles: Vec<String> = s.prs.iter().map(|p| p.title.clone()).collect();
+        // Naming what the board shows before reading it back means an eager
+        // tracker has already fetched everything by the time we look (#64).
+        self.prs.want(want_prs);
+        for (s, transcript) in list.iter_mut().zip(&paths) {
+            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref());
+            s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
+        }
+
+        let titles: Vec<Vec<String>> = list.iter().map(|s| s.prs.iter().map(|p| p.title.clone()).collect()).collect();
+        let want_keys: Vec<String> = list
+            .iter()
+            .zip(&titles)
+            .filter_map(|(s, t)| self.tickets.key_for(&s.session_id, &s.label(), t))
+            .collect();
+        self.tickets.want(want_keys);
+        for (s, t) in list.iter_mut().zip(&titles) {
             let name = s.label();
-            s.ticket = self.tickets.pick(&s.session_id, &name, &titles, &mut ticket_budget, now);
+            s.ticket = self.tickets.pick(&s.session_id, &name, t);
         }
     }
 

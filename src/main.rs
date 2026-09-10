@@ -92,7 +92,9 @@ fn main() {
             }
             fake.snapshot()
         } else {
-            ClaudeSource::default().snapshot()
+            // Eager like `--prs`: a one-shot render should show every PR, not
+            // the two a single snapshot's ration happens to reach.
+            ClaudeSource::eager().snapshot()
         };
         let palette = match args.iter().position(|a| a == "--theme").and_then(|k| args.get(k + 1)).map(|s| s.as_str()) {
             Some("orange") => theme::ORANGE,

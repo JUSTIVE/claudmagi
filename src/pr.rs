@@ -13,20 +13,25 @@
 //! 2. Only accept URLs for the session's own repository, or a session picks up
 //!    a PR it merely read about in another repo.
 //!
-//! State comes from `gh`, cached with a TTL and rationed per snapshot so the
-//! poll loop never stalls behind the network.
+//! State comes from `gh`. The fetching happens on a worker thread rather than
+//! inside `snapshot()`: a `gh pr view` takes about a second, and a board with
+//! ten PRs on it would otherwise turn the one-second session poll into a
+//! twenty-second one. The board reads whatever the cache holds and fills in as
+//! answers land. (#64)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long a fetched PR stays fresh before `gh` is asked again.
 pub const TTL: Duration = Duration::from_secs(60);
-/// `gh` calls allowed per snapshot. One takes about a second, so the budget
-/// keeps a poll from turning into a stall; the board fills in over a few ticks.
-const FETCH_BUDGET: usize = 2;
+/// How long a worker idles when everything is fresh.
+const IDLE: Duration = Duration::from_millis(500);
+/// Workers fetching in parallel. A `gh pr view` is a second of waiting on the
+/// network, so a board with ten PRs fills in three seconds instead of twelve.
+const WORKERS: usize = 3;
 /// PRs kept per session. A ticket can have several (#63), but a transcript
 /// that has wandered past this many is no longer describing one lane's work.
 pub const MAX_PER_SESSION: usize = 4;
@@ -314,21 +319,75 @@ pub fn open(url: &str) -> std::io::Result<bool> {
     Command::new("open").arg(url).status().map(|st| st.success())
 }
 
+/// The shared half of the tracker: what the board wants to know, and what
+/// `gh` has said so far. Held behind an `Arc` so the worker thread can outlive
+/// any one call. (#64)
+#[derive(Default)]
+struct Shared {
+    /// Refs currently on the board, replaced wholesale each snapshot so a
+    /// closed session stops being refreshed.
+    wanted: Mutex<Vec<PrRef>>,
+    seen: Mutex<HashMap<PrRef, (Option<Pr>, Instant)>>,
+    /// Claimed by a worker right now, so the pool never fetches one twice.
+    inflight: Mutex<HashSet<PrRef>>,
+}
+
+impl Shared {
+    /// Claims the next ref that has never been answered, or whose answer went
+    /// stale. Claiming and testing happen under the same lock so two workers
+    /// cannot pick the same one.
+    fn claim(&self) -> Option<PrRef> {
+        let wanted = self.wanted.lock().ok()?;
+        let seen = self.seen.lock().ok()?;
+        let mut inflight = self.inflight.lock().ok()?;
+        let now = Instant::now();
+        let free = |id: &&PrRef| !inflight.contains(*id);
+        let id = wanted
+            .iter()
+            .filter(free)
+            .find(|id| !seen.contains_key(*id))
+            .or_else(|| {
+                wanted
+                    .iter()
+                    .filter(free)
+                    .find(|id| seen.get(*id).is_some_and(|(_, at)| now.duration_since(*at) >= TTL))
+            })
+            .cloned()?;
+        inflight.insert(id.clone());
+        Some(id)
+    }
+
+    fn store(&self, id: PrRef, pr: Option<Pr>) {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.insert(id.clone(), (pr, Instant::now()));
+        }
+        if let Ok(mut inflight) = self.inflight.lock() {
+            inflight.remove(&id);
+        }
+    }
+}
+
 /// Per-session PR resolution plus the fetched state, all cached.
 pub struct Tracker {
-    /// `gh` calls allowed per snapshot. The board keeps the ration; `--prs`
-    /// lifts it so one pass answers for every session.
-    pub budget: usize,
     /// cwd → `owner/repo`; `None` means "checked, not a GitHub checkout".
     repos: Mutex<HashMap<String, Option<String>>>,
     /// session id → (transcript size when scanned, what it resolved to).
     refs: Mutex<HashMap<String, (u64, Vec<PrRef>)>>,
-    prs: Mutex<HashMap<PrRef, (Option<Pr>, Instant)>>,
+    shared: Arc<Shared>,
+    /// Fetch inline instead of on the worker, for the one-shot diagnostics.
+    pub eager: bool,
+    started: Mutex<bool>,
 }
 
 impl Default for Tracker {
     fn default() -> Self {
-        Self { budget: FETCH_BUDGET, repos: Mutex::default(), refs: Mutex::default(), prs: Mutex::default() }
+        Self {
+            repos: Mutex::default(),
+            refs: Mutex::default(),
+            shared: Arc::default(),
+            eager: false,
+            started: Mutex::new(false),
+        }
     }
 }
 
@@ -366,29 +425,49 @@ impl Tracker {
         found
     }
 
-    /// Cached state for a PR, refreshing at most `FETCH_BUDGET` per call.
-    /// `budget` is shared across one snapshot so a board full of PRs still
-    /// polls promptly, filling in over successive ticks.
-    pub fn state(&self, id: &PrRef, budget: &mut usize, now: Instant) -> Option<Pr> {
-        if let Ok(map) = self.prs.lock() {
-            if let Some((pr, at)) = map.get(id) {
-                if now.duration_since(*at) < TTL {
-                    return pr.clone();
-                }
-            }
-        }
-        if *budget == 0 {
-            // Stale is better than blank; keep showing the last answer.
-            return self.prs.lock().ok()?.get(id).and_then(|(pr, _)| pr.clone());
-        }
-        *budget -= 1;
-        let fetched = fetch(id);
-        if let Ok(mut map) = self.prs.lock() {
-            map.insert(id.clone(), (fetched.clone(), now));
-        }
-        fetched
+    /// Whatever `gh` last said, stale or not. Never blocks.
+    pub fn cached(&self, id: &PrRef) -> Option<Pr> {
+        self.shared.seen.lock().ok()?.get(id).and_then(|(pr, _)| pr.clone())
     }
 
+    /// Declares the refs the board is showing. In eager mode every missing or
+    /// stale one is fetched before returning; otherwise the worker picks them
+    /// up and the board sees them on a later poll.
+    pub fn want(&self, refs: Vec<PrRef>) {
+        if let Ok(mut wanted) = self.shared.wanted.lock() {
+            *wanted = refs;
+        }
+        if self.eager {
+            while let Some(id) = self.shared.claim() {
+                let got = fetch(&id);
+                self.shared.store(id, got);
+            }
+            return;
+        }
+        self.start_workers();
+    }
+
+    fn start_workers(&self) {
+        let Ok(mut started) = self.started.lock() else { return };
+        if *started {
+            return;
+        }
+        *started = true;
+        for _ in 0..WORKERS {
+            let shared = Arc::clone(&self.shared);
+            std::thread::spawn(move || {
+                loop {
+                    match shared.claim() {
+                        Some(id) => {
+                            let got = fetch(&id);
+                            shared.store(id, got);
+                        }
+                        None => std::thread::sleep(IDLE),
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[cfg(test)]
