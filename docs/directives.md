@@ -64,5 +64,6 @@
 | 62 | 2026-09-10 | CI가 돌고 있는 PR은 노란색 보더 | ✅ | `src/pr.rs` (`pending` 집계, `running()`; CheckRun `status` vs StatusContext `state`), `src/theme.rs` (`busy`), `src/render/scene.rs` (보더 오버레이 1.7px), `src/sources.rs`·`src/ui/devtools.rs` (`CI` 토글), `src/main.rs` |
 | 63 | 2026-09-10 | 하나의 티켓에 PR이 여러 개일 수 있음 | ✅ | 수집은 세션 단위, 배치는 가로 연결. `src/model.rs` (`pr` → `prs: Vec`), `src/pr.rs` (`scan_transcript` → 전부, `MAX_PER_SESSION` 4), `src/render/scene.rs` (`PR_CHAIN_GAP`/`PR_CHAIN_SPAN`, 넘치면 `+n` 배지; `done_lanes`는 '머지 하나 이상 + 진행 중 없음'), `src/ui/devtools.rs` (`+` 버튼), `src/sources.rs` (`add_pr`) |
 | 64 | 2026-09-10 | PR이 로드가 안 됨 | ✅ | 렌더는 정상이었고 원인은 조회가 1초 세션 폴링 안에 있던 것. `gh` 한 건 ≈1.2초 × 스냅샷당 2건이라 다 뜨는 데 20초+. `src/pr.rs`·`src/ticket.rs`: 배급 제거하고 워커 스레드로 분리(`Shared{wanted,seen,inflight}`, `want()`가 보드가 보는 것만 선언, PR 3워커·Linear 1워커), `snapshot()`은 캐시만 읽는다. `--prs`/`--svg`는 `eager`로 인라인 조회 |
+| 65 | 2026-09-10 | YOSHI-DARK는 PR이 있는데 없다고 나옴 | ✅ | 트랜스크립트 경로를 `subagents_dir`에서 유도하던 게 원인 — 그 디렉터리는 서브에이전트를 띄워야 생기므로 안 띄운 세션은 PR·티켓이 통째로 안 잡혔다. `src/sources.rs`: `transcript()`를 독립 조회 + 캐시. 겸사겸사 `src/ticket.rs`: 링크만 된 키를 단독 채택하던 폴백 제거(CLAUDMAGI-F6이 읽기만 한 PJM-1953을 물었음) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

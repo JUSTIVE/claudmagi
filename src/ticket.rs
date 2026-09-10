@@ -253,9 +253,14 @@ pub fn scan_transcript(path: &Path) -> (Vec<String>, Vec<String>) {
 
 /// Picks the issue for a session. The name wins when it is believable — the
 /// transcript or the PR title repeats it, or its team prefix is one the board
-/// has seen in a real Linear link. Otherwise the PR title's tag, and only then
-/// whatever the session linked to last. `teams` is what keeps `YOSHI-60` from
-/// passing for a ticket while `PJM-1924` goes through untouched.
+/// has seen in a real Linear link. Otherwise the tag in a PR title. `teams` is
+/// what keeps `YOSHI-60` from passing for a ticket while `PJM-1924` goes
+/// through untouched.
+///
+/// A key the transcript merely linked is never enough on its own (#65).
+/// Reading about a ticket is not working on it: a session that printed a list
+/// of other people's issues would otherwise adopt the last one it saw.
+/// `linked` only ever corroborates a name.
 pub fn choose(name: &str, pr_titles: &[String], linked: &[String], teams: &HashSet<String>) -> Option<String> {
     let from_title: Vec<String> = pr_titles.iter().flat_map(|t| keys_in(t)).collect();
     let known = |key: &str| key.split_once('-').is_some_and(|(team, _)| teams.contains(team));
@@ -264,11 +269,7 @@ pub fn choose(name: &str, pr_titles: &[String], linked: &[String], teams: &HashS
             return Some(named);
         }
     }
-    from_title
-        .iter()
-        .find(|k| teams.is_empty() || known(k))
-        .cloned()
-        .or_else(|| linked.last().cloned())
+    from_title.iter().find(|k| teams.is_empty() || known(k)).cloned()
 }
 
 /// The team half of an issue key.
@@ -474,10 +475,8 @@ mod tests {
         assert_eq!(choose("scratch", &["bump utf-8 handling".into()], &[], &known), None);
         // Nothing anywhere.
         assert_eq!(choose("claudmagi-f6", &[], &[], &known), None);
-        // No name match, no title: the last thing it linked to.
-        assert_eq!(
-            choose("scratch", &[], &["PJM-1284".into(), "DEV-5108".into()], &known).as_deref(),
-            Some("DEV-5108")
-        );
+        // Read about, not worked on: a session that merely linked other
+        // people's tickets adopts none of them (#65).
+        assert_eq!(choose("scratch", &[], &["PJM-1284".into(), "DEV-5108".into()], &known), None);
     }
 }

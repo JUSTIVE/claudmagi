@@ -57,6 +57,7 @@ struct SubCache {
 pub struct ClaudeSource {
     subs: Mutex<HashMap<PathBuf, SubCache>>,
     dirs: Mutex<HashMap<String, Option<PathBuf>>>,
+    transcripts: Mutex<HashMap<String, Option<PathBuf>>>,
     tabs: Mutex<Option<WarpTabs>>,
     prs: pr::Tracker,
     tickets: ticket::Tracker,
@@ -582,13 +583,32 @@ impl ClaudeSource {
     }
 
     /// `~/.claude/projects/<slug>/<session>.jsonl`, the session's own
-    /// transcript — the file the PR link is read out of (#56). It sits beside
-    /// the subagents directory, so the same lookup resolves both.
+    /// transcript — the file the PR and Linear links are read out of (#56,
+    /// #57). It is resolved on its own rather than through `subagents_dir`:
+    /// that directory only exists once a session has spawned a subagent, so
+    /// hanging the transcript off it left every subagent-less session with no
+    /// PR and no ticket (#65).
     fn transcript(&self, session: &SessionInfo) -> Option<PathBuf> {
-        let dir = self.subagents_dir(session)?;
-        let session_dir = dir.parent()?;
-        let path = session_dir.with_file_name(format!("{}.jsonl", session.session_id));
-        path.is_file().then_some(path)
+        let mut cache = self.transcripts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache.get(&session.session_id) {
+            if hit.as_ref().is_some_and(|p| p.is_file()) {
+                return hit.clone();
+            }
+            // Not found last time: fall through and look again, since a
+            // transcript appears as soon as the session writes its first turn.
+        }
+        let projects = config_dir()?.join("projects");
+        let name = format!("{}.jsonl", session.session_id);
+        let direct = projects.join(project_slug(&session.cwd)).join(&name);
+        let found = if direct.is_file() {
+            Some(direct)
+        } else {
+            std::fs::read_dir(&projects)
+                .ok()
+                .and_then(|rd| rd.flatten().map(|e| e.path().join(&name)).find(|p| p.is_file()))
+        };
+        cache.insert(session.session_id.clone(), found.clone());
+        found
     }
 
     /// Attaches each session's pull request and Linear issue, sharing one `gh`
