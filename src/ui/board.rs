@@ -290,11 +290,13 @@ impl Render for Board {
         }
         self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
         self.model.hovered = self.mouse.and_then(|m| self.hit_test(m));
+        let prs = scene::pr_draws(&self.model, &self.layout, &self.lanes, &self.draws);
 
         let palette = self.palette();
         let frame = Frame {
             lanes: self.lanes.clone(),
             chips: self.draws.clone(),
+            prs,
             scroll_y: self.scroll_y,
             t: now.duration_since(self.started).as_secs_f32(),
             layout: self.layout,

@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::font;
 use crate::geom::{Polyline, Pt, smoothstep};
 use crate::model::{BoardModel, Phase, RowKind, Rows, TRAIL_ROWS, Target};
+use crate::pr;
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
@@ -33,6 +34,18 @@ pub const TRAIL_LANES: usize = TRAIL_ROWS;
 pub const TITLE_SCALE: f32 = 2.6;
 /// How much of its height a settled subagent gives up (#53): 16 → 12.
 pub const SETTLE_SHRINK: f32 = 0.25;
+
+/// A session's PR sits where its lane reaches this far from the right edge:
+/// the trace runs into the connector and stops, so the work visibly leaves
+/// the board (#56).
+pub const PR_INSET: f32 = 62.0;
+pub const PR_H: f32 = 17.0;
+pub const PR_PAD: f32 = 8.0;
+pub const PR_TEXT: f32 = 1.05;
+/// Card-edge pins on the incoming side of the connector body.
+pub const PR_PINS: usize = 4;
+const PIN_W: f32 = 2.4;
+const PIN_GAP: f32 = 4.6;
 
 /// Path distance between a chip's trailing edge and the next subagent chip.
 pub const SUB_GAP: f32 = 44.0;
@@ -148,10 +161,26 @@ impl Lane {
     }
 }
 
+/// One PR connector, already projected onto its lane.
+#[derive(Clone, Debug)]
+pub struct PrDraw {
+    pub lane: usize,
+    /// Arc length where the trace enters the connector.
+    pub s: f32,
+    pub center: Pt,
+    pub tangent: Pt,
+    pub width: f32,
+    pub label: String,
+    pub look: pr::Look,
+    pub alpha: f32,
+}
+
 #[derive(Clone)]
 pub struct Frame {
     pub lanes: Rc<Vec<Lane>>,
     pub chips: Vec<ChipDraw>,
+    /// PR connectors, one per session that resolved to a pull request (#56).
+    pub prs: Vec<PrDraw>,
     pub scroll_y: f32,
     pub t: f32,
     pub layout: Layout,
@@ -560,6 +589,66 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Inst
     out
 }
 
+/// Walks back from `s` to the nearest point where the lane runs flat, so a
+/// connector never lands mid-bend. `None` when the whole reach is diagonal.
+fn horizontal_at_or_before(path: &Polyline, s: f32) -> Option<f32> {
+    const STEP: f32 = 3.0;
+    const REACH: f32 = 260.0;
+    let mut walked = 0.0;
+    while walked <= REACH {
+        let t = s - walked;
+        if t <= 0.0 {
+            return None;
+        }
+        if path.point_at(t).1.y.abs() < 0.15 {
+            return Some(t);
+        }
+        walked += STEP;
+    }
+    None
+}
+
+/// Projects each session's PR onto the point where its lane reaches the right
+/// edge. The lane comes from the session's own chip, so a connector always
+/// lands on the trace its chip rides. A lane that never gets that far, or is
+/// still drawing in, has no connector (#56).
+pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[ChipDraw]) -> Vec<PrDraw> {
+    let x = layout.width - PR_INSET;
+    let mut out = Vec::new();
+    for c in chips {
+        let Target::Session(i) = c.target else { continue };
+        let Some(pr) = model.chips.get(i).and_then(|ch| ch.info.pr.as_ref()) else { continue };
+        let Some(lane) = lanes.get(c.lane) else { continue };
+        if !lane.visible || c.alpha <= 0.01 {
+            continue;
+        }
+        let Some(at_edge) = lane.path.s_at_x(x) else { continue };
+        let label = pr.label();
+        let width = (font::measure(&label, PR_TEXT) + 2.0 * PR_PAD).max(30.0);
+        // A connector rotated onto a diagonal reads as debris, so back up to
+        // the horizontal run before it and leave room for the body (#56).
+        let s = match horizontal_at_or_before(&lane.path, at_edge) {
+            Some(h) if h < at_edge - 0.5 => h - width / 2.0 - 6.0,
+            _ => at_edge,
+        };
+        if s <= 0.0 || (lane.reveal < 1.0 && lane.reveal * lane.path.length() < s) {
+            continue;
+        }
+        let (center, tangent) = lane.path.point_at(s);
+        out.push(PrDraw {
+            lane: c.lane,
+            s,
+            center,
+            tangent,
+            width,
+            label,
+            look: pr.look(),
+            alpha: c.alpha,
+        });
+    }
+    out
+}
+
 pub fn hash01(i: usize) -> f32 {
     let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
     x ^= x >> 29;
@@ -672,6 +761,17 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         if y_max < origin.y || y_min > origin.y + height {
             continue;
         }
+        // A lane carrying a PR ends at its connector: the work leaves the
+        // board there, so nothing is stroked past it (#56).
+        let ends_at = f.prs.iter().find(|p| p.lane == li).map(|p| p.s - p.width / 2.0);
+        let cut_short;
+        let lane: &Polyline = match ends_at {
+            Some(end) if end < lane.length() - 1.0 => {
+                cut_short = Polyline::new(lane.slice(0.0, end));
+                &cut_short
+            }
+            _ => lane,
+        };
         let chips = by_lane.get(&li).map(|v| v.as_slice()).unwrap_or(&[]);
         let (pieces, cut) = if chips.is_empty() {
             (vec![lane.pts.clone()], lane.length())
@@ -786,6 +886,55 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             angle,
             center,
             color: text_c,
+        });
+    }
+
+    // PR connectors: a card-edge block the trace runs into, with pins on the
+    // incoming side. Colour carries the state (#56).
+    for c in &f.prs {
+        let center = to_screen(c.center);
+        let angle = c.tangent.angle_deg();
+        let a = c.alpha;
+        let ink = |k: f32| theme::with_alpha(pal.ink, k * a);
+        let (fill, stroke, label, pin) = match c.look {
+            pr::Look::Draft => (None, Some(ink(0.85)), ink(0.85), ink(0.55)),
+            pr::Look::Open => (Some(theme::with_alpha(pal.chip, a)), None, theme::with_alpha(pal.text_on, a), ink(0.5)),
+            pr::Look::Failing => (
+                Some(theme::with_alpha(pal.chip, a)),
+                None,
+                theme::with_alpha(pal.text_on, a),
+                theme::with_alpha(pal.alarm, a),
+            ),
+            pr::Look::Merged => (Some(ink(0.42)), None, theme::with_alpha(pal.bg, a), ink(0.42)),
+            pr::Look::Closed => (None, Some(ink(0.32)), ink(0.4), ink(0.25)),
+        };
+
+        // Pins march back along the trace from the body's leading edge.
+        for k in 0..PR_PINS {
+            let back = c.width / 2.0 + 3.0 + k as f32 * PIN_GAP;
+            out.push(Shape::RoundedRect {
+                center: to_screen(c.center - c.tangent * back),
+                w: PIN_W,
+                h: PR_H - 5.0,
+                r: 0.8,
+                angle,
+                color: pin,
+                stroke: None,
+            });
+        }
+        if let Some(color) = fill {
+            out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle, color, stroke: None });
+        }
+        if let Some(color) = stroke {
+            out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle, color, stroke: Some(1.3) });
+        }
+        out.push(Shape::Text {
+            text: c.label.clone(),
+            scale: PR_TEXT,
+            stroke: 1.1,
+            angle,
+            center,
+            color: label,
         });
     }
 

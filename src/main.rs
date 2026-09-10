@@ -7,6 +7,7 @@ mod settings;
 mod sources;
 mod theme;
 mod ui;
+mod pr;
 mod usage;
 mod warp;
 
@@ -59,6 +60,12 @@ fn main() {
                     fake.add_sub(id, running);
                 }
             }
+            // One connector per look, so a demo render shows the whole set (#56).
+            for (i, look) in pr::Look::ALL.into_iter().enumerate() {
+                if let Some(id) = ids.get(i) {
+                    fake.set_pr(id, Some(look));
+                }
+            }
             fake.snapshot()
         } else {
             ClaudeSource::default().snapshot()
@@ -99,6 +106,19 @@ fn main() {
         }
         return;
     }
+    // Same idea as `--usage` (#48): check the PR resolution from the terminal
+    // without opening a window (#56).
+    if args.iter().any(|a| a == "--prs") {
+        let source = ClaudeSource::eager();
+        for s in source.snapshot() {
+            match &s.pr {
+                Some(p) => println!("{:<16} {} {:<7} {}✓ {}✗  {}", s.label(), p.label(), p.look().short(), p.passed, p.failed, p.title),
+                None => println!("{:<16} -", s.label()),
+            }
+        }
+        return;
+    }
+
     if args.iter().any(|a| a == "--usage") {
         match usage::fetch() {
             Ok(u) => {
@@ -208,7 +228,8 @@ fn render_frame(
     }
     let lanes = Rc::new(layout.build_lanes_for(&model.rows, now));
     let chips = scene::chip_draws(&model, &layout, &lanes, now);
-    let frame = scene::Frame { lanes, chips, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
+    let prs = scene::pr_draws(&model, &layout, &lanes, &chips);
+    let frame = scene::Frame { lanes, chips, prs, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
     render::svg::to_svg(&shapes, width, height)
 }

@@ -107,7 +107,10 @@ impl Board {
                 .flex_1()
                 .overflow_hidden()
                 .text_color(c(phase_color(phase)))
-                .child(format!("{} · {}", info.label(), phase.label()));
+                .child(match &info.pr {
+                    Some(p) => format!("{} · {} · {} {}", info.label(), phase.label(), p.label(), p.look().short()),
+                    None => format!("{} · {}", info.label(), phase.label()),
+                });
             let label = if info.synthetic {
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
@@ -132,6 +135,15 @@ impl Board {
                         .on_click(move |_, _, _| {
                             sb.add_sub(&sid, true);
                         }),
+                );
+                // PR connector: cycles none → draft → open → fail → merged →
+                // closed → none, so every look is reachable here (#56).
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                let pr_label = info.pr.as_ref().map(|p| p.look().short()).unwrap_or("+PR");
+                row = row.child(
+                    button(SharedString::from(format!("pr-{i}")), pr_label, info.pr.is_some())
+                        .on_click(move |_, _, _| sb.cycle_pr(&sid)),
                 );
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();

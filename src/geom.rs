@@ -144,6 +144,20 @@ impl Polyline {
         out
     }
 
+    /// Arc length where the polyline first reaches `x`, if it gets there.
+    /// Lanes run left to right, so for them the answer is unambiguous (#56).
+    pub fn s_at_x(&self, x: f32) -> Option<f32> {
+        for i in 0..self.pts.len().saturating_sub(1) {
+            let (a, b) = (self.pts[i], self.pts[i + 1]);
+            if a.x <= x && x <= b.x {
+                let d = b.x - a.x;
+                let t = if d.abs() <= 1e-6 { 0.0 } else { (x - a.x) / d };
+                return Some(self.cum[i] + (self.cum[i + 1] - self.cum[i]) * t);
+            }
+        }
+        None
+    }
+
     /// Arc length of the point on the polyline nearest to `p`.
     pub fn nearest_s(&self, p: Pt) -> f32 {
         let mut best = (f32::MAX, 0.0);

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 
 use crate::model::{Phase, SessionInfo, SubagentInfo};
+use crate::pr;
 
 pub trait SessionSource: Send + Sync {
     fn name(&self) -> &'static str;
@@ -56,6 +57,7 @@ pub struct ClaudeSource {
     subs: Mutex<HashMap<PathBuf, SubCache>>,
     dirs: Mutex<HashMap<String, Option<PathBuf>>>,
     tabs: Mutex<Option<WarpTabs>>,
+    prs: pr::Tracker,
 }
 
 impl SessionSource for ClaudeSource {
@@ -74,6 +76,7 @@ impl SessionSource for ClaudeSource {
                 }
             }
         }
+        self.attach_prs(&mut list);
         list
     }
 }
@@ -486,6 +489,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                     (None, Some(prog)) => format!("term:{prog}"),
                     (None, None) => "desktop".into(),
                 },
+                pr: None,
             }
         })
         .collect();
@@ -517,6 +521,36 @@ impl ClaudeSource {
         };
         dirs.insert(session.session_id.clone(), found.clone());
         found
+    }
+
+    /// Fetches every PR in one snapshot instead of rationing them, for the
+    /// `--prs` diagnostic. The board never wants this: it would stall the poll.
+    pub fn eager() -> Self {
+        let mut s = Self::default();
+        s.prs.budget = usize::MAX;
+        s
+    }
+
+    /// `~/.claude/projects/<slug>/<session>.jsonl`, the session's own
+    /// transcript — the file the PR link is read out of (#56). It sits beside
+    /// the subagents directory, so the same lookup resolves both.
+    fn transcript(&self, session: &SessionInfo) -> Option<PathBuf> {
+        let dir = self.subagents_dir(session)?;
+        let session_dir = dir.parent()?;
+        let path = session_dir.with_file_name(format!("{}.jsonl", session.session_id));
+        path.is_file().then_some(path)
+    }
+
+    /// Attaches each session's pull request, sharing one `gh` budget across
+    /// the snapshot so a board full of PRs never stalls the poll (#56).
+    fn attach_prs(&self, list: &mut [SessionInfo]) {
+        let mut budget = self.prs.budget;
+        let now = Instant::now();
+        for s in list.iter_mut() {
+            let transcript = self.transcript(s);
+            let Some(id) = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref()) else { continue };
+            s.pr = self.prs.state(&id, &mut budget, now);
+        }
     }
 
     fn subagents_for(&self, session: &SessionInfo) -> Vec<SubagentInfo> {
@@ -673,6 +707,12 @@ impl FakeState {
     }
 }
 
+/// A stable, distinct PR number per sandbox session, so connectors do not all
+/// read the same (#56). Synthetic pids are `90_000 + seq`.
+fn fake_pr_number(pid: i32) -> u32 {
+    8700 + (pid - 90_000).max(0) as u32
+}
+
 /// In-memory sessions you can create, retarget and destroy at will.
 pub struct FakeSource {
     inner: Mutex<FakeState>,
@@ -724,6 +764,26 @@ impl FakeSource {
     pub fn set_phase(&self, session_id: &str, phase: Phase) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             s.set_phase(phase);
+        }
+    }
+
+    /// Gives a sandbox session a synthetic PR, or takes it away. Cycling runs
+    /// Draft → Open → Failing → Merged → Closed → none, so every connector
+    /// look can be checked from the test panel (#56).
+    pub fn cycle_pr(&self, session_id: &str) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            s.pr = match &s.pr {
+                None => Some(pr::Pr::synthetic(fake_pr_number(s.pid), pr::Look::Draft)),
+                Some(p) if p.look() == pr::Look::Closed => None,
+                Some(p) => Some(pr::Pr::synthetic(p.id.number, p.look().next())),
+            };
+        }
+    }
+
+    pub fn set_pr(&self, session_id: &str, look: Option<pr::Look>) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            let n = s.pr.as_ref().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
+            s.pr = look.map(|l| pr::Pr::synthetic(n, l));
         }
     }
 

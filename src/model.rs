@@ -104,6 +104,9 @@ pub struct SessionInfo {
     /// Where the session runs: `warp:<pane uuid>`, `term:<program>` or
     /// `desktop`. Sessions sharing a group sit together on the board (#41).
     pub group: String,
+    /// The pull request this session is working on, if one could be resolved
+    /// from its transcript (#56). Drawn as a connector at the end of the lane.
+    pub pr: Option<crate::pr::Pr>,
 }
 
 impl SessionInfo {
@@ -125,6 +128,7 @@ impl SessionInfo {
             synthetic: true,
             subagents: Vec::new(),
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
+            pr: None,
         };
         s.set_phase(phase);
         s

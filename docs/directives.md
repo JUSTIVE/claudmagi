@@ -55,5 +55,6 @@
 | 53 | 2026-09-10 | done 인 subagent는 unplugged 말고 다른 디자인으로 | ✅ | `src/render/scene.rs` (`ChipDraw.settled`, `SETTLE_SHRINK` 0.25 — 서브는 `p`를 0으로 두어 파형·소켓·이탈 없이 제자리에서 idle 색 + 높이 16→12) |
 | 54 | 2026-09-10 | 진행 중인 노드 텍스트를 다시 녹색으로 (#51 되돌림) | ✅ | `src/theme.rs` (`PALETTE.text_on` → `#3BE38A`, `UI_ACCENT`·`ORANGE.text_on` 제거), `src/ui/panel.rs`, `src/ui/devtools.rs` |
 | 55 | 2026-09-10 | DIN 폰트로 교체 (적용 전 라이선스 확인) | ✅ | 시스템 DIN은 Bold만 있고 `fsType 0x0004`(Preview & Print only)라 제외. D-DIN(© 2017 Datto Inc., SIL OFL 1.1)을 `assets/fonts/`에 두고 `src/font.rs` (`FONT_TTF` = `include_bytes!`), `src/theme.rs` (`UI_FONT`), `src/ui/mod.rs` (`register_fonts`), `src/main.rs`, `tools/bundle.sh`(OFL 고지 동봉), `README.md` |
+| 56 | 2026-09-10 | 세션과 연관된 GitHub PR을 보드에 렌더 (선 끝 엣지 커넥터) + 테스트 패널에 깃헙 노드 추가 | ✅ | `src/pr.rs`, `src/model.rs`, `src/sources.rs`, `src/render/scene.rs`, `src/geom.rs`, `src/theme.rs`, `src/ui/devtools.rs`, `src/main.rs` (`--prs`). `cwd`→브랜치는 세션이 전부 같은 체크아웃에 있어 못 쓰고, 트랜스크립트의 `message.content` + repo 일치로 해석 |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

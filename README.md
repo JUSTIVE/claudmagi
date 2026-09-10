@@ -56,7 +56,15 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
+| Data | `pr.rs` | The GitHub PR a session is on: resolved from its transcript, state from `gh`, cached with a TTL. |
 | Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims, Warp focus. |
+
+Pull requests: a session's PR is read out of its own transcript — the last
+`github.com/<owner>/<repo>/pull/<n>` inside a message body whose repo matches
+the checkout's `origin`. `cwd → branch` cannot do this job when several
+sessions share one checkout. State comes from `gh pr view`, and the trace runs
+into a card-edge connector at the right of the board. `claudmagi --prs` prints
+what resolved.
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
 otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp
