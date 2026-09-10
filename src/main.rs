@@ -78,6 +78,11 @@ fn main() {
             if let Some(id) = ids.get(1) {
                 fake.set_pr_running(id, true);
             }
+            // One session with a chain of PRs, as a ticket often has (#63).
+            if let Some(id) = ids.get(2) {
+                fake.add_pr(id, pr::Look::Merged);
+                fake.add_pr(id, pr::Look::Closed);
+            }
             // One lane finished end to end, so the bold trace shows up in a
             // demo render (#61).
             if let Some(id) = ids.get(4) {
@@ -130,6 +135,11 @@ fn main() {
     if args.iter().any(|a| a == "--prs") {
         let source = ClaudeSource::eager();
         for s in source.snapshot() {
+            let prs: Vec<String> = s
+                .prs
+                .iter()
+                .map(|p| format!("{} {} {}✓{}✗{}⟳", p.label(), p.look().short(), p.passed, p.failed, p.pending))
+                .collect();
             let ticket = match &s.ticket {
                 Some(t) => match t.status {
                     Some(st) => format!("{} {}", t.label(), st.short()),
@@ -137,20 +147,12 @@ fn main() {
                 },
                 None => "-".into(),
             };
-            match &s.pr {
-                Some(p) => println!(
-                    "{:<16} {:<20} {} {:<7} {}✓ {}✗ {}⟳  {}",
-                    s.label(),
-                    ticket,
-                    p.label(),
-                    p.look().short(),
-                    p.passed,
-                    p.failed,
-                    p.pending,
-                    p.title
-                ),
-                None => println!("{:<16} {:<20} -", s.label(), ticket),
-            }
+            println!(
+                "{:<16} {:<20} {}",
+                s.label(),
+                ticket,
+                if prs.is_empty() { "-".to_string() } else { prs.join("  ·  ") }
+            );
         }
         return;
     }

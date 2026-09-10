@@ -104,9 +104,10 @@ pub struct SessionInfo {
     /// Where the session runs: `warp:<pane uuid>`, `term:<program>` or
     /// `desktop`. Sessions sharing a group sit together on the board (#41).
     pub group: String,
-    /// The pull request this session is working on, if one could be resolved
-    /// from its transcript (#56). Drawn as a connector at the end of the lane.
-    pub pr: Option<crate::pr::Pr>,
+    /// The pull requests this session is working on, oldest first, resolved
+    /// from its transcript (#56). One ticket often has several (#63). Drawn
+    /// as connectors chained at the end of the lane.
+    pub prs: Vec<crate::pr::Pr>,
     /// The Linear issue behind the work, drawn at the head of the lane (#57).
     pub ticket: Option<crate::ticket::Ticket>,
 }
@@ -130,7 +131,7 @@ impl SessionInfo {
             synthetic: true,
             subagents: Vec::new(),
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
-            pr: None,
+            prs: Vec::new(),
             ticket: None,
         };
         s.set_phase(phase);

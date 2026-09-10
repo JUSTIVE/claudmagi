@@ -114,7 +114,7 @@ impl Board {
                     if let Some(t) = &info.ticket {
                         line = format!("{} · {}", line, t.label());
                     }
-                    if let Some(p) = &info.pr {
+                    for p in &info.prs {
                         line = format!("{} · {} {}", line, p.label(), p.look().short());
                     }
                     line
@@ -167,16 +167,17 @@ impl Board {
             // than the session row can hold, and cycling through them to reach
             // one was tedious (#58).
             if info.synthetic {
-                let look = info.pr.as_ref().map(|p| p.look());
+                let look = info.prs.first().map(|p| p.look());
                 let mut links = div().flex().items_center().gap_1().pl_3().child(
                     div()
                         .w(px(56.))
                         .flex_none()
                         .text_size(px(10.))
                         .text_color(dim(0.55))
-                        .child(match &info.pr {
-                            Some(p) => p.label(),
-                            None => "PR".into(),
+                        .child(match info.prs.len() {
+                            0 => "PR".to_string(),
+                            1 => info.prs[0].label(),
+                            n => format!("{} +{}", info.prs[0].label(), n - 1),
                         }),
                 );
                 let sb = sandbox.clone();
@@ -195,10 +196,16 @@ impl Board {
                 }
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
-                let ci = info.pr.as_ref().is_some_and(|p| p.running());
+                let ci = info.prs.iter().any(|p| p.running());
                 links = links.child(
                     button(SharedString::from(format!("pr-ci-{i}")), "CI", ci)
                         .on_click(move |_, _, _| sb.set_pr_running(&sid, !ci)),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                links = links.child(
+                    button(SharedString::from(format!("pr-add-{i}")), "+", false)
+                        .on_click(move |_, _, _| sb.add_pr(&sid, pr::Look::Open)),
                 );
                 list = list.child(links);
 

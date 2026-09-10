@@ -27,6 +27,9 @@ pub const TTL: Duration = Duration::from_secs(60);
 /// `gh` calls allowed per snapshot. One takes about a second, so the budget
 /// keeps a poll from turning into a stall; the board fills in over a few ticks.
 const FETCH_BUDGET: usize = 2;
+/// PRs kept per session. A ticket can have several (#63), but a transcript
+/// that has wandered past this many is no longer describing one lane's work.
+pub const MAX_PER_SESSION: usize = 4;
 /// How much of a transcript's tail is searched. PRs are created and discussed
 /// late in a session, and the whole file can run to tens of megabytes.
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
@@ -184,11 +187,13 @@ fn repo_of(cwd: &str) -> Option<String> {
     parse_repo(String::from_utf8_lossy(&out.stdout).trim())
 }
 
-/// The last PR of `repo` mentioned in a message body in the transcript's tail.
-pub fn scan_transcript(path: &Path, repo: &str) -> Option<u32> {
-    let text = tail(path, TAIL_BYTES)?;
+/// Every PR of `repo` mentioned in a message body in the transcript's tail,
+/// oldest number first. A ticket often has more than one (#63); the newest
+/// are kept when there are more than `MAX_PER_SESSION`.
+pub fn scan_transcript(path: &Path, repo: &str) -> Vec<u32> {
+    let Some(text) = tail(path, TAIL_BYTES) else { return Vec::new() };
     let needle = format!("github.com/{repo}/pull/");
-    let mut found = None;
+    let mut found: Vec<u32> = Vec::new();
     for line in text.lines() {
         // Cheap gate: parsing every record of a two-megabyte tail is the
         // expensive part, and almost no line mentions a PR.
@@ -200,22 +205,25 @@ pub fn scan_transcript(path: &Path, repo: &str) -> Option<u32> {
             continue;
         };
         for block in blocks {
-            if let Some(n) = last_number(&block.to_string(), &needle) {
-                found = Some(n);
-            }
+            found.extend(numbers_in(&block.to_string(), &needle));
         }
+    }
+    found.sort_unstable();
+    found.dedup();
+    if found.len() > MAX_PER_SESSION {
+        found.drain(..found.len() - MAX_PER_SESSION);
     }
     found
 }
 
-fn last_number(haystack: &str, needle: &str) -> Option<u32> {
-    let mut out = None;
+fn numbers_in(haystack: &str, needle: &str) -> Vec<u32> {
+    let mut out = Vec::new();
     let mut from = 0;
     while let Some(i) = haystack[from..].find(needle) {
         let start = from + i + needle.len();
         let digits: String = haystack[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
         if let Ok(n) = digits.parse::<u32>() {
-            out = Some(n);
+            out.push(n);
         }
         from = start.max(from + i + 1);
     }
@@ -314,7 +322,7 @@ pub struct Tracker {
     /// cwd → `owner/repo`; `None` means "checked, not a GitHub checkout".
     repos: Mutex<HashMap<String, Option<String>>>,
     /// session id → (transcript size when scanned, what it resolved to).
-    refs: Mutex<HashMap<String, (u64, Option<PrRef>)>>,
+    refs: Mutex<HashMap<String, (u64, Vec<PrRef>)>>,
     prs: Mutex<HashMap<PrRef, (Option<Pr>, Instant)>>,
 }
 
@@ -337,10 +345,11 @@ impl Tracker {
         found
     }
 
-    /// The PR a session points at, rescanned only when its transcript grew.
-    pub fn resolve(&self, session_id: &str, cwd: &str, transcript: Option<&Path>) -> Option<PrRef> {
-        let path = transcript?;
-        let size = std::fs::metadata(path).ok()?.len();
+    /// The PRs a session points at, oldest first, rescanned only when its
+    /// transcript grew.
+    pub fn resolve(&self, session_id: &str, cwd: &str, transcript: Option<&Path>) -> Vec<PrRef> {
+        let Some(path) = transcript else { return Vec::new() };
+        let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Vec::new() };
         if let Ok(map) = self.refs.lock() {
             if let Some((seen, hit)) = map.get(session_id) {
                 if *seen == size {
@@ -348,8 +357,9 @@ impl Tracker {
                 }
             }
         }
-        let repo = self.repo(cwd)?;
-        let found = scan_transcript(path, &repo).map(|number| PrRef { repo, number });
+        let Some(repo) = self.repo(cwd) else { return Vec::new() };
+        let found: Vec<PrRef> =
+            scan_transcript(path, &repo).into_iter().map(|number| PrRef { repo: repo.clone(), number }).collect();
         if let Ok(mut map) = self.refs.lock() {
             map.insert(session_id.to_string(), (size, found.clone()));
         }
@@ -401,16 +411,16 @@ mod tests {
     }
 
     #[test]
-    fn the_last_pr_of_the_right_repo_wins() {
+    fn every_pr_of_the_right_repo_is_collected() {
         let needle = "github.com/o/r/pull/";
-        assert_eq!(last_number("see https://github.com/o/r/pull/12 please", needle), Some(12));
-        assert_eq!(last_number("https://github.com/o/r/pull/12 then /pull/34", needle), Some(12));
+        assert_eq!(numbers_in("see https://github.com/o/r/pull/12 please", needle), vec![12]);
+        assert_eq!(numbers_in("https://github.com/o/r/pull/12 then /pull/34", needle), vec![12], "wrong repo ignored");
         assert_eq!(
-            last_number("https://github.com/o/r/pull/12 and https://github.com/o/r/pull/34", needle),
-            Some(34),
-            "the newest mention wins"
+            numbers_in("https://github.com/o/r/pull/12 and https://github.com/o/r/pull/34", needle),
+            vec![12, 34],
+            "a ticket can have several (#63)"
         );
-        assert_eq!(last_number("nothing here", needle), None);
+        assert!(numbers_in("nothing here", needle).is_empty());
     }
 
     #[test]

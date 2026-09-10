@@ -253,8 +253,8 @@ pub fn scan_transcript(path: &Path) -> (Vec<String>, Vec<String>) {
 /// has seen in a real Linear link. Otherwise the PR title's tag, and only then
 /// whatever the session linked to last. `teams` is what keeps `YOSHI-60` from
 /// passing for a ticket while `PJM-1924` goes through untouched.
-pub fn choose(name: &str, pr_title: Option<&str>, linked: &[String], teams: &HashSet<String>) -> Option<String> {
-    let from_title: Vec<String> = pr_title.map(keys_in).unwrap_or_default();
+pub fn choose(name: &str, pr_titles: &[String], linked: &[String], teams: &HashSet<String>) -> Option<String> {
+    let from_title: Vec<String> = pr_titles.iter().flat_map(|t| keys_in(t)).collect();
     let known = |key: &str| key.split_once('-').is_some_and(|(team, _)| teams.contains(team));
     if let Some(named) = key_shaped(name) {
         if linked.contains(&named) || from_title.contains(&named) || known(&named) {
@@ -327,7 +327,14 @@ impl Tracker {
 
     /// The issue for a session, from what `scan` has pooled so far, with its
     /// Linear status when Orca could be reached (#58).
-    pub fn pick(&self, session_id: &str, name: &str, pr_title: Option<&str>, budget: &mut usize, now: Instant) -> Option<Ticket> {
+    pub fn pick(
+        &self,
+        session_id: &str,
+        name: &str,
+        pr_titles: &[String],
+        budget: &mut usize,
+        now: Instant,
+    ) -> Option<Ticket> {
         let linked = self
             .seen
             .lock()
@@ -335,7 +342,7 @@ impl Tracker {
             .and_then(|m| m.get(session_id).map(|(_, keys, _)| keys.clone()))
             .unwrap_or_default();
         let teams = self.teams.lock().map(|t| t.clone()).unwrap_or_default();
-        let key = choose(name, pr_title, &linked, &teams)?;
+        let key = choose(name, pr_titles, &linked, &teams)?;
         let workspace = self.workspace();
         Some(match self.state(&key, budget, now) {
             Some(mut issue) => {
@@ -416,27 +423,27 @@ mod tests {
         let none = HashSet::new();
         let known: HashSet<String> = ["PJM".to_string(), "DEV".to_string()].into_iter().collect();
         // The name is right and the PR title repeats it.
-        assert_eq!(choose("PJM-1974", Some("🐛 [YO] [PJM-1974] 웹뷰"), &[], &none).as_deref(), Some("PJM-1974"));
+        assert_eq!(choose("PJM-1974", &["🐛 [YO] [PJM-1974] 웹뷰".into()], &[], &none).as_deref(), Some("PJM-1974"));
         // The name is right and the transcript linked it.
-        assert_eq!(choose("pjm-1953", None, &["PJM-1953".into()], &none).as_deref(), Some("PJM-1953"));
+        assert_eq!(choose("pjm-1953", &[], &["PJM-1953".into()], &none).as_deref(), Some("PJM-1953"));
         // Neither, but PJM is a team the board has seen: believe the name
         // rather than some other ticket the session merely read about.
         assert_eq!(
-            choose("PJM-1924", None, &["DEV-5066".into()], &known).as_deref(),
+            choose("PJM-1924", &[], &["DEV-5066".into()], &known).as_deref(),
             Some("PJM-1924"),
             "a known team vouches for the name"
         );
         // Key-shaped, unknown team, nothing backs it up.
-        assert_eq!(choose("YOSHI-60", Some("🐛 [YO] 비-GraphQL 분리"), &[], &known), None);
+        assert_eq!(choose("YOSHI-60", &["🐛 [YO] 비-GraphQL 분리".into()], &[], &known), None);
         // Not key-shaped at all: fall back to the PR's tag.
-        assert_eq!(choose("yoshi-f2", Some("✨ [YO] [PJM-1991] 실물 확인"), &[], &known).as_deref(), Some("PJM-1991"));
+        assert_eq!(choose("yoshi-f2", &["✨ [YO] [PJM-1991] 실물 확인".into()], &[], &known).as_deref(), Some("PJM-1991"));
         // A title tag whose team is unknown is not preferred over nothing.
-        assert_eq!(choose("scratch", Some("bump utf-8 handling"), &[], &known), None);
+        assert_eq!(choose("scratch", &["bump utf-8 handling".into()], &[], &known), None);
         // Nothing anywhere.
-        assert_eq!(choose("claudmagi-f6", None, &[], &known), None);
+        assert_eq!(choose("claudmagi-f6", &[], &[], &known), None);
         // No name match, no title: the last thing it linked to.
         assert_eq!(
-            choose("scratch", None, &["PJM-1284".into(), "DEV-5108".into()], &known).as_deref(),
+            choose("scratch", &[], &["PJM-1284".into(), "DEV-5108".into()], &known).as_deref(),
             Some("DEV-5108")
         );
     }

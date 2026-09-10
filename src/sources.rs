@@ -537,7 +537,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                     (None, Some(prog)) => format!("term:{prog}"),
                     (None, None) => "desktop".into(),
                 },
-                pr: None,
+                prs: Vec::new(),
                 ticket: None,
             }
         })
@@ -600,18 +600,21 @@ impl ClaudeSource {
         let now = Instant::now();
         let paths: Vec<Option<PathBuf>> = list.iter().map(|s| self.transcript(s)).collect();
         for (s, transcript) in list.iter_mut().zip(&paths) {
-            if let Some(id) = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref()) {
-                s.pr = self.prs.state(&id, &mut budget, now);
-            }
+            s.prs = self
+                .prs
+                .resolve(&s.session_id, &s.cwd, transcript.as_deref())
+                .iter()
+                .filter_map(|id| self.prs.state(id, &mut budget, now))
+                .collect();
             // Pool every transcript's Linear links before judging any of them,
             // so the team prefixes are all known by the time we pick (#57).
             self.tickets.scan(&s.session_id, transcript.as_deref());
         }
         let mut ticket_budget = self.tickets.budget;
         for s in list.iter_mut() {
-            let title = s.pr.as_ref().map(|p| p.title.clone());
+            let titles: Vec<String> = s.prs.iter().map(|p| p.title.clone()).collect();
             let name = s.label();
-            s.ticket = self.tickets.pick(&s.session_id, &name, title.as_deref(), &mut ticket_budget, now);
+            s.ticket = self.tickets.pick(&s.session_id, &name, &titles, &mut ticket_budget, now);
         }
     }
 
@@ -829,10 +832,23 @@ impl FakeSource {
         }
     }
 
+    /// Sets the sandbox session's first PR, or clears them all.
     pub fn set_pr(&self, session_id: &str, look: Option<pr::Look>) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            let n = s.pr.as_ref().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
-            s.pr = look.map(|l| pr::Pr::synthetic(n, l));
+            let n = s.prs.first().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
+            s.prs = look.map(|l| vec![pr::Pr::synthetic(n, l)]).unwrap_or_default();
+        }
+    }
+
+    /// Chains another synthetic PR onto the session, to exercise the case of
+    /// one ticket with several (#63).
+    pub fn add_pr(&self, session_id: &str, look: pr::Look) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            if s.prs.len() >= pr::MAX_PER_SESSION {
+                return;
+            }
+            let n = s.prs.iter().map(|p| p.id.number).max().unwrap_or_else(|| fake_pr_number(s.pid));
+            s.prs.push(pr::Pr::synthetic(n + 1, look));
         }
     }
 
@@ -848,7 +864,7 @@ impl FakeSource {
     /// Puts a sandbox PR's CI in flight, or stops it (#62).
     pub fn set_pr_running(&self, session_id: &str, on: bool) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            if let Some(p) = s.pr.as_mut() {
+            for p in s.prs.iter_mut() {
                 p.pending = if on { 2 } else { 0 };
             }
         }

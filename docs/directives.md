@@ -62,5 +62,6 @@
 | 60 | 2026-09-10 | Linear 노드는 웹 말고 앱으로 열기 | ✅ | `src/ticket.rs` (`app_url`: `linear://<slug>/issue/<KEY>`, 제목 슬러그는 버림), `src/ui/board.rs` (`open_link`가 딥링크 먼저·웹 폴백), `src/render/scene.rs` (`TicketDraw.app_url`) |
 | 61 | 2026-09-10 | Linear 완료 + PR 머지 + Claude idle 이면 선을 볼드로 | ✅ | `src/render/scene.rs` (`DONE_LINE_W` 2.9, `done_lanes`, `Frame.done_lanes`), `src/ui/board.rs`, `src/main.rs`(데모에 끝난 레인 하나) |
 | 62 | 2026-09-10 | CI가 돌고 있는 PR은 노란색 보더 | ✅ | `src/pr.rs` (`pending` 집계, `running()`; CheckRun `status` vs StatusContext `state`), `src/theme.rs` (`busy`), `src/render/scene.rs` (보더 오버레이 1.7px), `src/sources.rs`·`src/ui/devtools.rs` (`CI` 토글), `src/main.rs` |
+| 63 | 2026-09-10 | 하나의 티켓에 PR이 여러 개일 수 있음 | ✅ | 수집은 세션 단위, 배치는 가로 연결. `src/model.rs` (`pr` → `prs: Vec`), `src/pr.rs` (`scan_transcript` → 전부, `MAX_PER_SESSION` 4), `src/render/scene.rs` (`PR_CHAIN_GAP`/`PR_CHAIN_SPAN`, 넘치면 `+n` 배지; `done_lanes`는 '머지 하나 이상 + 진행 중 없음'), `src/ui/devtools.rs` (`+` 버튼), `src/sources.rs` (`add_pr`) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

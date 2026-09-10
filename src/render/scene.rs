@@ -43,6 +43,10 @@ pub const SETTLE_SHRINK: f32 = 0.25;
 /// runs into the connector's left edge and stops there: the work leaves the
 /// board (#56).
 pub const PR_EDGE: f32 = 14.0;
+/// Gap between chained connectors when a session has several PRs (#63).
+pub const PR_CHAIN_GAP: f32 = 5.0;
+/// How far left the chain may reach before older PRs collapse into a badge.
+pub const PR_CHAIN_SPAN: f32 = 210.0;
 /// The Linear issue docks against the left edge, where the lane begins: the
 /// work comes from the ticket and leaves through the PR (#57).
 pub const TICKET_EDGE: f32 = 14.0;
@@ -617,41 +621,90 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Inst
     out
 }
 
-/// Docks each session's PR against the right edge of the board, at the height
-/// its lane arrives there. The connectors line up in a column and stay
-/// axis-aligned however the trace approaches, so none of them sit rotated on a
-/// diagonal (#56, #57).
+/// Docks a session's PRs against the right edge of the board, chained left
+/// from it with the newest outermost, at the height its lane arrives there.
+/// The connectors line up in a column and stay axis-aligned however the trace
+/// approaches, so none sit rotated on a diagonal (#56, #57). One ticket often
+/// has several PRs; when the chain outgrows `PR_CHAIN_SPAN` the oldest
+/// collapse into a `+n` badge (#63).
 pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[ChipDraw]) -> Vec<PrDraw> {
     let mut out = Vec::new();
     for c in chips {
         let Target::Session(i) = c.target else { continue };
         let Some(session) = model.chips.get(i) else { continue };
-        let Some(pr) = session.info.pr.as_ref() else { continue };
+        if session.info.prs.is_empty() {
+            continue;
+        }
         let Some(lane) = lanes.get(c.lane) else { continue };
         if !lane.visible || c.alpha <= 0.01 {
             continue;
         }
-        let label = pr.label();
-        let width = (font::measure(&label, PR_TEXT) + 2.0 * PR_PAD).max(30.0);
-        let left = layout.width - PR_EDGE - width;
-        let Some(s) = lane.path.s_at_x(left) else { continue };
+
+        // Lay the chain out from the right, newest first, and stop when it
+        // would reach too far back across the board.
+        let mut placed: Vec<(f32, f32, &pr::Pr)> = Vec::new();
+        let mut right = layout.width - PR_EDGE;
+        let mut dropped = 0;
+        for pr in session.info.prs.iter().rev() {
+            let w = (font::measure(&pr.label(), PR_TEXT) + 2.0 * PR_PAD).max(30.0);
+            if !placed.is_empty() && layout.width - PR_EDGE - (right - w) > PR_CHAIN_SPAN {
+                dropped += 1;
+                continue;
+            }
+            placed.push((right - w, w, pr));
+            right -= w + PR_CHAIN_GAP;
+        }
+        if dropped > 0 {
+            let label = format!("+{dropped}");
+            let w = (font::measure(&label, PR_TEXT) + 2.0 * PR_PAD).max(24.0);
+            right -= w;
+            // The badge stands for PRs nobody can read here, so it takes the
+            // quietest look rather than pretending to a state.
+            out.push(PrDraw {
+                lane: c.lane,
+                s: 0.0,
+                center: Pt::new(right + w / 2.0, 0.0),
+                width: w,
+                label,
+                look: pr::Look::Closed,
+                running: false,
+                alpha: c.alpha,
+                hover: 0.0,
+                url: None,
+            });
+        }
+
+        // The trace stops where it meets the leftmost node of the chain.
+        let left = out.last().filter(|_| dropped > 0).map(|b| b.center.x - b.width / 2.0).unwrap_or(right + PR_CHAIN_GAP);
+        let Some(s) = lane.path.s_at_x(left) else {
+            out.truncate(out.len() - usize::from(dropped > 0));
+            continue;
+        };
         if lane.reveal < 1.0 && lane.reveal * lane.path.length() < s {
+            out.truncate(out.len() - usize::from(dropped > 0));
             continue;
         }
-        let entry = lane.path.point_at(s).0;
-        out.push(PrDraw {
-            lane: c.lane,
-            s,
-            center: Pt::new(left + width / 2.0, entry.y),
-            width,
-            label,
-            look: pr.look(),
-            running: pr.running(),
-            alpha: c.alpha,
-            hover: 0.0,
-            // A sandbox PR has nowhere to go; only real ones open (#57).
-            url: (!session.info.synthetic).then(|| pr.url()),
-        });
+        let y = lane.path.point_at(s).0.y;
+        if dropped > 0 {
+            if let Some(badge) = out.last_mut() {
+                badge.s = s;
+                badge.center.y = y;
+            }
+        }
+        for (x, w, pr) in placed {
+            out.push(PrDraw {
+                lane: c.lane,
+                s,
+                center: Pt::new(x + w / 2.0, y),
+                width: w,
+                label: pr.label(),
+                look: pr.look(),
+                running: pr.running(),
+                alpha: c.alpha,
+                hover: 0.0,
+                url: (!session.info.synthetic).then(|| pr.url()),
+            });
+        }
     }
     out
 }
@@ -699,7 +752,9 @@ pub fn done_lanes(model: &BoardModel, chips: &[ChipDraw]) -> Vec<usize> {
             let Target::Session(i) = c.target else { return None };
             let session = model.chips.get(i)?;
             let done = session.info.ticket.as_ref().is_some_and(|t| t.status == Some(ticket::Status::Done))
-                && session.info.pr.as_ref().is_some_and(|p| p.look() == pr::Look::Merged)
+                && !session.info.prs.is_empty()
+                && session.info.prs.iter().any(|p| p.look() == pr::Look::Merged)
+                && session.info.prs.iter().all(|p| matches!(p.look(), pr::Look::Merged | pr::Look::Closed))
                 && session.phase() == Phase::Idle;
             done.then_some(c.lane)
         })
@@ -821,7 +876,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         }
         // A lane carrying a PR ends at its connector: the work leaves the
         // board there, so nothing is stroked past it (#56).
-        let ends_at = f.prs.iter().find(|p| p.lane == li).map(|p| p.s);
+        let ends_at = f.prs.iter().filter(|p| p.lane == li).map(|p| p.s).fold(None, |a: Option<f32>, s| Some(a.map_or(s, |a| a.min(s))));
         let cut_short;
         let lane: &Polyline = match ends_at {
             // Sliced from zero so chip arc lengths still line up.
