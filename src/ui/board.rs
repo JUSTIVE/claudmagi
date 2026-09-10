@@ -11,10 +11,10 @@ use gpui::{
     MouseUpEvent, Pixels, ScrollWheelEvent, SharedString, Stateful, Window, canvas, div, prelude::*, px,
 };
 
-use crate::geom::{Polyline, Pt};
+use crate::geom::Pt;
 use crate::model::{BoardModel, Target};
 use crate::render::paint::PathCache;
-use crate::render::scene::{self, ChipDraw, Frame, GAP, Layout};
+use crate::render::scene::{self, ChipDraw, Frame, GAP, Lane, Layout};
 use crate::settings::Settings;
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
@@ -46,7 +46,9 @@ pub struct Board {
     pub(crate) dev: PanelState,
     pub(crate) settings_panel: PanelState,
     layout: Layout,
-    lanes: Rc<Vec<Polyline>>,
+    lanes: Rc<Vec<Lane>>,
+    /// True while the last built lanes were mid-slide (#49).
+    lanes_moving: bool,
     draws: Vec<ChipDraw>,
     paths: Rc<RefCell<PathCache>>,
     scroll_y: f32,
@@ -137,6 +139,7 @@ impl Board {
             dev: PanelState::default(),
             settings_panel: PanelState::default(),
             lanes: Rc::new(Vec::new()),
+            lanes_moving: false,
             draws: Vec::new(),
             paths: Rc::new(RefCell::new(PathCache::default())),
             scroll_y: 0.0,
@@ -196,13 +199,18 @@ impl Board {
         cx.notify();
     }
 
-    fn ensure_lanes(&mut self, win_w: f32, win_h: f32) {
+    /// Rebuilds the lane geometry when the layout changes and on every
+    /// frame while rows are sliding into a new arrangement (#49), plus one
+    /// more frame afterwards so the lanes settle on their exact spots.
+    fn ensure_lanes(&mut self, win_w: f32, win_h: f32, now: Instant) {
         let layout = Layout::new(win_w, win_h, self.model.slot_span(), self.settings.zoom);
-        if layout == self.layout && !self.lanes.is_empty() {
+        let moving = self.model.rows.active(now);
+        if layout == self.layout && !self.lanes.is_empty() && !moving && !self.lanes_moving {
             return;
         }
         self.layout = layout;
-        self.lanes = Rc::new(layout.build_lanes());
+        self.lanes = Rc::new(layout.build_lanes_for(&self.model.rows, now));
+        self.lanes_moving = moving;
     }
 
     fn clamp_scroll(&mut self) {
@@ -274,7 +282,7 @@ impl Render for Board {
         let (w, h) = (f32::from(vp.width), f32::from(vp.height));
 
         self.model.tick(dt, now);
-        self.ensure_lanes(w, h);
+        self.ensure_lanes(w, h, now);
         self.clamp_scroll();
         for (target, key, s) in scene::placements(&self.model, &self.layout, &self.lanes) {
             if let Some(anim) = self.model.anim_mut(target) {

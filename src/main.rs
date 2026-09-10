@@ -205,7 +205,7 @@ fn render_frame(
     if demo_hover && model.chips.len() > 1 {
         model.chips[1].anim.hover_t = 1.0;
     }
-    let lanes = Rc::new(layout.build_lanes());
+    let lanes = Rc::new(layout.build_lanes_for(&model.rows, now));
     let chips = scene::chip_draws(&model, &layout, &lanes, now);
     let frame = scene::Frame { lanes, chips, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));

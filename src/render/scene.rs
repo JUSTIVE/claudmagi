@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::font;
 use crate::geom::{Polyline, Pt, smoothstep};
-use crate::model::{BoardModel, Phase, Target};
+use crate::model::{BoardModel, Phase, RowKind, Rows, TRAIL_ROWS, Target};
 use crate::theme::{self, Palette, Rgba};
 
 /// Spacing inside a pair of traces and the extra gap between pairs (#14).
@@ -29,7 +29,7 @@ pub const TOP_PAD: f32 = 54.0;
 pub const BOTTOM_PAD: f32 = 34.0;
 /// Empty lanes drawn below the last session (#45): the board is exactly
 /// `LEAD_LANES + sessions + TRAIL_LANES` lanes, never padded to the window.
-pub const TRAIL_LANES: usize = 6;
+pub const TRAIL_LANES: usize = TRAIL_ROWS;
 pub const TITLE_SCALE: f32 = 2.6;
 /// Path distance between a chip's trailing edge and the next subagent chip.
 pub const SUB_GAP: f32 = 44.0;
@@ -123,9 +123,27 @@ pub struct ChipDraw {
     pub style: ChipStyle,
 }
 
+/// One trace as drawn this frame. Its geometry is that of lane index
+/// `pos`, which is fractional while the rows slide into a new arrangement
+/// (#49); a brand-new lane draws in from the left (`reveal`), and the gap
+/// rows between groups are laid out but never drawn (`visible`).
+#[derive(Clone, Debug)]
+pub struct Lane {
+    pub path: Polyline,
+    pub pos: f32,
+    pub reveal: f32,
+    pub visible: bool,
+}
+
+impl Lane {
+    fn fixed(path: Polyline, pos: f32) -> Self {
+        Self { path, pos, reveal: 1.0, visible: true }
+    }
+}
+
 #[derive(Clone)]
 pub struct Frame {
-    pub lanes: Rc<Vec<Polyline>>,
+    pub lanes: Rc<Vec<Lane>>,
     pub chips: Vec<ChipDraw>,
     pub scroll_y: f32,
     pub t: f32,
@@ -244,8 +262,30 @@ impl Layout {
         LEAD_LANES + k
     }
 
-    pub fn build_lanes(&self) -> Vec<Polyline> {
-        (0..self.lanes).map(|i| lane_path(i, self)).collect()
+    /// Every lane at rest and visible (geometry checks, tests).
+    pub fn build_lanes(&self) -> Vec<Lane> {
+        (0..self.lanes).map(|i| Lane::fixed(lane_path(i, self), i as f32)).collect()
+    }
+
+    /// The lanes as the model's rows want them drawn at `now`: session and
+    /// trailing rows at their (possibly sliding) positions, gap rows hidden,
+    /// new rows drawing in (#49). Lead lanes never move.
+    pub fn build_lanes_for(&self, rows: &Rows, now: Instant) -> Vec<Lane> {
+        (0..self.lanes)
+            .map(|i| {
+                if i < LEAD_LANES {
+                    return Lane::fixed(lane_path(i, self), i as f32);
+                }
+                let r = i - LEAD_LANES;
+                let pos = LEAD_LANES as f32 + rows.pos(r, now);
+                Lane {
+                    path: lane_path_at(pos, self),
+                    pos,
+                    reveal: rows.reveal(r, now),
+                    visible: rows.kind(r) != RowKind::Gap,
+                }
+            })
+            .collect()
     }
 }
 
@@ -291,8 +331,28 @@ pub fn lane_params(idx: usize, layout: &Layout) -> Vec<Stripe> {
         .collect()
 }
 
+/// `lane_params` at a fractional lane position: a lane mid-slide (#49)
+/// takes the geometry between its two integer neighbours.
+pub fn lane_params_at(pos: f32, layout: &Layout) -> Vec<Stripe> {
+    let i0 = pos.floor().max(0.0);
+    let t = pos - i0;
+    let a = lane_params(i0 as usize, layout);
+    if t <= 1e-4 {
+        return a;
+    }
+    let b = lane_params(i0 as usize + 1, layout);
+    a.iter()
+        .zip(&b)
+        .map(|(p, q)| Stripe { ax: p.ax + (q.ax - p.ax) * t, y: p.y + (q.y - p.y) * t, d: p.d + (q.d - p.d) * t })
+        .collect()
+}
+
 pub fn lane_path(i: usize, layout: &Layout) -> Polyline {
-    let params = lane_params(i, layout);
+    lane_path_at(i as f32, layout)
+}
+
+pub fn lane_path_at(pos: f32, layout: &Layout) -> Polyline {
+    let params = lane_params_at(pos, layout);
     let mut corners = Vec::with_capacity(2 + params.len() * 2);
     let first = params[0];
     corners.push(Pt::new((-24.0f32).min(first.ax - 1.0), first.y));
@@ -329,9 +389,9 @@ fn inside_sub(layout: &Layout, x: f32, w: f32) -> bool {
 /// Within a lane pair the upper lane sits `PAIR_STAGGER / 2` further down
 /// the diagonal and the lower lane the same distance back, so the two chips
 /// are offset along the trace instead of lining up shoulder to shoulder.
-pub fn session_anchor(lane: &Polyline, lane_index: usize, layout: &Layout, chip_w: f32) -> (f32, u32) {
-    let params = lane_params(lane_index, layout);
-    let stagger = session_stagger(lane_index);
+pub fn session_anchor(lane: &Lane, layout: &Layout, chip_w: f32) -> (f32, u32) {
+    let params = lane_params_at(lane.pos, layout);
+    let stagger = session_stagger_at(lane.pos);
     // Along a 45° diagonal, an arc-length shift `d` moves (d/√2, d/√2).
     let d = stagger / std::f32::consts::SQRT_2;
     let cands: Vec<(Pt, u32)> =
@@ -341,14 +401,20 @@ pub fn session_anchor(lane: &Polyline, lane_index: usize, layout: &Layout, chip_
         .find(|(p, _)| inside(layout, p.x, chip_w))
         .or_else(|| cands.iter().find(|(p, _)| p.x - chip_w / 2.0 >= layout.width * LEFT_BOUND))
         .unwrap_or_else(|| cands.last().unwrap());
-    (lane.nearest_s(pick.0), pick.1)
+    (lane.path.nearest_s(pick.0), pick.1)
 }
 
 /// Signed arc-length shift of a session chip from its diagonal's midpoint:
 /// the upper lane of a pair (even slot) goes forward, the lower lane back.
-pub fn session_stagger(lane_index: usize) -> f32 {
-    let slot = lane_index as i32 - LEAD_LANES as i32;
-    if slot.rem_euclid(2) == 0 { PAIR_STAGGER / 2.0 } else { -PAIR_STAGGER / 2.0 }
+/// For a lane mid-slide (#49) it blends linearly between the two parities,
+/// so the chip glides rather than hopping when its lane changes from an
+/// upper to a lower one.
+pub fn session_stagger_at(pos: f32) -> f32 {
+    let slot = pos - LEAD_LANES as f32;
+    let k = slot.floor();
+    let frac = slot - k;
+    let sign = if (k as i32).rem_euclid(2) == 0 { 1.0 - 2.0 * frac } else { 2.0 * frac - 1.0 };
+    PAIR_STAGGER / 2.0 * sign
 }
 
 /// A chip's intended spot before any animation is applied.
@@ -365,22 +431,24 @@ struct Placement {
 /// Lays every session and subagent out on its lane. Subagents alternate
 /// right / left of the session chip and avoid the side where they would run
 /// off screen (#22, #27).
-fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Placement> {
+fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Lane]) -> Vec<Placement> {
     let mut out = Vec::new();
     for (k, c) in model.chips.iter().enumerate() {
         let lane_idx = Layout::chip_lane(c.slot);
-        let Some(lane) = lanes.get(lane_idx) else { continue };
+        let Some(lane_ref) = lanes.get(lane_idx) else { continue };
         let label = c.info.label();
         let style = SESSION_STYLE;
         let width = style.width(&label);
-        let (s_c, stripe) = session_anchor(lane, lane_idx, layout, width);
-        // Keys carry the lane so a group shift also fades (#28, #41).
-        let key = (lane_idx as u32) << 8 | stripe;
+        let (s_c, stripe) = session_anchor(lane_ref, layout, width);
+        // Keys name the spot on the lane, not the lane: when blocks shift,
+        // chips slide along with their lane instead of fading (#49).
+        let key = stripe;
         out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style });
 
         // Horizontal runs either side of the parent's diagonal (stripe `key`),
         // trimmed by CURVE_MARGIN so nothing sits on a bend (#36).
-        let params = lane_params(lane_idx, layout);
+        let params = lane_params_at(lane_ref.pos, layout);
+        let lane = &lane_ref.path;
         let b = stripe as usize;
         let st = params[b];
         let s_bend_in = lane.nearest_s(Pt::new(st.ax, st.y));
@@ -417,7 +485,7 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
                 left_cursor = s_c - width / 2.0 - SUB_GAP;
             }
             // Key: side + ordinal on that side, so flipping sides animates.
-            let key = (lane_idx as u32) << 8 | (100 + j as u32 * 2 + on_right as u32);
+            let key = 100 + j as u32 * 2 + on_right as u32;
             out.push(Placement { target: Target::Sub(k, j), lane: lane_idx, key, s_c, width, label, style });
         }
     }
@@ -426,13 +494,13 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<Pla
 
 /// `(target, placement key, arc length)` for every chip — feed these to
 /// `Anim::track_placement` before drawing so relocations fade (#28).
-pub fn placements(model: &BoardModel, layout: &Layout, lanes: &[Polyline]) -> Vec<(Target, u32, f32)> {
+pub fn placements(model: &BoardModel, layout: &Layout, lanes: &[Lane]) -> Vec<(Target, u32, f32)> {
     place_all(model, layout, lanes).into_iter().map(|p| (p.target, p.key, p.s_c)).collect()
 }
 
 /// Projects every session chip and its subagent chain onto their lane,
 /// applying unplug, hover, appear/fade and relocation animations.
-pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: Instant) -> Vec<ChipDraw> {
+pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Instant) -> Vec<ChipDraw> {
     let mut out = Vec::new();
     for pl in place_all(model, layout, lanes) {
         let Some(lane) = lanes.get(pl.lane) else { continue };
@@ -453,7 +521,13 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
             None => (pl.s_c, 1.0),
         };
         let p = smoothstep(anim.disconnect);
-        let (center, tangent) = lane.point_at(s_c + p * pl.style.pull);
+        let (center, tangent) = lane.path.point_at(s_c + p * pl.style.pull);
+        // On a lane still drawing in, the chip shows as the trace reaches it (#49).
+        let reveal_gate = if lane.reveal < 1.0 {
+            smoothstep((lane.reveal * lane.path.length() - s_c + 20.0) / 60.0)
+        } else {
+            1.0
+        };
         out.push(ChipDraw {
             target: pl.target,
             lane: pl.lane,
@@ -462,7 +536,7 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Polyline], now: 
             label: pl.label,
             p,
             hover: anim.hover_t,
-            alpha: anim.alpha(now).min(parent_alpha) * reloc_alpha,
+            alpha: anim.alpha(now).min(parent_alpha) * reloc_alpha * reveal_gate,
             phase,
             center,
             tangent,
@@ -562,7 +636,22 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
     }
 
     // Traces + packets.
-    for (li, lane) in f.lanes.iter().enumerate() {
+    for (li, lane_ref) in f.lanes.iter().enumerate() {
+        if !lane_ref.visible {
+            continue;
+        }
+        // A new lane draws in from the left: only the revealed arc is stroked (#49).
+        let drawn_in;
+        let lane: &Polyline = if lane_ref.reveal < 1.0 {
+            let shown = lane_ref.reveal * lane_ref.path.length();
+            if shown < 2.0 {
+                continue;
+            }
+            drawn_in = Polyline::new(lane_ref.path.slice(0.0, shown));
+            &drawn_in
+        } else {
+            &lane_ref.path
+        };
         let (Some(first), Some(last)) = (lane.pts.first(), lane.pts.last()) else { continue };
         let y_min = first.y.min(last.y) + oy - 40.0;
         let y_max = first.y.max(last.y) + oy + 40.0;
@@ -614,7 +703,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             continue;
         }
         let st = &c.style;
-        let (pos, tan) = lane.point_at(socket_center(c));
+        let (pos, tan) = lane.path.point_at(socket_center(c));
         let center = to_screen(pos);
         let angle = tan.angle_deg();
         out.push(Shape::RoundedRect {
@@ -809,9 +898,52 @@ mod tests {
     }
 
     #[test]
+    fn lanes_follow_the_rows_hide_gaps_and_slide_with_their_chips() {
+        use crate::model::ROW_SECS;
+        use std::time::Duration;
+        let t0 = Instant::now();
+        let mut model = BoardModel::new();
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        a.group = "g1".into();
+        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
+        b.group = "g2".into();
+        model.apply(vec![a.clone(), b.clone()], t0);
+        model.settle();
+        let layout = Layout::new(DESIGN_W, DESIGN_H, model.slot_span(), 1.0);
+        let lanes = layout.build_lanes_for(&model.rows, t0);
+        assert_eq!(lanes.len(), layout.lanes);
+        assert!(lanes[LEAD_LANES].visible, "a session row has a trace");
+        assert!(!lanes[LEAD_LANES + 1].visible, "gap rows carry no trace (#49)");
+        assert!(lanes[LEAD_LANES + 4].visible && lanes[LEAD_LANES + 5].visible, "session and trailing rows do");
+        let key_before = placements(&model, &layout, &lanes).iter().find(|p| p.0 == Target::Session(1)).unwrap().1;
+
+        // A session joins g1 above b.
+        let mut c = SessionInfo::synthetic(3, "c", Phase::Working);
+        c.group = "g1".into();
+        let t1 = t0 + Duration::from_secs(5);
+        model.apply(vec![a, b, c], t1);
+        let layout = Layout::new(DESIGN_W, DESIGN_H, model.slot_span(), 1.0);
+        let mid = t1 + Duration::from_secs_f32(ROW_SECS / 2.0);
+        let lanes = layout.build_lanes_for(&model.rows, mid);
+        let b_lane = &lanes[LEAD_LANES + 5];
+        assert!((b_lane.pos - (LEAD_LANES as f32 + 4.5)).abs() < 1e-3, "b's lane is halfway down");
+        let y4 = lane_params(LEAD_LANES + 4, &layout)[0].y;
+        let y5 = lane_params(LEAD_LANES + 5, &layout)[0].y;
+        assert!((lane_params_at(b_lane.pos, &layout)[0].y - (y4 + y5) / 2.0).abs() < 1e-3);
+        assert!((lanes[LEAD_LANES + 1].reveal - 0.5).abs() < 1e-3, "the new lane is half drawn in");
+        // b keeps its placement key, so it rides the lane instead of fading.
+        let key_after = placements(&model, &layout, &lanes).iter().find(|p| p.0 == Target::Session(1)).unwrap().1;
+        assert_eq!(key_before, key_after);
+        // The stagger blends across the parity change rather than hopping.
+        assert!((session_stagger_at(LEAD_LANES as f32 + 4.5)).abs() < 1e-3);
+        assert_eq!(session_stagger_at(LEAD_LANES as f32 + 4.0), PAIR_STAGGER / 2.0);
+        assert_eq!(session_stagger_at(LEAD_LANES as f32 + 5.0), -PAIR_STAGGER / 2.0);
+    }
+
+    #[test]
     fn paired_sessions_are_staggered_along_the_diagonal() {
         // Synthetic sessions group in threes, so six of them give slots
-        // 0..3 and 8..11 (GROUP_GAP = 5): pairs (0,1) and (8,9).
+        // 0..3 and 6..9 (GROUP_GAP = 3): pairs (0,1) and (6,7).
         let layout = Layout::new(DESIGN_W, DESIGN_H, 6, 1.0);
         let lanes = layout.build_lanes();
         let infos: Vec<_> = (1..=6).map(|i| SessionInfo::synthetic(i, "s", Phase::Working)).collect();
@@ -819,7 +951,7 @@ mod tests {
         model.apply(infos, Instant::now());
         model.settle();
         let slots: Vec<usize> = model.chips.iter().map(|c| c.slot).collect();
-        assert_eq!(slots, vec![0, 1, 2, 8, 9, 10]);
+        assert_eq!(slots, vec![0, 1, 2, 6, 7, 8]);
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
         assert_eq!(draws.len(), 6);
         let along = |d: &ChipDraw| (d.center.x + d.center.y) / std::f32::consts::SQRT_2;
@@ -874,7 +1006,7 @@ mod tests {
             // The rounded corner starts CORNER_R before the apex, so probe a
             // little inside the margin: the trace must still be flat there.
             for s in [d.s_c - d.width / 2.0 - 16.0, d.s_c + d.width / 2.0 + 16.0] {
-                assert!(lane.point_at(s).1.angle_deg().abs() < 0.5, "{} keeps clear of the bends", d.label);
+                assert!(lane.path.point_at(s).1.angle_deg().abs() < 0.5, "{} keeps clear of the bends", d.label);
             }
         }
         assert_eq!(draws[3].lane - draws[0].lane, 1, "sessions take consecutive lanes");
@@ -981,8 +1113,8 @@ mod tests {
         model.settle();
         let draws = chip_draws(&model, &layout, &lanes, Instant::now());
         let refs: Vec<&ChipDraw> = draws.iter().collect();
-        let (pieces, cut) = splice_lane(&lanes[draws[0].lane], &refs);
+        let (pieces, cut) = splice_lane(&lanes[draws[0].lane].path, &refs);
         assert!(pieces.iter().filter(|p| p.len() >= 2).count() >= 5);
-        assert_eq!(cut, lanes[draws[0].lane].length(), "nothing unplugged: packets flow to the end");
+        assert_eq!(cut, lanes[draws[0].lane].path.length(), "nothing unplugged: packets flow to the end");
     }
 }

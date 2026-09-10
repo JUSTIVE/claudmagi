@@ -379,8 +379,79 @@ impl Target {
     }
 }
 
-/// Empty lanes between session groups (#41).
-pub const GROUP_GAP: usize = 5;
+/// Empty rows between session groups (#41, #48: three, and no traces are
+/// drawn in them).
+pub const GROUP_GAP: usize = 3;
+/// Empty traces drawn below the last group (#45).
+pub const TRAIL_ROWS: usize = 6;
+/// How long rows take to slide into a new arrangement (#48).
+pub const ROW_SECS: f32 = 0.4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowKind {
+    /// Part of a group block; carries a session.
+    Session,
+    /// Between two groups; no trace is drawn.
+    Gap,
+    /// Below the last group; an empty trace.
+    Trail,
+}
+
+/// The rows of the board in slot order (group blocks, gaps, trailing rows)
+/// and how they are moving. When the blocks change, nothing jumps: rows
+/// that already existed slide from where they were to where they are now,
+/// and brand-new rows draw in from the left (#48).
+#[derive(Clone, Debug, Default)]
+pub struct Rows {
+    pub kind: Vec<RowKind>,
+    /// Where each row was drawn when the change began, in row units;
+    /// `None` for a row that did not exist before.
+    pub from: Vec<Option<f32>>,
+    pub started: Option<Instant>,
+}
+
+impl Rows {
+    pub fn is_empty(&self) -> bool {
+        self.kind.is_empty()
+    }
+
+    /// 0 → 1 over `ROW_SECS`, eased.
+    pub fn progress(&self, now: Instant) -> f32 {
+        match self.started {
+            Some(t0) => crate::geom::smoothstep(now.saturating_duration_since(t0).as_secs_f32() / ROW_SECS),
+            None => 1.0,
+        }
+    }
+
+    pub fn active(&self, now: Instant) -> bool {
+        self.progress(now) < 1.0
+    }
+
+    /// Where row `r` is drawn right now, in row units (fractional mid-slide).
+    pub fn pos(&self, r: usize, now: Instant) -> f32 {
+        match self.from.get(r) {
+            Some(Some(f)) => f + (r as f32 - f) * self.progress(now),
+            _ => r as f32,
+        }
+    }
+
+    /// How much of a new row's trace has drawn in (0 → 1); 1 for old rows.
+    pub fn reveal(&self, r: usize, now: Instant) -> f32 {
+        match self.from.get(r) {
+            Some(None) => self.progress(now),
+            _ => 1.0,
+        }
+    }
+
+    pub fn kind(&self, r: usize) -> RowKind {
+        self.kind.get(r).copied().unwrap_or(RowKind::Trail)
+    }
+
+    fn settle(&mut self) {
+        self.from = (0..self.kind.len()).map(|r| Some(r as f32)).collect();
+        self.started = None;
+    }
+}
 
 /// Everything the renderer needs, updated by `apply` (data) and `tick` (time).
 #[derive(Default)]
@@ -390,6 +461,9 @@ pub struct BoardModel {
     pub notice: Option<(String, Instant)>,
     /// Groups in order of first appearance; each owns a block of lanes.
     pub groups: Vec<String>,
+    /// `(group, first slot, span)` per block, as laid out by `assign_slots`.
+    pub blocks: Vec<(String, usize, usize)>,
+    pub rows: Rows,
 }
 
 impl BoardModel {
@@ -435,7 +509,7 @@ impl BoardModel {
                 }
             }
         }
-        self.assign_slots();
+        self.assign_slots(now);
     }
 
     /// Lowest in-group position not held by any chip of `group` (fading ones
@@ -445,19 +519,58 @@ impl BoardModel {
     }
 
     /// Lays the groups out as consecutive blocks separated by `GROUP_GAP`
-    /// empty lanes. Inside a block chips keep their `gslot`; a block only
-    /// moves when an earlier group grows or vanishes entirely.
-    pub fn assign_slots(&mut self) {
+    /// empty rows. Inside a block chips keep their `gslot`; a block only
+    /// moves when an earlier group grows or vanishes entirely — and then it
+    /// slides there with its chips aboard rather than jumping (#48).
+    pub fn assign_slots(&mut self, now: Instant) {
         self.groups.retain(|g| self.chips.iter().any(|c| &c.info.group == g));
         let mut offset = 0;
+        let mut blocks = Vec::with_capacity(self.groups.len());
         for group in &self.groups {
             let mut span = 0;
             for c in self.chips.iter_mut().filter(|c| &c.info.group == group) {
                 c.slot = offset + c.gslot;
                 span = span.max(c.gslot + 1);
             }
+            blocks.push((group.clone(), offset, span));
             offset += span + GROUP_GAP;
         }
+        if blocks != self.blocks || self.rows.is_empty() {
+            self.rows = self.rows_for(&blocks, now);
+            self.blocks = blocks;
+        }
+    }
+
+    /// The row list for `blocks`, with every row that survives from the
+    /// current arrangement starting where it is drawn at `now`.
+    fn rows_for(&self, blocks: &[(String, usize, usize)], now: Instant) -> Rows {
+        let old_total = self.blocks.last().map(|b| b.1 + b.2).unwrap_or(0) + TRAIL_ROWS;
+        let prev = |r: usize| (r < old_total).then(|| self.rows.pos(r, now));
+        let mut kind = Vec::new();
+        let mut from = Vec::new();
+        for (bi, (group, _, span)) in blocks.iter().enumerate() {
+            let old = self.blocks.iter().find(|b| &b.0 == group);
+            for j in 0..*span {
+                kind.push(RowKind::Session);
+                from.push(match old {
+                    Some((_, o_off, o_span)) if j < *o_span => prev(o_off + j),
+                    _ => None,
+                });
+            }
+            let last = bi + 1 == blocks.len();
+            for j in 0..if last { TRAIL_ROWS } else { GROUP_GAP } {
+                kind.push(if last { RowKind::Trail } else { RowKind::Gap });
+                from.push(old.and_then(|(_, o_off, o_span)| prev(o_off + o_span + j)));
+            }
+        }
+        if blocks.is_empty() {
+            for r in 0..TRAIL_ROWS {
+                kind.push(RowKind::Trail);
+                from.push(prev(r));
+            }
+        }
+        let moving = from.iter().enumerate().any(|(r, f)| *f != Some(r as f32));
+        Rows { kind, from, started: moving.then_some(now) }
     }
 
     /// One past the highest occupied slot: how many lanes the board needs.
@@ -497,7 +610,7 @@ impl BoardModel {
         self.chips.retain(|c| !c.anim.dead());
         if self.chips.len() != before {
             dropped = true;
-            self.assign_slots();
+            self.assign_slots(now);
         }
         if let Some((_, at)) = &self.notice {
             if now.saturating_duration_since(*at) > Duration::from_secs(NOTICE_SECS) {
@@ -513,6 +626,7 @@ impl BoardModel {
     /// Jumps every animation to its resting state (headless renders, tests).
     pub fn settle(&mut self) {
         self.chips.retain(|c| !c.anim.gone);
+        self.rows.settle();
         for c in &mut self.chips {
             c.anim.settle(c.info.phase());
             c.subs.retain(|s| !s.anim.gone);
@@ -709,6 +823,60 @@ mod tests {
         b.group = "warp-tab:1-2".into();
         m.apply(vec![a, b], t0);
         assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1 + GROUP_GAP]);
+    }
+
+    #[test]
+    fn rows_slide_when_a_session_is_inserted_mid_board_and_up_when_a_group_goes() {
+        let t0 = Instant::now();
+        let mut m = BoardModel::new();
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        a.group = "g1".into();
+        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
+        b.group = "g2".into();
+        m.apply(vec![a.clone(), b.clone()], t0);
+        // Blocks: g1 = row 0, gap rows 1..4, g2 = row 4, then trailing rows.
+        assert_eq!(m.rows.kind.len(), 1 + GROUP_GAP + 1 + TRAIL_ROWS);
+        assert_eq!(m.rows.kind(0), RowKind::Session);
+        assert_eq!(m.rows.kind(1), RowKind::Gap);
+        assert_eq!(m.rows.kind(4), RowKind::Session);
+        assert_eq!(m.rows.kind(5), RowKind::Trail);
+        m.settle();
+        assert!(!m.rows.active(t0));
+
+        // A second session joins g1: its row is new and everything below
+        // slides down by one, gap and trailing rows included.
+        let mut c = SessionInfo::synthetic(3, "c", Phase::Working);
+        c.group = "g1".into();
+        let t1 = t0 + secs(5.0);
+        m.apply(vec![a.clone(), b.clone(), c.clone()], t1);
+        assert_eq!(m.chips.iter().map(|ch| ch.slot).collect::<Vec<_>>(), vec![0, 5, 1]);
+        assert_eq!(m.rows.from[0], Some(0.0));
+        assert_eq!(m.rows.from[1], None, "the new row draws in from the left");
+        assert_eq!(m.rows.from[2], Some(1.0), "gap rows shift too");
+        assert_eq!(m.rows.from[5], Some(4.0), "b's row starts where it was");
+        assert_eq!(m.rows.from[6], Some(5.0), "so do the trailing rows");
+        assert!(m.rows.active(t1));
+        assert_eq!(m.rows.pos(5, t1), 4.0);
+        assert_eq!(m.rows.reveal(1, t1), 0.0);
+        let mid = t1 + secs(ROW_SECS / 2.0);
+        assert!((m.rows.pos(5, mid) - 4.5).abs() < 1e-3);
+        assert!((m.rows.reveal(1, mid) - 0.5).abs() < 1e-3);
+        // A poll that changes nothing must not restart the slide.
+        m.apply(vec![a.clone(), b.clone(), c.clone()], t1 + secs(0.1));
+        assert_eq!(m.rows.started, Some(t1));
+        let end = t1 + secs(ROW_SECS + 0.01);
+        assert_eq!(m.rows.pos(5, end), 5.0);
+        assert!(!m.rows.active(end));
+
+        // g1 goes away entirely: g2 slides up from row 5 to row 0.
+        m.apply(vec![b.clone()], end);
+        assert_eq!(m.rows.started, Some(t1), "fading chips still hold their rows");
+        let gone = end + secs(FADE_SECS + 0.1);
+        m.tick(FADE_SECS + 0.1, gone);
+        assert_eq!(m.chips.len(), 1);
+        assert_eq!(m.chips[0].slot, 0);
+        assert_eq!(m.rows.from[0], Some(5.0));
+        assert_eq!(m.rows.started, Some(gone));
     }
 
     #[test]

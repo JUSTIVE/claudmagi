@@ -54,5 +54,6 @@
 | 46 | 2026-09-10 | UI(상태바·패널) 폰트를 헬베티카로 | ✅ | `src/theme.rs` (`UI_FONT = "Helvetica"`), `src/ui/board.rs`, `src/ui/panel.rs` |
 | 47 | 2026-09-10 | 모든 요소를 헬베티카로 — 보드 위 칩 라벨·제목 배지까지 | ✅ | `src/font.rs` (자체 스트로크 폰트 → `/System/Library/Fonts/Helvetica.ttc` Regular 글리프 외곽선을 `ttf-parser`로 읽어 채우기 경로로; `scale`은 캡 높이 6·scale px 유지), `src/render/paint.rs`, `src/render/svg.rs` |
 | 48 | 2026-09-10 | 새 워크트리에서 상태바에 Claude usage 넣기, 끝나면 리모트에 push | ✅ | `src/usage.rs` (키체인 → `curl` → `Usage`, ISO-8601 파서, 카운트다운), `src/ui/board.rs` (1분 폴링, 상태바 배지), `src/main.rs` (`--usage`) |
+| 49 | 2026-09-10 | 그룹 간 갭은 3행이면 충분하고 그 사이에는 선을 아예 빼기. 중간에 세션이 새로 들어오면 노드를 페이드로 옮기지 말고, 새 선이 왼쪽에서부터 들어오며 아래 선들이 (노드를 얹은 채) 아래로 밀려나게 | ✅ | `src/model.rs` (`GROUP_GAP` 3, `Rows`/`RowKind`, `assign_slots`→`rows_for`: 블록 diff로 행별 from/new 계산, `ROW_SECS` 0.4), `src/render/scene.rs` (`Lane{pos,reveal,visible}`, `lane_params_at`/`lane_path_at` 보간, `build_lanes_for`, 자리 키에서 레인 번호 제거, 왼쪽부터 드러나는 선 + 칩 게이트), `src/ui/board.rs` (슬라이드 중 매 프레임 레인 리빌드) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기
