@@ -19,6 +19,8 @@ use crate::theme::{self, Palette, Rgba};
 pub const GAP: f32 = 22.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
+/// A lane whose work finished end to end is drawn bold (#61).
+pub const DONE_LINE_W: f32 = 2.9;
 /// Vertical drop of a diagonal. The first diagonal of lane `i` is
 /// `DIAG + i * DIAG_GROWTH` (clamped to `DIAG_MIN` and to what fits before
 /// the next stripe), so the traces fan out from top to bottom (#45); every
@@ -203,6 +205,8 @@ pub struct Frame {
     pub prs: Vec<PrDraw>,
     /// Linear issue nodes at the head of each lane (#57).
     pub tickets: Vec<TicketDraw>,
+    /// Lanes drawn bold because their work is finished end to end (#61).
+    pub done_lanes: Vec<usize>,
     pub scroll_y: f32,
     pub t: f32,
     pub layout: Layout,
@@ -682,6 +686,23 @@ pub fn ticket_draws(model: &BoardModel, lanes: &[Lane], chips: &[ChipDraw]) -> V
     out
 }
 
+/// Lanes whose work is finished end to end — the Linear issue is done, the
+/// pull request landed, and the session has gone quiet. Nothing is left to do
+/// on them, so their trace is drawn bold (#61).
+pub fn done_lanes(model: &BoardModel, chips: &[ChipDraw]) -> Vec<usize> {
+    chips
+        .iter()
+        .filter_map(|c| {
+            let Target::Session(i) = c.target else { return None };
+            let session = model.chips.get(i)?;
+            let done = session.info.ticket.as_ref().is_some_and(|t| t.status == Some(ticket::Status::Done))
+                && session.info.pr.as_ref().is_some_and(|p| p.look() == pr::Look::Merged)
+                && session.phase() == Phase::Idle;
+            done.then_some(c.lane)
+        })
+        .collect()
+}
+
 pub fn hash01(i: usize) -> f32 {
     let mut x = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(0x1234_5678);
     x ^= x >> 29;
@@ -816,7 +837,8 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         };
         let pieces: Vec<Vec<Pt>> =
             pieces.into_iter().map(|piece| piece.into_iter().map(to_screen).collect()).collect();
-        out.push(Shape::Stroke { pieces, width: LINE_W, color: pal.line });
+        let width = if f.done_lanes.contains(&li) { DONE_LINE_W } else { LINE_W };
+        out.push(Shape::Stroke { pieces, width, color: pal.line });
 
         let working = chips
             .first()

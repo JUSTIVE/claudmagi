@@ -20,7 +20,7 @@ use gpui::{
     prelude::*, px, size,
 };
 
-use model::{BoardModel, SessionInfo};
+use model::{BoardModel, Phase, SessionInfo};
 use render::scene;
 use sources::{ClaudeSource, FakeSource, SessionSource};
 use ui::board::Board;
@@ -73,6 +73,13 @@ fn main() {
                 if let Some(id) = ids.get(i) {
                     fake.set_ticket(id, Some(Some(st)));
                 }
+            }
+            // One lane finished end to end, so the bold trace shows up in a
+            // demo render (#61).
+            if let Some(id) = ids.get(4) {
+                fake.set_pr(id, Some(pr::Look::Merged));
+                fake.set_ticket(id, Some(Some(ticket::Status::Done)));
+                fake.set_phase(id, Phase::Idle);
             }
             fake.snapshot()
         } else {
@@ -254,8 +261,20 @@ fn render_frame(
     let chips = scene::chip_draws(&model, &layout, &lanes, now);
     let prs = scene::pr_draws(&model, &layout, &lanes, &chips);
     let tickets = scene::ticket_draws(&model, &lanes, &chips);
-    let frame =
-        scene::Frame { lanes, chips, prs, tickets, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
+    let done_lanes = scene::done_lanes(&model, &chips);
+    let frame = scene::Frame {
+        lanes,
+        chips,
+        prs,
+        tickets,
+        done_lanes,
+        scroll_y: pan.1,
+        t: 3.7,
+        layout,
+        title,
+        pan_x: pan.0,
+        palette,
+    };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
     render::svg::to_svg(&shapes, width, height)
 }

@@ -395,6 +395,7 @@ impl Render for Board {
         }
         let prs = self.prs.clone();
         let tickets = self.tickets.clone();
+        let done_lanes = scene::done_lanes(&self.model, &self.draws);
 
         let palette = self.palette();
         let frame = Frame {
@@ -402,6 +403,7 @@ impl Render for Board {
             chips: self.draws.clone(),
             prs,
             tickets,
+            done_lanes,
             scroll_y: self.scroll_y,
             t: now.duration_since(self.started).as_secs_f32(),
             layout: self.layout,

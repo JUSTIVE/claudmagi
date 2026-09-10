@@ -77,6 +77,9 @@ Orca app to be running; with Orca closed the node falls back to showing just
 the key. Clicking a PR node opens it in the browser; a Linear node opens in the desktop app through `linear://`, falling back to the web.
 `claudmagi --prs` prints what resolved.
 
+When all three agree that a piece of work is over — the issue done, the pull
+request merged, the session idle — that lane's trace is drawn bold.
+
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
 otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp
 jumps use `WARP_FOCUS_URL=warp://session/<uuid>` read from the Claude process
