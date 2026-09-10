@@ -18,7 +18,7 @@
 | 입력 필요 / 완료 (세션, 분리) | 선이 느슨한 케이블 모양(S자 파형)으로 늘어진 뒤 홈(notch)이 파인 검은 소켓 블록에서 끝남. 칩은 소켓에서 떨어져 나가 있다. 흰색·다크 테마에서 **입력 필요는 주황 칩 + 검은 라벨**, **완료(idle)는 어두운 적갈색 칩 + 앰버 라벨**(#50) — 기다리는 쪽이 더 눈에 띈다. 오렌지 테마는 주황 칩이 배경에 묻히므로 입력 필요 적갈 + 앰버, idle은 한 단계 더 어두운 적갈 + 흐린 앰버 |
 | 완료 (서브에이전트, 제자리) | 서브에이전트는 분리되지 않는다: 선이 그대로 관통한 채 바탕만 idle 색으로 가라앉고 높이가 16 → 12로 줄어든다. 45초 뒤 페이드아웃 (#53) |
 | Linear 노드 (왼쪽 끝) | 세션의 Linear 이슈. 보드 **왼쪽 끝에 붙어** 있고 레인은 이 노드의 오른쪽 모서리에서 시작한다 — 작업이 티켓에서 나온다는 뜻. 상태(`state.type`)를 색으로: backlog·미조회 흐린 테두리 · todo 잉크 테두리 · **진행 중 앰버 채움** · **완료 검정 채움** · 취소 흐린 테두리. 클릭하면 **Linear 데스크톱 앱**으로 (#57, #58, #60) |
-| PR 커넥터 (오른쪽 끝) | 세션에 연결된 GitHub PR. 보드 **오른쪽 끝에 붙어** 한 열로 정렬되고, 트레이스가 왼쪽 모서리로 들어가 거기서 끊긴다 — 작업이 보드 밖으로 나간다는 뜻. 핀 없이 **몸통 색이 상태 전부**를 나타낸다: draft 잉크 테두리 · **open 녹색 테두리** · **approved 녹색 채움** · **체크 실패 오렌지 채움** · **merged 검정 채움** · closed 흐린 테두리. 테두리는 진행 중, 채움은 결판난 것. 클릭하면 PR이 열린다 (#56, #57, #58) |
+| PR 커넥터 (오른쪽 끝) | 세션에 연결된 GitHub PR. 보드 **오른쪽 끝에 붙어** 한 열로 정렬되고, 트레이스가 왼쪽 모서리로 들어가 거기서 끊긴다 — 작업이 보드 밖으로 나간다는 뜻. 핀 없이 **몸통 색이 상태 전부**를 나타낸다: draft 잉크 테두리 · **open 녹색 테두리** · **approved 녹색 채움** · **체크 실패 오렌지 채움** · **merged 검정 채움** · closed 흐린 테두리. 테두리는 진행 중, 채움은 결판난 것. **CI가 돌고 있으면 테두리를 노란색(1.7px)으로** 덮어쓴다 — 상태가 아니라 겹쳐 그리는 층이라 채워진 커넥터 위에도 보인다(재실행 중인 approved 등). 클릭하면 PR이 열린다 (#56, #57, #58, #62) |
 | 끝난 레인 | Linear가 완료 + PR이 머지 + 세션이 idle이면 그 레인의 트레이스를 굵게(1.6 → 2.9) 그린다. 셋 다 맞아야 하므로 "더 할 일이 없는 줄"을 한눈에 고를 수 있다 (#61) |
 | 호버 | 칩 주위 검은색 1.5px 외곽선(#11), 포인터 커서 |
 
@@ -31,7 +31,7 @@
 - `status == busy` 이고 `waitingFor` 없음 → 연결 상태.
 - `waitingFor` 있음(권한/다이얼로그) 또는 `tempo/state == blocked` → 분리 + 앰버(입력 필요).
 - `status == idle` → 세션은 분리 + idle 색(적갈 칩 + 앰버 라벨), 서브에이전트는 제자리에서 가라앉음(#53).
-- PR → 세션 트랜스크립트(`~/.claude/projects/<slug>/<sessionId>.jsonl`) 뒤쪽 2MB에서 `message.content` 블록 안의 `github.com/<owner>/<repo>/pull/<n>` 중 마지막 것. `cwd`의 origin remote와 repo가 일치해야 한다. 상태는 `gh pr view --json`, 60초 TTL 캐시에 스냅샷당 2건까지만 조회. `--prs`로 터미널에서 확인. (#56)
+- PR → 세션 트랜스크립트(`~/.claude/projects/<slug>/<sessionId>.jsonl`) 뒤쪽 2MB에서 `message.content` 블록 안의 `github.com/<owner>/<repo>/pull/<n>` 중 마지막 것. `cwd`의 origin remote와 repo가 일치해야 한다. 상태는 `gh pr view --json`, 60초 TTL 캐시에 스냅샷당 2건까지만 조회. 체크 집계는 `CheckRun`이면 `status`(완료 전) → `conclusion`(완료 후), `StatusContext`면 `state`를 본다. `QUEUED`/`IN_PROGRESS`/`PENDING`/`WAITING`/`REQUESTED`는 진행 중, `CANCELLED`·`SKIPPED`는 성공도 실패도 아니다. `--prs`로 터미널에서 확인. (#56)
 - Linear 이슈 → 세션 이름이 `ABC-123` 꼴이고 (a) 트랜스크립트의 `linear.app` 링크나 PR 제목이 같은 키를 반복하거나 (b) 팀 접두사가 보드가 실제 링크에서 본 팀이면 그 이름을 쓴다. 아니면 PR 제목의 `[ABC-123]` 태그, 그것도 없으면 트랜스크립트가 마지막으로 링크한 키. 이 규칙이 `YOSHI-60`을 티켓으로 오인하지 않으면서 `PJM-1924`는 통과시킨다. 워크스페이스 슬러그는 링크에서 가장 많이 본 것. 상태는 없다 — `orca linear issue`가 이 머신에서 `runtime_unavailable`이다 (#43의 warpctrl과 같은 상황). (#57)
 - Linear 상태 → `orca linear issue <KEY> --json`의 `result.issue.state.type` (`triage`/`backlog`/`unstarted`/`started`/`completed`/`canceled`/`duplicate`). **Orca 앱이 떠 있어야** 하고, 닫혀 있으면 `runtime_unavailable`이라 노드는 키만 보여준다. URL도 `result.issue.url`을 그대로 쓴다(슬러그 조립보다 정확). 60초 TTL, 실패는 5분 TTL(닫힌 Orca를 매초 두드리지 않기 위해), 스냅샷당 2건. (#58)
 - 클릭 → 해당 세션의 Warp 탭으로 이동. PR 노드는 브라우저로, Linear 노드는 `linear://<workspace>/issue/<KEY>` 딥링크로 데스크톱 앱에서 연다. 스킴이 안 먹으면 웹 URL로 폴백한다. Linear.app은 이 스킴을 Info.plist가 아니라 런타임에 등록하므로 LaunchServices에만 보인다 (#57, #60) (`WARP_FOCUS_URL=warp://session/<uuid>` 를 프로세스 환경에서 읽어 `open`).

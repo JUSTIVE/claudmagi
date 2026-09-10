@@ -174,6 +174,8 @@ pub struct PrDraw {
     pub width: f32,
     pub label: String,
     pub look: pr::Look,
+    /// CI is still working: a yellow border on top of whatever look it has (#62).
+    pub running: bool,
     pub alpha: f32,
     pub hover: f32,
     /// Where a click goes; `None` for sandbox connectors (#57).
@@ -644,6 +646,7 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
             width,
             label,
             look: pr.look(),
+            running: pr.running(),
             alpha: c.alpha,
             hover: 0.0,
             // A sandbox PR has nowhere to go; only real ones open (#57).
@@ -1020,8 +1023,12 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         if let Some(color) = fill {
             out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: None });
         }
-        if let Some(color) = stroke {
-            out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: Some(1.3) });
+        // A running CI overrides whatever border the look wanted, so it shows
+        // on a filled connector too — an approved PR re-running its checks is
+        // still worth seeing (#62).
+        let border = if c.running { Some((at(pal.busy), 1.7)) } else { stroke.map(|s| (s, 1.3)) };
+        if let Some((color, w)) = border {
+            out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: Some(w) });
         }
         out.push(Shape::Text { text: c.label.clone(), scale: PR_TEXT, stroke: 1.1, angle: 0.0, center, color: label });
     }

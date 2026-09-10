@@ -845,6 +845,15 @@ impl FakeSource {
         }
     }
 
+    /// Puts a sandbox PR's CI in flight, or stops it (#62).
+    pub fn set_pr_running(&self, session_id: &str, on: bool) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            if let Some(p) = s.pr.as_mut() {
+                p.pending = if on { 2 } else { 0 };
+            }
+        }
+    }
+
     pub fn cycle_ticket(&self, session_id: &str) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             s.ticket = match &s.ticket {

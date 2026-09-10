@@ -74,6 +74,10 @@ fn main() {
                     fake.set_ticket(id, Some(Some(st)));
                 }
             }
+            // One PR with CI in flight, for the yellow border (#62).
+            if let Some(id) = ids.get(1) {
+                fake.set_pr_running(id, true);
+            }
             // One lane finished end to end, so the bold trace shows up in a
             // demo render (#61).
             if let Some(id) = ids.get(4) {
@@ -135,13 +139,14 @@ fn main() {
             };
             match &s.pr {
                 Some(p) => println!(
-                    "{:<16} {:<20} {} {:<7} {}✓ {}✗  {}",
+                    "{:<16} {:<20} {} {:<7} {}✓ {}✗ {}⟳  {}",
                     s.label(),
                     ticket,
                     p.label(),
                     p.look().short(),
                     p.passed,
                     p.failed,
+                    p.pending,
                     p.title
                 ),
                 None => println!("{:<16} {:<20} -", s.label(), ticket),

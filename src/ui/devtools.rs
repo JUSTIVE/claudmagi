@@ -193,6 +193,13 @@ impl Board {
                             .on_click(move |_, _, _| sb.set_pr(&sid, Some(l))),
                     );
                 }
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                let ci = info.pr.as_ref().is_some_and(|p| p.running());
+                links = links.child(
+                    button(SharedString::from(format!("pr-ci-{i}")), "CI", ci)
+                        .on_click(move |_, _, _| sb.set_pr_running(&sid, !ci)),
+                );
                 list = list.child(links);
 
                 // And the same for the Linear node at the other end (#58).

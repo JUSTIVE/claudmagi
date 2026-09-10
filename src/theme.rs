@@ -25,6 +25,8 @@ pub struct Palette {
     /// label that reads on top of it (#58).
     pub alarm: Rgba,
     pub on_alarm: Rgba,
+    /// Border on a PR whose CI is still running (#62).
+    pub busy: Rgba,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -41,6 +43,7 @@ pub const PALETTE: Palette = Palette {
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
     alarm: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },    // #F04A0E — a failing PR is orange (#58)
     on_alarm: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink, as on the orange needs-input chip
+    busy: Rgba { r: 0.851, g: 0.643, b: 0.0, a: 1.0 },       // #D9A400 — yellow that still reads on white
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -60,6 +63,7 @@ pub const ORANGE: Palette = Palette {
     text_idle: AMBER_DIM,
     alarm: Rgba { r: 0.549, g: 0.114, b: 0.094, a: 1.0 }, // #8C1D18 — orange on orange is invisible
     on_alarm: AMBER_DIM,
+    busy: Rgba { r: 1.0, g: 0.878, b: 0.400, a: 1.0 }, // #FFE066, bright against the orange board
     ..PALETTE
 };
 
@@ -73,6 +77,7 @@ pub const DARK: Palette = Palette {
     chip_idle: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 }, // #4A1C16 — lifted off the dark board (#50)
     outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
+    busy: Rgba { r: 0.949, g: 0.788, b: 0.298, a: 1.0 }, // #F2C94C, lifted for the dark board
     ..PALETTE
 };
 

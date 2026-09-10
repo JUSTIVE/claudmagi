@@ -64,8 +64,9 @@ Pull requests: a session's PR is read out of its own transcript — the last
 the checkout's `origin`. `cwd → branch` cannot do this job when several
 sessions share one checkout. State comes from `gh pr view`, and the trace runs
 into a connector docked at the right edge of the board, where the body's colour
-is the whole signal — hollow draft, green open, alarm-red failing, grey merged,
-faint closed.
+is the whole signal — hollow draft, green outline open, filled green approved,
+orange failing, black merged, faint closed — with a yellow border laid over
+any of them while CI is still running.
 
 The Linear issue docks at the left edge, where the lane begins: the work comes
 from a ticket and leaves through a PR. Both ends share a grammar — outlined

@@ -57,6 +57,8 @@ pub struct Pr {
     /// skipped runs count as neither — a cancelled job is not a failure.
     pub passed: u32,
     pub failed: u32,
+    /// Checks still queued or running (#62).
+    pub pending: u32,
 }
 
 /// How the board draws a connector. Colour is the whole signal (#57), and
@@ -89,6 +91,13 @@ impl Pr {
         }
     }
 
+    /// CI is still working. Drawn as a border rather than a look of its own,
+    /// so it can sit on top of whatever the PR already is (#62). A landed or
+    /// abandoned PR is never busy, whatever a stale rollup says.
+    pub fn running(&self) -> bool {
+        self.pending > 0 && matches!(self.state, State::Open | State::Draft)
+    }
+
     /// What the connector is labelled with.
     pub fn label(&self) -> String {
         format!("#{}", self.id.number)
@@ -116,6 +125,7 @@ impl Pr {
             approved,
             passed,
             failed,
+            pending: 0,
         }
     }
 }
@@ -263,19 +273,18 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         _ if draft => State::Draft,
         _ => State::Open,
     };
-    let (mut passed, mut failed) = (0, 0);
+    let (mut passed, mut failed, mut pending) = (0, 0, 0);
     if let Some(rollup) = v.get("statusCheckRollup").and_then(|r| r.as_array()) {
         for check in rollup {
-            let verdict = check
-                .get("conclusion")
-                .and_then(|c| c.as_str())
-                .filter(|s| !s.is_empty())
-                .or_else(|| check.get("state").and_then(|s| s.as_str()))
-                .unwrap_or("");
+            let field = |k: &str| check.get(k).and_then(|c| c.as_str()).filter(|s| !s.is_empty());
+            // A `CheckRun` carries `status` until it finishes and `conclusion`
+            // after; a `StatusContext` only ever carries `state`.
+            let verdict = field("conclusion").or_else(|| field("status")).or_else(|| field("state")).unwrap_or("");
             match verdict {
                 "SUCCESS" | "NEUTRAL" => passed += 1,
                 "FAILURE" | "TIMED_OUT" | "ERROR" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => failed += 1,
-                // CANCELLED, SKIPPED, PENDING, QUEUED, IN_PROGRESS: neither.
+                "QUEUED" | "IN_PROGRESS" | "PENDING" | "WAITING" | "REQUESTED" => pending += 1,
+                // CANCELLED, SKIPPED, EXPECTED, COMPLETED-without-a-verdict.
                 _ => {}
             }
         }
@@ -288,6 +297,7 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         approved,
         passed,
         failed,
+        pending,
     }
 }
 
@@ -409,19 +419,30 @@ mod tests {
         let v = serde_json::json!({
             "state": "OPEN", "isDraft": false, "title": "t",
             "statusCheckRollup": [
-                {"conclusion": "SUCCESS"}, {"conclusion": "SKIPPED"}, {"conclusion": "CANCELLED"},
-                {"conclusion": "FAILURE"}, {"state": "SUCCESS"}, {"conclusion": ""},
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"},
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "CANCELLED"},
+                {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null},
+                {"__typename": "CheckRun", "status": "QUEUED", "conclusion": null},
+                {"__typename": "StatusContext", "state": "SUCCESS"},
+                {"__typename": "StatusContext", "state": "PENDING"},
             ],
         });
         let pr = parse_pr(&id, &v);
-        assert_eq!((pr.passed, pr.failed), (2, 1));
+        assert_eq!((pr.passed, pr.failed, pr.pending), (2, 1, 3));
         assert_eq!(pr.look(), Look::Failing, "one red check colours the whole connector");
+        assert!(pr.running(), "and the border still says CI is working");
     }
 
     #[test]
     fn state_and_checks_decide_the_look() {
         let id = PrRef { repo: "o/r".into(), number: 1 };
-        let base = Pr { id, title: String::new(), state: State::Open, approved: false, passed: 1, failed: 0 };
+        let base =
+            Pr { id, title: String::new(), state: State::Open, approved: false, passed: 1, failed: 0, pending: 0 };
+        assert!(!base.running());
+        assert!(Pr { pending: 1, ..base.clone() }.running());
+        assert!(!Pr { pending: 1, state: State::Merged, ..base.clone() }.running(), "a landed PR is never busy");
         assert_eq!(base.look(), Look::Open);
         assert_eq!(Pr { approved: true, ..base.clone() }.look(), Look::Approved);
         assert_eq!(
