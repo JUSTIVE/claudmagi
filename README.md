@@ -56,15 +56,24 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
-| Data | `pr.rs` | The GitHub PR a session is on: resolved from its transcript, state from `gh`, cached with a TTL. |
+| Data | `pr.rs`, `ticket.rs` | What a session links out to: the GitHub PR (transcript → `gh`) and the Linear issue (name, PR title tag, or transcript links). |
 | Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims, Warp focus. |
 
 Pull requests: a session's PR is read out of its own transcript — the last
 `github.com/<owner>/<repo>/pull/<n>` inside a message body whose repo matches
 the checkout's `origin`. `cwd → branch` cannot do this job when several
 sessions share one checkout. State comes from `gh pr view`, and the trace runs
-into a card-edge connector at the right of the board. `claudmagi --prs` prints
-what resolved.
+into a connector docked at the right edge of the board, where the body's colour
+is the whole signal — hollow draft, green open, alarm-red failing, grey merged,
+faint closed.
+
+The Linear issue docks at the left edge, where the lane begins: the work comes
+from a ticket and leaves through a PR. Its key is the session's own name when
+something corroborates it — a `linear.app` link, a `[ABC-123]` tag in the PR
+title, or a team prefix the board has seen in a real link — otherwise the PR
+title's tag. There is no status on it: `orca linear issue` answers
+`runtime_unavailable` here. Clicking either node opens it in the browser.
+`claudmagi --prs` prints what resolved.
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
 otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp

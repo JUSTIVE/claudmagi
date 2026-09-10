@@ -107,9 +107,15 @@ impl Board {
                 .flex_1()
                 .overflow_hidden()
                 .text_color(c(phase_color(phase)))
-                .child(match &info.pr {
-                    Some(p) => format!("{} · {} · {} {}", info.label(), phase.label(), p.label(), p.look().short()),
-                    None => format!("{} · {}", info.label(), phase.label()),
+                .child({
+                    let mut line = format!("{} · {}", info.label(), phase.label());
+                    if let Some(t) = &info.ticket {
+                        line = format!("{} · {}", line, t.label());
+                    }
+                    if let Some(p) = &info.pr {
+                        line = format!("{} · {} {}", line, p.label(), p.look().short());
+                    }
+                    line
                 });
             let label = if info.synthetic {
                 let sb = sandbox.clone();
@@ -144,6 +150,13 @@ impl Board {
                 row = row.child(
                     button(SharedString::from(format!("pr-{i}")), pr_label, info.pr.is_some())
                         .on_click(move |_, _, _| sb.cycle_pr(&sid)),
+                );
+                // Linear node at the head of the lane (#57).
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                row = row.child(
+                    button(SharedString::from(format!("ticket-{i}")), "TICKET", info.ticket.is_some())
+                        .on_click(move |_, _, _| sb.cycle_ticket(&sid)),
                 );
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();

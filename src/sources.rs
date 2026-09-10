@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use crate::model::{Phase, SessionInfo, SubagentInfo};
 use crate::pr;
+use crate::ticket;
 
 pub trait SessionSource: Send + Sync {
     fn name(&self) -> &'static str;
@@ -58,6 +59,7 @@ pub struct ClaudeSource {
     dirs: Mutex<HashMap<String, Option<PathBuf>>>,
     tabs: Mutex<Option<WarpTabs>>,
     prs: pr::Tracker,
+    tickets: ticket::Tracker,
 }
 
 impl SessionSource for ClaudeSource {
@@ -76,7 +78,7 @@ impl SessionSource for ClaudeSource {
                 }
             }
         }
-        self.attach_prs(&mut list);
+        self.attach_links(&mut list);
         list
     }
 }
@@ -490,6 +492,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                     (None, None) => "desktop".into(),
                 },
                 pr: None,
+                ticket: None,
             }
         })
         .collect();
@@ -541,15 +544,26 @@ impl ClaudeSource {
         path.is_file().then_some(path)
     }
 
-    /// Attaches each session's pull request, sharing one `gh` budget across
-    /// the snapshot so a board full of PRs never stalls the poll (#56).
-    fn attach_prs(&self, list: &mut [SessionInfo]) {
+    /// Attaches each session's pull request and Linear issue, sharing one `gh`
+    /// budget across the snapshot so a board full of PRs never stalls the poll
+    /// (#56). The ticket is resolved after the PR because a PR title's tag is
+    /// one of the things that corroborates it (#57).
+    fn attach_links(&self, list: &mut [SessionInfo]) {
         let mut budget = self.prs.budget;
         let now = Instant::now();
+        let paths: Vec<Option<PathBuf>> = list.iter().map(|s| self.transcript(s)).collect();
+        for (s, transcript) in list.iter_mut().zip(&paths) {
+            if let Some(id) = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref()) {
+                s.pr = self.prs.state(&id, &mut budget, now);
+            }
+            // Pool every transcript's Linear links before judging any of them,
+            // so the team prefixes are all known by the time we pick (#57).
+            self.tickets.scan(&s.session_id, transcript.as_deref());
+        }
         for s in list.iter_mut() {
-            let transcript = self.transcript(s);
-            let Some(id) = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref()) else { continue };
-            s.pr = self.prs.state(&id, &mut budget, now);
+            let title = s.pr.as_ref().map(|p| p.title.clone());
+            let name = s.label();
+            s.ticket = self.tickets.pick(&s.session_id, &name, title.as_deref());
         }
     }
 
@@ -784,6 +798,16 @@ impl FakeSource {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             let n = s.pr.as_ref().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
             s.pr = look.map(|l| pr::Pr::synthetic(n, l));
+        }
+    }
+
+    /// Toggles a synthetic Linear issue on a sandbox session (#57).
+    pub fn cycle_ticket(&self, session_id: &str) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            s.ticket = match &s.ticket {
+                None => Some(ticket::Ticket::synthetic((s.pid - 90_000).max(0) as u32)),
+                Some(_) => None,
+            };
         }
     }
 

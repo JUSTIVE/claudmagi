@@ -8,6 +8,7 @@ mod sources;
 mod theme;
 mod ui;
 mod pr;
+mod ticket;
 mod usage;
 mod warp;
 
@@ -66,6 +67,10 @@ fn main() {
                     fake.set_pr(id, Some(look));
                 }
             }
+            // Tickets on most lanes, so both edges are exercised (#57).
+            for id in ids.iter().take(count.saturating_sub(1)) {
+                fake.cycle_ticket(id);
+            }
             fake.snapshot()
         } else {
             ClaudeSource::default().snapshot()
@@ -111,9 +116,19 @@ fn main() {
     if args.iter().any(|a| a == "--prs") {
         let source = ClaudeSource::eager();
         for s in source.snapshot() {
+            let ticket = s.ticket.as_ref().map(|t| t.label()).unwrap_or_else(|| "-".into());
             match &s.pr {
-                Some(p) => println!("{:<16} {} {:<7} {}✓ {}✗  {}", s.label(), p.label(), p.look().short(), p.passed, p.failed, p.title),
-                None => println!("{:<16} -", s.label()),
+                Some(p) => println!(
+                    "{:<16} {:<10} {} {:<7} {}✓ {}✗  {}",
+                    s.label(),
+                    ticket,
+                    p.label(),
+                    p.look().short(),
+                    p.passed,
+                    p.failed,
+                    p.title
+                ),
+                None => println!("{:<16} {:<10} -", s.label(), ticket),
             }
         }
         return;
@@ -229,7 +244,9 @@ fn render_frame(
     let lanes = Rc::new(layout.build_lanes_for(&model.rows, now));
     let chips = scene::chip_draws(&model, &layout, &lanes, now);
     let prs = scene::pr_draws(&model, &layout, &lanes, &chips);
-    let frame = scene::Frame { lanes, chips, prs, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
+    let tickets = scene::ticket_draws(&model, &lanes, &chips);
+    let frame =
+        scene::Frame { lanes, chips, prs, tickets, scroll_y: pan.1, t: 3.7, layout, title, pan_x: pan.0, palette };
     let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
     render::svg::to_svg(&shapes, width, height)
 }

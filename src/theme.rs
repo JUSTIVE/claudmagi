@@ -55,7 +55,7 @@ pub const ORANGE: Palette = Palette {
     text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 },   // #FFB03A
     chip_idle: Rgba { r: 0.165, g: 0.078, b: 0.063, a: 1.0 }, // #2A1410
     text_idle: AMBER_DIM,
-    alarm: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // red on orange is mud; use ink
+    alarm: Rgba { r: 0.549, g: 0.114, b: 0.094, a: 1.0 }, // #8C1D18, deep enough to part from the black chips
     ..PALETTE
 };
 

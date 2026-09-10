@@ -56,5 +56,6 @@
 | 54 | 2026-09-10 | 진행 중인 노드 텍스트를 다시 녹색으로 (#51 되돌림) | ✅ | `src/theme.rs` (`PALETTE.text_on` → `#3BE38A`, `UI_ACCENT`·`ORANGE.text_on` 제거), `src/ui/panel.rs`, `src/ui/devtools.rs` |
 | 55 | 2026-09-10 | DIN 폰트로 교체 (적용 전 라이선스 확인) | ✅ | 시스템 DIN은 Bold만 있고 `fsType 0x0004`(Preview & Print only)라 제외. D-DIN(© 2017 Datto Inc., SIL OFL 1.1)을 `assets/fonts/`에 두고 `src/font.rs` (`FONT_TTF` = `include_bytes!`), `src/theme.rs` (`UI_FONT`), `src/ui/mod.rs` (`register_fonts`), `src/main.rs`, `tools/bundle.sh`(OFL 고지 동봉), `README.md` |
 | 56 | 2026-09-10 | 세션과 연관된 GitHub PR을 보드에 렌더 (선 끝 엣지 커넥터) + 테스트 패널에 깃헙 노드 추가 | ✅ | `src/pr.rs`, `src/model.rs`, `src/sources.rs`, `src/render/scene.rs`, `src/geom.rs`, `src/theme.rs`, `src/ui/devtools.rs`, `src/main.rs` (`--prs`). `cwd`→브랜치는 세션이 전부 같은 체크아웃에 있어 못 쓰고, 트랜스크립트의 `message.content` + repo 일치로 해석 |
+| 57 | 2026-09-10 | 커넥터 클릭하면 PR 열기 · PR 앞의 핀을 지우고 노드 색상으로 구분 · PR 노드는 오른쪽 끝에 붙이기 · 왼쪽 끝에 연관된 Linear 노드 | ✅ | `src/ticket.rs`(신규), `src/render/scene.rs` (`TicketDraw`, `PR_EDGE`/`TICKET_EDGE` 도킹, `splice_lane`에 시작 지점), `src/ui/board.rs` (`hit_pr`/`hit_ticket`/`open_link`), `src/pr.rs` (`url`, `open`), `src/sources.rs` (`attach_links` 2패스), `src/ui/devtools.rs`, `src/model.rs`, `src/theme.rs` |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기 / ↩︎ 되돌림

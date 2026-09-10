@@ -55,6 +55,13 @@ pub struct Board {
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
     pressed: Option<Target>,
+    /// PR connectors of the last frame, kept so clicks can hit them (#57).
+    prs: Vec<scene::PrDraw>,
+    hovered_pr: Option<usize>,
+    pressed_pr: Option<usize>,
+    tickets: Vec<scene::TicketDraw>,
+    hovered_ticket: Option<usize>,
+    pressed_ticket: Option<usize>,
     title: String,
     drag_anchor: Option<(f64, f64)>,
     started: Instant,
@@ -145,6 +152,12 @@ impl Board {
             scroll_y: 0.0,
             mouse: None,
             pressed: None,
+            prs: Vec::new(),
+            hovered_pr: None,
+            pressed_pr: None,
+            tickets: Vec::new(),
+            hovered_ticket: None,
+            pressed_ticket: None,
             title: sources::machine_user(),
             drag_anchor: None,
             started: now,
@@ -242,6 +255,66 @@ impl Board {
         best.map(|(_, t)| t)
     }
 
+    /// Index of the PR connector under the pointer. They never rotate, so the
+    /// test is a plain box (#57).
+    fn hit_pr(&self, m: Pt) -> Option<usize> {
+        self.prs.iter().position(|p| {
+            p.alpha >= 0.4
+                && (m.x - p.center.x).abs() <= p.width / 2.0 + 3.0
+                && (m.y - (p.center.y - self.scroll_y)).abs() <= scene::PR_H / 2.0 + 3.0
+        })
+    }
+
+    /// Index of the Linear node under the pointer (#57).
+    fn hit_ticket(&self, m: Pt) -> Option<usize> {
+        self.tickets.iter().position(|t| {
+            t.alpha >= 0.4
+                && (m.x - t.center.x).abs() <= t.width / 2.0 + 3.0
+                && (m.y - (t.center.y - self.scroll_y)).abs() <= scene::PR_H / 2.0 + 3.0
+        })
+    }
+
+    /// Opens a link node in the browser, reporting what happened in the status
+    /// bar the way a chip's Warp jump does (#57).
+    fn open_link(&mut self, label: String, url: Option<String>, what: &'static str, cx: &mut Context<Self>) {
+        let Some(url) = url else {
+            self.model.set_notice(format!("{label}: no {what} to open"), Instant::now());
+            cx.notify();
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let opened = cx.background_executor().spawn({
+                let url = url.clone();
+                async move { crate::pr::open(&url) }
+            });
+            let msg = match opened.await {
+                Ok(true) => format!("→ {label} ({url})"),
+                Ok(false) => format!("{label}: `open` refused {url}"),
+                Err(e) => format!("{label}: {e}"),
+            };
+            this.update(cx, |board, cx| {
+                board.model.set_notice(msg, Instant::now());
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens a PR connector's pull request in the browser (#57).
+    fn open_pr(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.prs.get(i) else { return };
+        let (label, url) = (p.label.clone(), p.url.clone());
+        self.open_link(label, url, "pull request", cx);
+    }
+
+    /// Opens a Linear node's issue in the browser (#57).
+    fn open_ticket(&mut self, i: usize, cx: &mut Context<Self>) {
+        let Some(t) = self.tickets.get(i) else { return };
+        let (label, url) = (t.label.clone(), t.url.clone());
+        self.open_link(label, url, "Linear issue", cx);
+    }
+
     /// Jumps to the session's terminal (chip click / test panel). Subagent
     /// chips jump to their parent session.
     pub(crate) fn activate(&mut self, target: Target, cx: &mut Context<Self>) {
@@ -289,14 +362,27 @@ impl Render for Board {
             }
         }
         self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
+        self.prs = scene::pr_draws(&self.model, &self.layout, &self.lanes, &self.draws);
+        self.tickets = scene::ticket_draws(&self.model, &self.lanes, &self.draws);
         self.model.hovered = self.mouse.and_then(|m| self.hit_test(m));
-        let prs = scene::pr_draws(&self.model, &self.layout, &self.lanes, &self.draws);
+        let (hp, ht) = self.mouse.map(|m| (self.hit_pr(m), self.hit_ticket(m))).unwrap_or((None, None));
+        self.hovered_pr = hp;
+        self.hovered_ticket = ht;
+        if let Some(i) = self.hovered_pr {
+            self.prs[i].hover = 1.0;
+        }
+        if let Some(i) = self.hovered_ticket {
+            self.tickets[i].hover = 1.0;
+        }
+        let prs = self.prs.clone();
+        let tickets = self.tickets.clone();
 
         let palette = self.palette();
         let frame = Frame {
             lanes: self.lanes.clone(),
             chips: self.draws.clone(),
             prs,
+            tickets,
             scroll_y: self.scroll_y,
             t: now.duration_since(self.started).as_secs_f32(),
             layout: self.layout,
@@ -321,7 +407,7 @@ impl Render for Board {
             .relative()
             .size_full()
             .track_focus(&self.focus_handle)
-            .when(self.model.hovered.is_some(), |d| d.cursor_pointer())
+            .when(self.model.hovered.is_some() || self.hovered_pr.is_some() || self.hovered_ticket.is_some(), |d| d.cursor_pointer())
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let cmd = ev.keystroke.modifiers.platform;
                 match ev.keystroke.key.as_str() {
@@ -341,6 +427,8 @@ impl Render for Board {
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
                 this.model.hovered = this.hit_test(m);
+                this.hovered_pr = this.hit_pr(m);
+                this.hovered_ticket = this.hit_ticket(m);
                 if ev.pressed_button == Some(MouseButton::Left) {
                     if let Some(anchor) = this.drag_anchor {
                         let cur = mac::mouse_location();
@@ -359,11 +447,17 @@ impl Render for Board {
                     let m = this.to_design(ev.position);
                     this.mouse = Some(m);
                     this.model.hovered = this.hit_test(m);
-                    if this.model.hovered.is_some() {
+                    this.hovered_pr = this.hit_pr(m);
+                    this.hovered_ticket = this.hit_ticket(m);
+                    if this.model.hovered.is_some() || this.hovered_pr.is_some() || this.hovered_ticket.is_some() {
                         this.pressed = this.model.hovered;
+                        this.pressed_pr = this.hovered_pr;
+                        this.pressed_ticket = this.hovered_ticket;
                         this.drag_anchor = None;
                     } else {
                         this.pressed = None;
+                        this.pressed_pr = None;
+                        this.pressed_ticket = None;
                         this.drag_anchor = Some(mac::mouse_location());
                     }
                     cx.notify();
@@ -379,7 +473,19 @@ impl Render for Board {
                             this.activate(h, cx);
                         }
                     }
+                    if let (Some(p), Some(h)) = (this.pressed_pr, this.hit_pr(m)) {
+                        if p == h {
+                            this.open_pr(h, cx);
+                        }
+                    }
+                    if let (Some(p), Some(h)) = (this.pressed_ticket, this.hit_ticket(m)) {
+                        if p == h {
+                            this.open_ticket(h, cx);
+                        }
+                    }
                     this.pressed = None;
+                    this.pressed_pr = None;
+                    this.pressed_ticket = None;
                     this.drag_anchor = None;
                     cx.notify();
                 }),

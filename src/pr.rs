@@ -88,6 +88,11 @@ impl Pr {
         format!("#{}", self.id.number)
     }
 
+    /// Where the connector points a click.
+    pub fn url(&self) -> String {
+        format!("https://github.com/{}/pull/{}", self.id.repo, self.id.number)
+    }
+
     /// A made-up PR for the sandbox, one per look.
     pub fn synthetic(number: u32, look: Look) -> Self {
         let (state, passed, failed) = match look {
@@ -190,8 +195,9 @@ fn last_number(haystack: &str, needle: &str) -> Option<u32> {
     out
 }
 
-/// Last `bytes` of a file, starting at a line boundary.
-fn tail(path: &Path, bytes: u64) -> Option<String> {
+/// Last `bytes` of a file, starting at a line boundary. Shared with the
+/// Linear scan in `ticket.rs`.
+pub fn tail(path: &Path, bytes: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
@@ -258,6 +264,11 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         }
     }
     Pr { id: id.clone(), title: v.get("title").and_then(|t| t.as_str()).unwrap_or_default().into(), state, passed, failed }
+}
+
+/// Hands a PR URL to the browser (#57).
+pub fn open(url: &str) -> std::io::Result<bool> {
+    Command::new("open").arg(url).status().map(|st| st.success())
 }
 
 /// Per-session PR resolution plus the fetched state, all cached.
