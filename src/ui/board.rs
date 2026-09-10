@@ -369,7 +369,7 @@ impl Render for Board {
                     .bg(theme::hsla(palette.bg))
                     .border_t_1()
                     .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
-                    .font_family("Menlo")
+                    .font_family(theme::UI_FONT)
                     .text_size(px(11.))
                     .text_color(ink)
                     .child(

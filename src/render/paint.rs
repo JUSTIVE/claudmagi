@@ -129,9 +129,7 @@ fn build(shape: &Shape) -> Option<Path<Pixels>> {
         Shape::Rect { .. } => None,
         Shape::Stroke { pieces, width, .. } => stroke_path(pieces, *width),
         Shape::RoundedRect { center, w, h, r, angle, stroke, .. } => rounded_rect(*center, *w, *h, *r, *angle, *stroke),
-        Shape::Text { text, scale, stroke, angle, center, .. } => {
-            font::build(text, *scale, *stroke, *angle, (center.x, center.y))
-        }
+        Shape::Text { text, scale, angle, center, .. } => font::build(text, *scale, *angle, (center.x, center.y)),
     }
 }
 
@@ -141,7 +139,7 @@ fn cost_of(shape: &Shape) -> usize {
         Shape::Rect { .. } => 0,
         Shape::Stroke { pieces, .. } => pieces.iter().map(|p| p.len()).sum::<usize>() * 14,
         Shape::RoundedRect { .. } => 48,
-        Shape::Text { text, .. } => text.len() * 70,
+        Shape::Text { text, .. } => text.len() * 160,
     }
 }
 

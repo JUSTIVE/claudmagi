@@ -3,6 +3,10 @@
 pub use gpui::Rgba;
 use gpui::{Hsla, rgb};
 
+/// Typeface for the gpui-drawn UI (status bar, panels). The board's chip
+/// labels are drawn from the same face's outlines in `font.rs`. (#46, #47)
+pub const UI_FONT: &str = "Helvetica";
+
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub bg: Rgba,

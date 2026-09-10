@@ -55,32 +55,39 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                     center.y
                 );
             }
-            Shape::Text { text, scale, stroke, angle, center, color } => {
-                let width = font::measure(text, *scale);
-                let x0 = center.x - width / 2.0;
-                let y0 = center.y - font::height(*scale) / 2.0;
-                let _ = writeln!(
-                    s,
-                    r#"<g fill="none" stroke="{}" stroke-width="{stroke}" stroke-linecap="round" stroke-linejoin="round" transform="rotate({angle:.2} {:.2} {:.2})">"#,
-                    svg_color(*color),
-                    center.x,
-                    center.y
-                );
-                for (i, ch) in text.chars().enumerate() {
-                    let gx = x0 + i as f32 * font::ADVANCE * scale;
-                    for stroke_pts in font::glyph(ch) {
-                        let pts: Vec<String> = stroke_pts
-                            .iter()
-                            .map(|(ux, uy)| format!("{:.2},{:.2}", gx + ux * scale, y0 + uy * scale))
-                            .collect();
-                        if pts.len() == 1 {
-                            let _ = writeln!(s, r#"<polyline points="{} {}"/>"#, pts[0], pts[0]);
-                        } else {
-                            let _ = writeln!(s, r#"<polyline points="{}"/>"#, pts.join(" "));
+            Shape::Text { text, scale, angle, center, color, .. } => {
+                let mut d = String::new();
+                for cmd in font::outline(text, *scale) {
+                    let (cx, cy) = (center.x, center.y);
+                    match cmd {
+                        font::Cmd::Move(x, y) => write!(d, "M{:.2} {:.2}", cx + x, cy + y),
+                        font::Cmd::Line(x, y) => write!(d, "L{:.2} {:.2}", cx + x, cy + y),
+                        font::Cmd::Quad { cx: qx, cy: qy, x, y } => {
+                            write!(d, "Q{:.2} {:.2} {:.2} {:.2}", cx + qx, cy + qy, cx + x, cy + y)
                         }
+                        font::Cmd::Cubic { c1x, c1y, c2x, c2y, x, y } => write!(
+                            d,
+                            "C{:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
+                            cx + c1x,
+                            cy + c1y,
+                            cx + c2x,
+                            cy + c2y,
+                            cx + x,
+                            cy + y
+                        ),
+                        font::Cmd::Close => write!(d, "Z"),
                     }
+                    .ok();
                 }
-                let _ = writeln!(s, "</g>");
+                if !d.is_empty() {
+                    let _ = writeln!(
+                        s,
+                        r#"<path d="{d}" fill="{}" fill-rule="nonzero" transform="rotate({angle:.2} {:.2} {:.2})"/>"#,
+                        svg_color(*color),
+                        center.x,
+                        center.y
+                    );
+                }
             }
         }
     }

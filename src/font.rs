@@ -1,147 +1,236 @@
-//! A tiny stroke-based vector font (4×6 unit grid) so labels can be drawn as
-//! paths and rotated along the traces, matching the PCB silkscreen look.
+//! Text on the board: Helvetica glyph outlines, filled, so labels can ride
+//! the chips at any angle (#47). `scale` keeps the meaning it had with the
+//! old stroke font — the cap height is `GLYPH_H * scale` px — so the chip
+//! styles and the title badge did not have to change.
+//!
+//! The face is read once from the system font file with `ttf-parser`; the
+//! bytes are leaked on purpose so the parsed face can live for the whole
+//! process.
 
-use gpui::{Path, PathBuilder, PathStyle, Pixels, StrokeOptions, point, px};
-use lyon::path::{LineCap, LineJoin};
+use std::sync::OnceLock;
 
-type Strokes = &'static [&'static [(f32, f32)]];
+use gpui::{Path, PathBuilder, PathStyle, Pixels, point, px};
+use lyon::tessellation::{FillOptions, FillRule};
+use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
-pub const GLYPH_W: f32 = 4.0;
+/// Cap height in grid units; `scale` is px per unit.
 pub const GLYPH_H: f32 = 6.0;
-pub const ADVANCE: f32 = 5.7;
+/// Advance per character when no font file could be loaded, in grid units.
+const FALLBACK_ADVANCE: f32 = 5.7;
 
-const A: Strokes = &[&[(0., 6.), (0., 2.), (2., 0.), (4., 2.), (4., 6.)], &[(0., 3.5), (4., 3.5)]];
-const B: Strokes = &[
-    &[(0., 0.), (0., 6.)],
-    &[(0., 0.), (3., 0.), (4., 1.), (4., 2.), (3., 3.), (0., 3.)],
-    &[(3., 3.), (4., 4.), (4., 5.), (3., 6.), (0., 6.)],
+/// Font files to try, first hit wins. Index 0 of `Helvetica.ttc` is Regular.
+const CANDIDATES: &[(&str, u32)] = &[
+    ("/System/Library/Fonts/Helvetica.ttc", 0),
+    ("/System/Library/Fonts/HelveticaNeue.ttc", 0),
+    ("/System/Library/Fonts/Supplemental/Arial.ttf", 0),
 ];
-const C: Strokes = &[&[(4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 5.), (1., 6.), (3., 6.), (4., 5.)]];
-const D: Strokes = &[&[(0., 0.), (0., 6.)], &[(0., 0.), (3., 0.), (4., 1.), (4., 5.), (3., 6.), (0., 6.)]];
-const E: Strokes = &[&[(4., 0.), (0., 0.), (0., 6.), (4., 6.)], &[(0., 3.), (3., 3.)]];
-const F: Strokes = &[&[(4., 0.), (0., 0.), (0., 6.)], &[(0., 3.), (3., 3.)]];
-const G: Strokes = &[&[(4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 5.), (1., 6.), (3., 6.), (4., 5.), (4., 3.), (2., 3.)]];
-const H: Strokes = &[&[(0., 0.), (0., 6.)], &[(4., 0.), (4., 6.)], &[(0., 3.), (4., 3.)]];
-const I: Strokes = &[&[(1., 0.), (3., 0.)], &[(2., 0.), (2., 6.)], &[(1., 6.), (3., 6.)]];
-const J: Strokes = &[&[(4., 0.), (4., 5.), (3., 6.), (1., 6.), (0., 5.)]];
-const K: Strokes = &[&[(0., 0.), (0., 6.)], &[(4., 0.), (0., 3.)], &[(1.2, 2.1), (4., 6.)]];
-const L: Strokes = &[&[(0., 0.), (0., 6.), (4., 6.)]];
-const M: Strokes = &[&[(0., 6.), (0., 0.), (2., 3.), (4., 0.), (4., 6.)]];
-const N: Strokes = &[&[(0., 6.), (0., 0.), (4., 6.), (4., 0.)]];
-const O: Strokes = &[&[(1., 0.), (3., 0.), (4., 1.), (4., 5.), (3., 6.), (1., 6.), (0., 5.), (0., 1.), (1., 0.)]];
-const P: Strokes = &[&[(0., 6.), (0., 0.), (3., 0.), (4., 1.), (4., 2.), (3., 3.), (0., 3.)]];
-const Q: Strokes = &[
-    &[(1., 0.), (3., 0.), (4., 1.), (4., 5.), (3., 6.), (1., 6.), (0., 5.), (0., 1.), (1., 0.)],
-    &[(2.5, 4.5), (4., 6.)],
-];
-const R: Strokes = &[&[(0., 6.), (0., 0.), (3., 0.), (4., 1.), (4., 2.), (3., 3.), (0., 3.)], &[(2., 3.), (4., 6.)]];
-const S: Strokes = &[&[
-    (4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 2.), (1., 3.), (3., 3.), (4., 4.), (4., 5.), (3., 6.), (1., 6.), (0., 5.),
-]];
-const T: Strokes = &[&[(0., 0.), (4., 0.)], &[(2., 0.), (2., 6.)]];
-const U: Strokes = &[&[(0., 0.), (0., 5.), (1., 6.), (3., 6.), (4., 5.), (4., 0.)]];
-const V: Strokes = &[&[(0., 0.), (2., 6.), (4., 0.)]];
-const W: Strokes = &[&[(0., 0.), (1., 6.), (2., 2.5), (3., 6.), (4., 0.)]];
-const X: Strokes = &[&[(0., 0.), (4., 6.)], &[(4., 0.), (0., 6.)]];
-const Y: Strokes = &[&[(0., 0.), (2., 3.), (4., 0.)], &[(2., 3.), (2., 6.)]];
-const Z: Strokes = &[&[(0., 0.), (4., 0.), (0., 6.), (4., 6.)]];
-const D0: Strokes = &[
-    &[(1., 0.), (3., 0.), (4., 1.), (4., 5.), (3., 6.), (1., 6.), (0., 5.), (0., 1.), (1., 0.)],
-    &[(1., 5.), (3., 1.)],
-];
-const D1: Strokes = &[&[(1., 1.), (2., 0.), (2., 6.)], &[(1., 6.), (3., 6.)]];
-const D2: Strokes = &[&[(0., 1.), (1., 0.), (3., 0.), (4., 1.), (4., 2.), (0., 6.), (4., 6.)]];
-const D3: Strokes = &[&[(0., 0.), (4., 0.), (2., 2.5), (3., 2.5), (4., 3.5), (4., 5.), (3., 6.), (1., 6.), (0., 5.)]];
-const D4: Strokes = &[&[(3., 6.), (3., 0.), (0., 4.), (4., 4.)]];
-const D5: Strokes = &[&[(4., 0.), (0., 0.), (0., 3.), (3., 3.), (4., 4.), (4., 5.), (3., 6.), (1., 6.), (0., 5.)]];
-const D6: Strokes = &[&[(4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 5.), (1., 6.), (3., 6.), (4., 5.), (4., 4.), (3., 3.), (0., 3.)]];
-const D7: Strokes = &[&[(0., 0.), (4., 0.), (1.5, 6.)]];
-const D8: Strokes = &[
-    &[(1., 0.), (3., 0.), (4., 1.), (4., 2.), (3., 3.), (1., 3.), (0., 2.), (0., 1.), (1., 0.)],
-    &[(1., 3.), (0., 4.), (0., 5.), (1., 6.), (3., 6.), (4., 5.), (4., 4.), (3., 3.)],
-];
-const D9: Strokes = &[&[(0., 5.), (1., 6.), (3., 6.), (4., 5.), (4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 2.), (1., 3.), (4., 3.)]];
-const DASH: Strokes = &[&[(0.5, 3.), (3.5, 3.)]];
-const UNDER: Strokes = &[&[(0., 6.), (4., 6.)]];
-const DOT: Strokes = &[&[(2., 5.6), (2., 6.)]];
-const SLASH: Strokes = &[&[(0., 6.), (4., 0.)]];
-const COLON: Strokes = &[&[(2., 1.5), (2., 1.9)], &[(2., 4.5), (2., 4.9)]];
-const QUESTION: Strokes = &[&[(0., 1.), (1., 0.), (3., 0.), (4., 1.), (4., 2.), (2., 3.5), (2., 4.3)], &[(2., 5.6), (2., 6.)]];
-const BANG: Strokes = &[&[(2., 0.), (2., 4.)], &[(2., 5.6), (2., 6.)]];
-const PLUS: Strokes = &[&[(0.5, 3.), (3.5, 3.)], &[(2., 1.5), (2., 4.5)]];
-const TILDE: Strokes = &[&[(0., 3.5), (1., 2.5), (3., 3.5), (4., 2.5)]];
-const AT: Strokes = &[&[(3., 4.), (3., 2.), (1.5, 2.), (1.5, 4.), (4., 4.), (4., 1.), (3., 0.), (1., 0.), (0., 1.), (0., 5.), (1., 6.), (3., 6.)]];
-const SPACE: Strokes = &[];
-const UNKNOWN: Strokes = &[&[(0.5, 0.5), (3.5, 0.5), (3.5, 5.5), (0.5, 5.5), (0.5, 0.5)]];
 
-pub fn glyph(c: char) -> Strokes {
-    match c.to_ascii_uppercase() {
-        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E, 'F' => F, 'G' => G, 'H' => H, 'I' => I,
-        'J' => J, 'K' => K, 'L' => L, 'M' => M, 'N' => N, 'O' => O, 'P' => P, 'Q' => Q, 'R' => R,
-        'S' => S, 'T' => T, 'U' => U, 'V' => V, 'W' => W, 'X' => X, 'Y' => Y, 'Z' => Z,
-        '0' => D0, '1' => D1, '2' => D2, '3' => D3, '4' => D4, '5' => D5, '6' => D6, '7' => D7,
-        '8' => D8, '9' => D9,
-        '-' => DASH, '_' => UNDER, '.' => DOT, '/' => SLASH, ':' => COLON, '?' => QUESTION,
-        '!' => BANG, '+' => PLUS, '~' => TILDE, '@' => AT, ' ' => SPACE,
-        _ => UNKNOWN,
-    }
+struct Loaded {
+    face: Face<'static>,
+    /// Cap height in font units.
+    cap: f32,
 }
 
-/// Width of `text` in pixels at the given scale (px per grid unit).
+fn loaded() -> Option<&'static Loaded> {
+    static FACE: OnceLock<Option<Loaded>> = OnceLock::new();
+    FACE.get_or_init(|| {
+        for (path, index) in CANDIDATES {
+            let Ok(bytes) = std::fs::read(path) else { continue };
+            let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            let Ok(face) = Face::parse(data, *index) else { continue };
+            let upem = face.units_per_em() as f32;
+            let cap = face.capital_height().map(|c| c as f32).filter(|c| *c > 0.0).unwrap_or(upem * 0.72);
+            return Some(Loaded { face, cap });
+        }
+        None
+    })
+    .as_ref()
+}
+
+/// Name of the face in use, for diagnostics.
+pub fn face_name() -> Option<String> {
+    // Apple's Helvetica carries Mac Roman name records only, which
+    // `Name::to_string` does not decode; ASCII is all we need here.
+    loaded()?
+        .face
+        .names()
+        .into_iter()
+        .find(|n| n.name_id == ttf_parser::name_id::FULL_NAME)
+        .map(|n| n.to_string().unwrap_or_else(|| String::from_utf8_lossy(n.name).into_owned()))
+}
+
+/// Px per font unit at `scale`.
+fn unit_px(l: &Loaded, scale: f32) -> f32 {
+    GLYPH_H * scale / l.cap
+}
+
+fn glyph_of(l: &Loaded, c: char) -> Option<GlyphId> {
+    l.face.glyph_index(c).or_else(|| l.face.glyph_index('?'))
+}
+
+fn kerning(l: &Loaded, left: GlyphId, right: GlyphId) -> f32 {
+    let Some(kern) = l.face.tables().kern else { return 0.0 };
+    kern.subtables
+        .into_iter()
+        .filter(|st| st.horizontal && !st.variable)
+        .find_map(|st| st.glyphs_kerning(left, right))
+        .map(|k| k as f32)
+        .unwrap_or(0.0)
+}
+
+/// Glyphs with their pen x (font units) and the total advance.
+fn shape(l: &Loaded, text: &str) -> (Vec<(GlyphId, f32)>, f32) {
+    let mut out = Vec::new();
+    let mut pen = 0.0f32;
+    let mut prev: Option<GlyphId> = None;
+    for c in text.chars() {
+        let Some(g) = glyph_of(l, c) else { continue };
+        if let Some(p) = prev {
+            pen += kerning(l, p, g);
+        }
+        out.push((g, pen));
+        pen += l.face.glyph_hor_advance(g).unwrap_or(0) as f32;
+        prev = Some(g);
+    }
+    (out, pen)
+}
+
+/// Width of `text` in pixels at the given scale.
 pub fn measure(text: &str, scale: f32) -> f32 {
     let n = text.chars().count();
     if n == 0 {
         return 0.0;
     }
-    ((n as f32 - 1.0) * ADVANCE + GLYPH_W) * scale
+    match loaded() {
+        Some(l) => shape(l, text).1 * unit_px(l, scale),
+        None => n as f32 * FALLBACK_ADVANCE * scale,
+    }
 }
 
+/// Cap height in pixels; the text is centred on this box, descenders hang
+/// below it.
 pub fn height(scale: f32) -> f32 {
     GLYPH_H * scale
 }
 
-/// Builds a stroked path for `text`, centred on `center`, rotated by
+/// One outline command in screen pixels, relative to the text centre,
+/// unrotated. Screen y grows downwards.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Cmd {
+    Move(f32, f32),
+    Line(f32, f32),
+    Quad { cx: f32, cy: f32, x: f32, y: f32 },
+    Cubic { c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 },
+    Close,
+}
+
+struct Sink<'a> {
+    k: f32,
+    dx: f32,
+    base: f32,
+    out: &'a mut Vec<Cmd>,
+}
+
+impl Sink<'_> {
+    fn map(&self, x: f32, y: f32) -> (f32, f32) {
+        (self.dx + x * self.k, self.base - y * self.k)
+    }
+}
+
+impl OutlineBuilder for Sink<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.map(x, y);
+        self.out.push(Cmd::Move(x, y));
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        let (x, y) = self.map(x, y);
+        self.out.push(Cmd::Line(x, y));
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        let (cx, cy) = self.map(x1, y1);
+        let (x, y) = self.map(x, y);
+        self.out.push(Cmd::Quad { cx, cy, x, y });
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        let (c1x, c1y) = self.map(x1, y1);
+        let (c2x, c2y) = self.map(x2, y2);
+        let (x, y) = self.map(x, y);
+        self.out.push(Cmd::Cubic { c1x, c1y, c2x, c2y, x, y });
+    }
+    fn close(&mut self) {
+        self.out.push(Cmd::Close);
+    }
+}
+
+/// Filled outline of `text` at `scale`, centred on the origin. Empty when
+/// no font file could be loaded.
+pub fn outline(text: &str, scale: f32) -> Vec<Cmd> {
+    let mut out = Vec::new();
+    let Some(l) = loaded() else { return out };
+    let (glyphs, advance) = shape(l, text);
+    let k = unit_px(l, scale);
+    let x0 = -advance * k / 2.0;
+    let base = height(scale) / 2.0;
+    for (g, pen) in glyphs {
+        let mut sink = Sink { k, dx: x0 + pen * k, base, out: &mut out };
+        l.face.outline_glyph(g, &mut sink);
+    }
+    out
+}
+
+/// Builds a filled path for `text`, centred on `center`, rotated by
 /// `angle_deg` (clockwise, screen coordinates).
-pub fn build(
-    text: &str,
-    scale: f32,
-    stroke: f32,
-    angle_deg: f32,
-    center: (f32, f32),
-) -> Option<Path<Pixels>> {
-    let width = measure(text, scale);
-    if width <= 0.0 {
+pub fn build(text: &str, scale: f32, angle_deg: f32, center: (f32, f32)) -> Option<Path<Pixels>> {
+    let cmds = outline(text, scale);
+    if cmds.is_empty() {
         return None;
     }
-    let x0 = -width / 2.0;
-    let y0 = -height(scale) / 2.0;
-
-    let options = StrokeOptions::default()
-        .with_line_width(stroke)
-        .with_line_cap(LineCap::Round)
-        .with_line_join(LineJoin::Round);
-    let mut builder = PathBuilder::stroke(px(stroke)).with_style(PathStyle::Stroke(options));
-    let mut any = false;
-    for (i, c) in text.chars().enumerate() {
-        let gx = x0 + i as f32 * ADVANCE * scale;
-        for stroke_pts in glyph(c) {
-            for (k, (ux, uy)) in stroke_pts.iter().enumerate() {
-                let p = point(px(gx + ux * scale), px(y0 + uy * scale));
-                if k == 0 {
-                    builder.move_to(p);
-                } else {
-                    builder.line_to(p);
-                }
-                any = true;
+    let style = PathStyle::Fill(FillOptions::default().with_fill_rule(FillRule::NonZero));
+    let mut b = PathBuilder::fill().with_style(style);
+    for c in cmds {
+        match c {
+            Cmd::Move(x, y) => b.move_to(point(px(x), px(y))),
+            Cmd::Line(x, y) => b.line_to(point(px(x), px(y))),
+            Cmd::Quad { cx, cy, x, y } => b.curve_to(point(px(x), px(y)), point(px(cx), px(cy))),
+            Cmd::Cubic { c1x, c1y, c2x, c2y, x, y } => {
+                b.cubic_bezier_to(point(px(x), px(y)), point(px(c1x), px(c1y)), point(px(c2x), px(c2y)))
             }
+            Cmd::Close => b.close(),
         }
     }
-    if !any {
-        return None;
-    }
     if angle_deg != 0.0 {
-        builder.rotate(angle_deg);
+        b.rotate(angle_deg);
     }
-    builder.translate(point(px(center.0), px(center.1)));
-    builder.build().ok()
+    b.translate(point(px(center.0), px(center.1)));
+    b.build().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn helvetica_loads_and_lays_out_text() {
+        let name = face_name().expect("a system Helvetica (or fallback) face");
+        assert!(name.to_ascii_lowercase().contains("helvetica") || name.to_ascii_lowercase().contains("arial"), "{name}");
+        assert_eq!(measure("", 1.5), 0.0);
+        let w1 = measure("CLAUDMAGI", 1.5);
+        let w2 = measure("CLAUDMAGI-8B", 1.5);
+        assert!(w1 > 0.0 && w2 > w1);
+        // Cap height is what `scale` promises: 6 px per unit of scale.
+        assert_eq!(height(1.5), 9.0);
+        let cmds = outline("A", 1.5);
+        assert!(cmds.iter().any(|c| matches!(c, Cmd::Move(..))) && cmds.iter().any(|c| matches!(c, Cmd::Close)));
+        // The outline sits on a baseline at +cap/2 and reaches up to -cap/2.
+        let ys: Vec<f32> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::Move(_, y) | Cmd::Line(_, y) => Some(*y),
+                _ => None,
+            })
+            .collect();
+        let (top, bottom) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), y| (a.min(*y), b.max(*y)));
+        assert!((bottom - 4.5).abs() < 0.2, "baseline at +cap/2, got {bottom}");
+        assert!((top + 4.5).abs() < 0.6, "cap top at -cap/2, got {top}");
+    }
 }
