@@ -58,7 +58,7 @@ pub struct Board {
     started: Instant,
     last_tick: Instant,
     focus_handle: FocusHandle,
-    /// Claude plan usage for the status bar (#46): the last good value and
+    /// Claude plan usage for the status bar (#48): the last good value and
     /// when it was fetched, plus the latest error if the poll is failing.
     usage: Option<(Usage, Instant)>,
     usage_error: Option<usage::UsageError>,
@@ -98,7 +98,7 @@ impl Board {
         })
         .detach();
 
-        // Plan usage for the status bar (#46): keychain + curl off the UI
+        // Plan usage for the status bar (#48): keychain + curl off the UI
         // thread, once a minute. A missing login is final; anything else
         // keeps the last good value and retries.
         cx.spawn(async move |this, cx| {
@@ -152,7 +152,7 @@ impl Board {
         }
     }
 
-    /// Status-bar text for the plan usage, and whether it is stale (#46).
+    /// Status-bar text for the plan usage, and whether it is stale (#48).
     /// Nothing until the first successful fetch.
     fn usage_label(&self, now: Instant) -> Option<(String, bool)> {
         let (u, at) = self.usage?;
@@ -412,7 +412,7 @@ impl Render for Board {
                     .bg(theme::hsla(palette.bg))
                     .border_t_1()
                     .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
-                    .font_family("Menlo")
+                    .font_family(theme::UI_FONT)
                     .text_size(px(11.))
                     .text_color(ink)
                     .child(

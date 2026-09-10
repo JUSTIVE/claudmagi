@@ -79,7 +79,14 @@ impl SessionSource for ClaudeSource {
 }
 
 // ---------------------------------------------------------------------------
-// Warp tabs via the Warp Control CLI (`warpctrl`), when it is installed
+// Warp tabs: which pane (terminal session uuid) sits in which tab (#42)
+//
+// Two sources, tried in order:
+//  1. Warp's own state database (`warp.sqlite`), which Warp keeps current
+//     for session restore. Read-only through `/usr/bin/sqlite3`; works
+//     without any Warp setting.
+//  2. The Warp Control CLI (`warpctrl pane list`), which needs Warp's local
+//     control server to be turned on.
 // ---------------------------------------------------------------------------
 
 /// How often to ask Warp for its pane → tab map.
@@ -89,6 +96,89 @@ const WARPCTRL_TIMEOUT: Duration = Duration::from_millis(1500);
 struct WarpTabs {
     map: HashMap<String, String>,
     fetched: Instant,
+}
+
+/// Runs a command with a wall-clock limit and returns its stdout on success.
+/// Stdout is drained on a helper thread so a chatty child never blocks on a
+/// full pipe.
+fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).ok().map(|_| text)
+    });
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    reader.join().ok().flatten()
+}
+
+/// Warp's state databases, most likely first. Warp writes the live one under
+/// its app-group container; the plain Application Support copy is an older
+/// location kept as a fallback.
+pub fn warp_db_candidates() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else { return Vec::new() };
+    let mut out = Vec::new();
+    for flavour in ["dev.warp.Warp-Stable", "dev.warp.Warp-Preview", "dev.warp.Warp"] {
+        out.push(
+            home.join("Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support")
+                .join(flavour)
+                .join("warp.sqlite"),
+        );
+        out.push(home.join("Library/Application Support").join(flavour).join("warp.sqlite"));
+    }
+    out
+}
+
+/// `terminal_panes.uuid` is the pane's `WARP_TERMINAL_SESSION_UUID`;
+/// `pane_nodes` ties the pane to its tab. Rows come out as `uuid window tab`.
+const WARP_DB_QUERY: &str = "select lower(hex(tp.uuid)), t.window_id, pn.tab_id \
+     from terminal_panes tp \
+     join pane_nodes pn on pn.id = tp.id \
+     join tabs t on t.id = pn.tab_id";
+
+/// Reads the pane → tab map straight from Warp's database. `None` when no
+/// database is present or `sqlite3` fails; an empty map when Warp simply has
+/// no terminal panes open.
+fn fetch_warp_tabs_from_db() -> Option<HashMap<String, String>> {
+    let db = warp_db_candidates().into_iter().find(|p| p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))?;
+    let mut cmd = std::process::Command::new("/usr/bin/sqlite3");
+    cmd.args(["-readonly", "-batch", "-noheader", "-separator", " "]).arg(&db).arg(WARP_DB_QUERY);
+    let text = run_with_timeout(cmd, WARPCTRL_TIMEOUT)?;
+    Some(parse_pane_rows(&text))
+}
+
+/// Parses `uuid window tab` lines into `uuid → "<window>-<tab>"`. Tab ids are
+/// unique on their own, but the window keeps the key readable.
+pub fn parse_pane_rows(text: &str) -> HashMap<String, String> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let uuid = parts.next()?;
+            let window = parts.next()?;
+            let tab = parts.next()?;
+            if !looks_like_uuid(uuid) || window.parse::<u64>().is_err() || tab.parse::<u64>().is_err() {
+                return None;
+            }
+            Some((uuid.replace('-', "").to_ascii_lowercase(), format!("{window}-{tab}")))
+        })
+        .collect()
 }
 
 /// The Warp Control CLI: an installed `warpctrl` if there is one, else the
@@ -116,32 +206,20 @@ pub fn warpctrl_command() -> Option<(PathBuf, Vec<&'static str>)> {
 
 /// Runs `warpctrl --output-format json pane list` with a timeout. Empty when
 /// Warp's local control server is off (Settings → Scripting).
-fn fetch_warp_tabs() -> Option<HashMap<String, String>> {
+fn fetch_warp_tabs_from_warpctrl() -> Option<HashMap<String, String>> {
     let (bin, lead) = warpctrl_command()?;
-    let mut child = std::process::Command::new(bin)
-        .args(lead)
-        .args(["--output-format", "json", "pane", "list"])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => return None,
-            Ok(None) if start.elapsed() < WARPCTRL_TIMEOUT => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                return None;
-            }
-        }
-    }
-    let mut text = String::new();
-    child.stdout.take()?.read_to_string(&mut text).ok()?;
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(lead).args(["--output-format", "json", "pane", "list"]);
+    let text = run_with_timeout(cmd, WARPCTRL_TIMEOUT)?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     Some(parse_pane_tabs(&value))
+}
+
+/// The database first (always available), then `warpctrl` (only with Warp's
+/// local control on). A successful but empty answer from the database is
+/// final: Warp has no terminal panes, so there is nothing for warpctrl to add.
+fn fetch_warp_tabs() -> Option<HashMap<String, String>> {
+    fetch_warp_tabs_from_db().or_else(fetch_warp_tabs_from_warpctrl)
 }
 
 fn looks_like_uuid(s: &str) -> bool {
@@ -205,7 +283,8 @@ pub fn parse_pane_tabs(value: &serde_json::Value) -> HashMap<String, String> {
 }
 
 impl ClaudeSource {
-    /// Cached pane → tab map; empty when `warpctrl` is not installed.
+    /// Cached pane → tab map; empty when neither Warp's database nor
+    /// `warpctrl` can answer.
     fn warp_tabs(&self) -> HashMap<String, String> {
         let mut guard = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
         let stale = guard.as_ref().is_none_or(|t| t.fetched.elapsed() > WARP_TABS_TTL);
@@ -870,6 +949,21 @@ mod tests {
         assert!(tail_running([junk, user].into_iter()));
         assert!(!tail_running([stop, tool].into_iter()), "stop hook after a tool call means finished");
         assert!(tail_running([user, done].into_iter()), "a new prompt after the final answer resumes it");
+    }
+
+    #[test]
+    fn warp_db_rows_map_panes_to_window_and_tab() {
+        let rows = "0762e1f78808469c8809535d4eb65068 1 1\n\
+                    0bd9a62647ef4dc3ab9a54e9966df502 1 2\n\
+                    80602DAB-5730-4503-B001-386BF769BCD9 1 1\n\
+                    garbage line\n\
+                    notauuid 1 1\n";
+        let m = parse_pane_rows(rows);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.get("0762e1f78808469c8809535d4eb65068").map(String::as_str), Some("1-1"));
+        assert_eq!(m.get("80602dab57304503b001386bf769bcd9").map(String::as_str), Some("1-1"), "dashes and case are normalised");
+        assert_eq!(m.get("0bd9a62647ef4dc3ab9a54e9966df502").map(String::as_str), Some("1-2"));
+        assert!(parse_pane_rows("").is_empty());
     }
 
     #[test]

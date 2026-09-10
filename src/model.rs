@@ -403,6 +403,16 @@ impl BoardModel {
         let mut seen = vec![false; self.chips.len()];
         for info in list {
             if let Some(i) = self.chips.iter().position(|c| c.info.key() == info.key()) {
+                // A session that moved group (its Warp tab became known, or
+                // the pane was dragged to another tab) joins the new block
+                // at its lowest free position, like a newcomer would.
+                let regroup = (self.chips[i].info.group != info.group).then(|| self.free_gslot(&info.group));
+                if let Some(gslot) = regroup {
+                    self.chips[i].gslot = gslot;
+                    if !self.groups.contains(&info.group) {
+                        self.groups.push(info.group.clone());
+                    }
+                }
                 let chip = &mut self.chips[i];
                 chip.merge_subs(&info.subagents, now);
                 chip.info = info;
@@ -676,6 +686,29 @@ mod tests {
         m.tick(FADE_SECS + 0.1, t0 + secs(1.0));
         assert_eq!(m.chips[0].slot, 0);
         assert_eq!(m.groups, vec!["desktop".to_string()]);
+    }
+
+    #[test]
+    fn a_session_whose_group_changes_joins_the_new_block() {
+        let t0 = Instant::now();
+        let mut m = BoardModel::new();
+        // Two panes first seen on their own (Warp's tab map not read yet).
+        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
+        a.group = "warp:aaaa".into();
+        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
+        b.group = "warp:bbbb".into();
+        m.apply(vec![a.clone(), b.clone()], t0);
+        assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1 + GROUP_GAP]);
+        // Then both turn out to share a tab: they end up adjacent, one block.
+        a.group = "warp-tab:1-1".into();
+        b.group = "warp-tab:1-1".into();
+        m.apply(vec![a.clone(), b.clone()], t0);
+        assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(m.groups, vec!["warp-tab:1-1".to_string()]);
+        // Moving b to another tab opens the gap again.
+        b.group = "warp-tab:1-2".into();
+        m.apply(vec![a, b], t0);
+        assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1 + GROUP_GAP]);
     }
 
     #[test]

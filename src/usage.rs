@@ -1,4 +1,4 @@
-//! Claude plan usage for the status bar (#46): the same numbers Claude Code
+//! Claude plan usage for the status bar (#48): the same numbers Claude Code
 //! shows under `/usage`, read from Anthropic's OAuth usage endpoint with the
 //! token Claude Code keeps in the login keychain.
 //!

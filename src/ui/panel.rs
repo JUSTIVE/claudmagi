@@ -85,7 +85,7 @@ impl Board {
             .border_color(c(theme::with_alpha(PALETTE.text_on, 0.45)))
             .bg(c(theme::with_alpha(PALETTE.chip, 0.96)))
             .shadow_lg()
-            .font_family("Menlo")
+            .font_family(theme::UI_FONT)
             .text_size(px(11.))
             .text_color(dim(0.85))
             // Keep clicks and wheel events off the board underneath.
