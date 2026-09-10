@@ -19,6 +19,7 @@ use crate::settings::Settings;
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
 use crate::ui::panel::PanelState;
+use crate::usage::{self, Usage};
 use crate::{mac, warp};
 
 pub const STATUS_H: f32 = 30.0;
@@ -57,6 +58,10 @@ pub struct Board {
     started: Instant,
     last_tick: Instant,
     focus_handle: FocusHandle,
+    /// Claude plan usage for the status bar (#46): the last good value and
+    /// when it was fetched, plus the latest error if the poll is failing.
+    usage: Option<(Usage, Instant)>,
+    usage_error: Option<usage::UsageError>,
 }
 
 impl Board {
@@ -93,6 +98,33 @@ impl Board {
         })
         .detach();
 
+        // Plan usage for the status bar (#46): keychain + curl off the UI
+        // thread, once a minute. A missing login is final; anything else
+        // keeps the last good value and retries.
+        cx.spawn(async move |this, cx| {
+            loop {
+                let result = cx.background_executor().spawn(async move { usage::fetch() }).await;
+                let now = Instant::now();
+                let keep_polling = this.update(cx, |board, cx| {
+                    let again = !matches!(result, Err(usage::UsageError::NoCredentials));
+                    match result {
+                        Ok(u) => {
+                            board.usage = Some((u, now));
+                            board.usage_error = None;
+                        }
+                        Err(e) => board.usage_error = Some(e),
+                    }
+                    cx.notify();
+                    again
+                });
+                if !matches!(keep_polling, Ok(true)) {
+                    break;
+                }
+                cx.background_executor().timer(usage::POLL).await;
+            }
+        })
+        .detach();
+
         let settings = Settings::load();
         let now = Instant::now();
         Self {
@@ -115,7 +147,17 @@ impl Board {
             started: now,
             last_tick: now,
             focus_handle,
+            usage: None,
+            usage_error: None,
         }
+    }
+
+    /// Status-bar text for the plan usage, and whether it is stale (#46).
+    /// Nothing until the first successful fetch.
+    fn usage_label(&self, now: Instant) -> Option<(String, bool)> {
+        let (u, at) = self.usage?;
+        let stale = now.duration_since(at) > usage::STALE_AFTER;
+        Some((u.label(usage::now_secs()), stale))
     }
 
     fn source(&self) -> Arc<dyn SessionSource> {
@@ -264,6 +306,7 @@ impl Render for Board {
         };
         let dev_open = self.dev.open;
         let settings_open = self.settings_panel.open;
+        let usage_label = self.usage_label(now);
 
         div()
             .relative()
@@ -397,6 +440,19 @@ impl Render for Board {
                             .flex()
                             .items_center()
                             .gap_1()
+                            .when_some(usage_label, |d, (text, stale)| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .border_1()
+                                        .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
+                                        .when(stale, |d| d.text_color(theme::hsla(theme::with_alpha(palette.ink, 0.45))))
+                                        .child(SharedString::from(text)),
+                                )
+                            })
                             .child(status_button(
                                 "settings-toggle",
                                 "SETTINGS",

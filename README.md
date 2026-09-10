@@ -28,6 +28,7 @@ cargo run --release
 - `⌘+` / `⌘-` / `⌘0` (or ⌘ + wheel) zoom the whole board between 50% and 300%.
 - `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: background (white / orange / dark) and UI size. Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
 - Sessions are grouped by where they run with a wide gap between groups: panes of the same Warp tab stay together (via Warp Control: `warpctrl pane list`, or the app binary's `--warpctrl` mode; turn on Warp's local control under Settings → Scripting), otherwise each Warp pane, other terminals, and the Claude desktop app form their own groups. Inside a group a session keeps its lane for life: when one ends, the others stay put and the next new session takes the freed lane. Chips never sit in the left 20% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
+- The status bar shows your Claude plan usage (the `/usage` numbers: 5-hour and 7-day utilization with the time to reset), read once a minute from Anthropic's usage endpoint with the login Claude Code keeps in the keychain. Nothing is shown when there is no Claude Code login. `claudmagi --usage` prints the same numbers.
 - Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 

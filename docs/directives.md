@@ -33,6 +33,7 @@
 - 세션 소스는 `SessionSource` 트레이트로 추상화: 실제(`ClaudeSource`) / 가상(`FakeSource`). (#10)
 - UI 안에 테스트 도구(`T` 키 / 상태바 `TEST`): 소스 전환, 가상 세션·서브에이전트 생성·삭제·상태 변경. auto churn은 서브에이전트 생성·완료·삭제도 섞는다. (#10, #12, #26)
 - Warp에는 숨은 `warpctrl`(Warp Control CLI: `tab list`/`pane list`/`session list`, JSON 출력)이 있다. 아직 claudmagi에서 쓰지 않음.
+- 상태바 오른쪽에 Claude 플랜 사용량(`/usage`와 같은 숫자): `5H 22% ↻2H10M · 7D 16% ↻3D`. 토큰은 로그인 키체인 `Claude Code-credentials`(없으면 `~/.claude/.credentials.json`)에서 `security`로, 요청은 `curl`로 `api.anthropic.com/api/oauth/usage`에 1분마다. 로그인이 없으면 표시하지 않고 폴링도 멈춘다; 실패하면 마지막 값을 유지하고 15분 지나면 흐리게. 토큰 갱신은 하지 않는다(Claude Code가 한다). `--usage`로 터미널에서 확인. (#46)
 - 시각 검증은 `--svg --demo --size WxH [--theme dark] [--zoom z] [--count n]` + `tools/svg2png.swift`로 한다(화면 캡처 권한 불필요).
 - 성능: 경로 테셀레이션을 기하 해시로 캐시(정점 예산 32만), 30fps 타이머 갱신, 세션 폴링 1초. CPU 66%→8%, 큰 창에서도 메모리 ≈ 95MB. (#38, #40)
 
@@ -46,5 +47,6 @@
 |---|------|------|------|-----------|
 | 41 | 2026-09-10 | Claude 데스크톱에서 실행되는 세션끼리, 각 Warp 탭 안의 세션끼리 묶고 그룹 사이에 매우 큰 갭 | ✅ | `src/model.rs` (`assign_slots`, `GROUP_GAP` 5), `src/sources.rs` (`group` = warp pane / term / desktop) |
 | 42 | 2026-09-10 | 같은 Warp 탭의 세션(인접 pane)들은 붙이고, 다른 탭/프로그램에서 띄운 세션들 사이만 크게 띄우기 (#41 정정) | ✅ | `src/sources.rs` (`warpctrl --output-format json pane list` → `warp-tab:<id>` 그룹; Warp 로컬 제어가 꺼져 있으면 pane 단위) |
+| 46 | 2026-09-10 | 새 워크트리에서 상태바에 Claude usage 넣기, 끝나면 리모트에 push (#43–#45는 main 작업 트리에서 진행 중) | ✅ | `src/usage.rs` (키체인 → `curl` → `Usage`, ISO-8601 파서, 카운트다운), `src/ui/board.rs` (1분 폴링, 상태바 배지), `src/main.rs` (`--usage`) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기
