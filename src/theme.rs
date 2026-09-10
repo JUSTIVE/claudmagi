@@ -27,24 +27,33 @@ pub const PALETTE: Palette = Palette {
     packet: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },   // #F04A0E, the bumps on the traces (#16)
     line: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },     // #120A05
     chip: Rgba { r: 0.055, g: 0.043, b: 0.039, a: 1.0 },     // #0E0B0A
-    chip_needs: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410
-    chip_idle: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 }, // #F04A0E — idle chips are orange off the orange theme (#24)
-    text_on: Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 },  // #3BE38A
-    text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 }, // #FFB03A
-    text_idle: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink on the orange idle chip
+    chip_needs: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 }, // #F04A0E — the waiting chip is the loud one (#50)
+    chip_idle: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410 — a finished session sinks into maroon (#50)
+    text_on: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },  // #F04A0E — orange label on the black chip (#51)
+    text_needs: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink on the orange needs-input chip
+    text_idle: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 }, // #FFB03A
     outline: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },   // hover ring: black (#11)
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
 };
+
+/// Accent for the docked panels' chrome (titles, borders, the working dot).
+/// Fixed: the panels are a dark card in every board theme. (#51)
+pub const UI_ACCENT: Rgba = Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 }; // #3BE38A
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
 /// and for the panels' session lists.
 pub const AMBER_DIM: Rgba = Rgba { r: 0.788, g: 0.467, b: 0.227, a: 1.0 }; // #C9773A
 
-/// Reference-clip look: orange board, black traces and packets. Idle chips
-/// keep the dark maroon here since orange-on-orange would disappear.
+/// Reference-clip look: orange board, black traces and packets. Neither
+/// detached chip can be orange here — it would vanish into the board — so
+/// needs-input keeps the maroon + amber it had before the swap (#50), and
+/// idle goes a shade deeper still.
 pub const ORANGE: Palette = Palette {
     bg: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },
     packet: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
+    chip_needs: Rgba { r: 0.227, g: 0.078, b: 0.063, a: 1.0 }, // #3A1410
+    text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 },   // #FFB03A
+    text_on: UI_ACCENT, // orange would read as a hole in the orange board (#51)
     chip_idle: Rgba { r: 0.165, g: 0.078, b: 0.063, a: 1.0 }, // #2A1410
     text_idle: AMBER_DIM,
     ..PALETTE
@@ -57,7 +66,7 @@ pub const DARK: Palette = Palette {
     line: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },     // #EDE7DE
     chip: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
     text_on: Rgba { r: 0.078, g: 0.545, b: 0.318, a: 1.0 },  // #148B51
-    chip_needs: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 },
+    chip_idle: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 }, // #4A1C16 — lifted off the dark board (#50)
     outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ..PALETTE

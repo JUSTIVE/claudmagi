@@ -5,13 +5,14 @@
 
 ## 현재 유효한 결정
 
-(#1–#40 통합, 2026-09-10. 다음 통합: #50)
+(#1–#50 통합, 2026-09-10. 다음 통합: #60)
 
 **제품**
 - `claudmagi`: 현재 살아 있는 Claude Code 세션을 보여주는 macOS 앱. gpui(Rust)로 만든다. (#1, #2)
 - 세션 하나 = 트레이스 한 줄 위의 칩 하나. 디자인은 `docs/reference/circuit-board-reference.mp4`를 따른다 — 45° 계단형 검은 선, 녹색 라벨의 검은 칩. (#3, #4, #13)
 - 배경은 흰색, 선 위를 흐르는 작은 패킷은 참고 영상의 주황. 설정에서 배경을 흰색/주황/다크로 바꿀 수 있다. (#16, #20)
-- 오렌지 테마가 아닌 테마에서는 idle 칩을 주황 바탕 + 검은 라벨로. 다크 테마에서 동작 중 칩은 흰 바탕 + 짙은 녹색 라벨. (#24, #32)
+- 흰색·다크 테마에서 입력 필요 칩은 주황 바탕 + 검은 라벨, idle 칩은 어두운 적갈 + 앰버 라벨 — 기다리는 쪽이 눈에 띄어야 한다. 오렌지 테마는 주황이 배경에 묻히므로 둘 다 적갈 계열. 다크 테마에서 동작 중 칩은 흰 바탕 + 짙은 녹색 라벨. (#24, #32, #50)
+- 라이트(흰색) 테마의 칩 라벨·제목 배지는 주황(#F04A0E) — 동작 중은 검은 칩 + 주황 라벨, 입력 필요는 주황 칩 + 검은 라벨로 같은 두 색의 반전이 된다. 오렌지·다크 테마의 녹색 라벨과 패널 크롬의 녹색 액센트(`UI_ACCENT`)는 그대로. (#51)
 - 선은 두 줄씩 짝: 짝 안 22, 짝 사이 46. 세션은 모든 레인에 순서대로, 항상 대각선 위. 칩 크기(세션 22, 서브 16)는 간격 때문에 줄이지 않는다 — 짝 안 칩이 살짝 겹치는 것은 참고 영상처럼 의도된 것. 짝의 두 칩은 나란히가 아니라 대각선 방향으로 36 어긋나게(위 레인 앞, 아래 레인 뒤). (#14, #29, #31, #33–#35, #39, #44)
 - 첫 번째 꺾임의 빗변은 아래 레인일수록 길다(레인당 +12, 최소 24, 다음 스트라이프에 닿지 않게 상한) → 선이 왼쪽 위에서 오른쪽 아래로 부채꼴로 퍼진다. 두 번째 스트라이프부터는 모두 같은 길이. 레인 수는 창을 채우지 않고 세션 수 + 6(위쪽 보조 레인 8개는 별도). (#45)
 - 사용자 입력이 필요하거나 턴이 끝나면 그 칩의 선이 끊어진다(케이블 파형 → 홈 파인 소켓 → 분리된 칩, 앰버 색). (#5)
@@ -28,13 +29,17 @@
 - 설정 패널: 상태바 `SETTINGS` 버튼(TEST 옆) 또는 `⌘,`. 우선 배경화면과 UI 크기. (#20, #21)
 - 설정·테스트 패널은 오른쪽 아래에 한 레이아웃(가로 나열)으로 고정해 겹치지 않는다. (#25)
 - 앱은 `tools/bundle.sh`로 빌드해 `/Applications/claudmagi.app`으로 설치한다(아이콘 포함). (#17)
+- 세션은 같은 Warp 탭(pane)끼리 붙이고, 다른 탭·프로그램에서 띄운 세션 사이만 빈 3행으로 띄운다. 갭 구간에는 선을 아예 그리지 않는다. (#41–#43, #49)
+- 세션이 중간에 새로 들어오면 칩을 페이드로 옮기지 않는다: 새 선이 왼쪽에서부터 그려져 들어오고, 아래 선들이 칩을 얹은 채 아래로 밀린다. (#49)
+- 보드 위 라벨·제목 배지까지 모든 글자는 Helvetica. (#46, #47)
+- 끝난 서브에이전트는 세션처럼 뽑히지 않고 제자리에서 가라앉는다: 선은 그대로 관통, 바탕만 idle 색, 높이 16 → 12. (#53)
 
 **구조**
 - 데이터(`model.rs`, `sources.rs`, `settings.rs`)와 렌더링(`render/`)과 UI(`ui/`)를 분리한다. gpui는 `ui/`와 `render/paint.rs`만 안다. (#10)
 - 세션 소스는 `SessionSource` 트레이트로 추상화: 실제(`ClaudeSource`) / 가상(`FakeSource`). (#10)
 - UI 안에 테스트 도구(`T` 키 / 상태바 `TEST`): 소스 전환, 가상 세션·서브에이전트 생성·삭제·상태 변경. auto churn은 서브에이전트 생성·완료·삭제도 섞는다. (#10, #12, #26)
 - Warp의 탭/pane 구조는 상태 DB(`~/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite`)에 있다: `terminal_panes.uuid`(BLOB, hex = `WARP_TERMINAL_SESSION_UUID`) → `pane_nodes.tab_id` → `tabs.window_id`. `~/Library/Application Support/dev.warp.Warp-Stable/warp.sqlite`는 빈 껍데기. 숨은 `warpctrl`(Warp Control CLI, JSON 출력)도 있지만 Warp 로컬 제어 서버가 꺼져 있으면 `no_instance`로 실패하고 문서화된 켜는 방법이 없다 → 폴백으로만 쓴다. (#43)
-- 상태바 오른쪽에 Claude 플랜 사용량(`/usage`와 같은 숫자): `5H 22% ↻2H10M · 7D 16% ↻3D`. 토큰은 로그인 키체인 `Claude Code-credentials`(없으면 `~/.claude/.credentials.json`)에서 `security`로, 요청은 `curl`로 `api.anthropic.com/api/oauth/usage`에 1분마다. 로그인이 없으면 표시하지 않고 폴링도 멈춘다; 실패하면 마지막 값을 유지하고 15분 지나면 흐리게. 토큰 갱신은 하지 않는다(Claude Code가 한다). `--usage`로 터미널에서 확인. (#48)
+- 상태바 오른쪽에 Claude 플랜 사용량(`/usage`와 같은 숫자): 창마다 이름 + 프로그레스 바 + 퍼센트 + 리셋 카운트다운(#52). 토큰은 로그인 키체인 `Claude Code-credentials`(없으면 `~/.claude/.credentials.json`)에서 `security`로, 요청은 `curl`로 `api.anthropic.com/api/oauth/usage`에 1분마다. 로그인이 없으면 표시하지 않고 폴링도 멈춘다; 실패하면 마지막 값을 유지하고 15분 지나면 흐리게. 토큰 갱신은 하지 않는다(Claude Code가 한다). `--usage`로 터미널에서 확인. (#48)
 - 시각 검증은 `--svg --demo --size WxH [--theme dark] [--zoom z] [--count n]` + `tools/svg2png.swift`로 한다(화면 캡처 권한 불필요).
 - 성능: 경로 테셀레이션을 기하 해시로 캐시(정점 예산 32만), 30fps 타이머 갱신, 세션 폴링 1초. CPU 66%→8%, 큰 창에서도 메모리 ≈ 95MB. (#38, #40)
 
@@ -46,14 +51,8 @@
 
 | # | 날짜 | 지시 | 상태 | 반영 위치 |
 |---|------|------|------|-----------|
-| 41 | 2026-09-10 | Claude 데스크톱에서 실행되는 세션끼리, 각 Warp 탭 안의 세션끼리 묶고 그룹 사이에 매우 큰 갭 | ✅ | `src/model.rs` (`assign_slots`, `GROUP_GAP` 5), `src/sources.rs` (`group` = warp pane / term / desktop) |
-| 42 | 2026-09-10 | 같은 Warp 탭의 세션(인접 pane)들은 붙이고, 다른 탭/프로그램에서 띄운 세션들 사이만 크게 띄우기 (#41 정정) | ✅ | `src/sources.rs` (`warpctrl --output-format json pane list` → `warp-tab:<id>` 그룹; Warp 로컬 제어가 꺼져 있으면 pane 단위) |
-| 43 | 2026-09-10 | 같은 Warp 탭의 pane에 속한 노드들을 인접하게 (#42 재요청 — warpctrl이 이 머신에서 `no_instance`라 실제로는 pane 단위로 떨어져 있었음) | ✅ | `src/sources.rs` (Warp `warp.sqlite`를 `sqlite3 -readonly`로 읽어 `warp-tab:<window>-<tab>`; warpctrl은 폴백), `src/model.rs` (`apply`: 그룹이 바뀐 세션은 새 블록의 빈 슬롯으로) |
-| 44 | 2026-09-10 | 2개씩 배치된 노드들을 살짝 어긋나게 (참고 이미지처럼 짝 안 두 칩이 대각선 방향으로 밀려 있게) | ✅ | `src/render/scene.rs` (`PAIR_STAGGER` 36, `session_stagger`: 짝수 슬롯 +18 / 홀수 슬롯 −18) |
-| 45 | 2026-09-10 | 시안처럼 첫 꺾이는 빗변의 길이를 아래로 갈수록 점점 늘리기 + 선은 인스턴스 +6개까지만 | ✅ | `src/render/scene.rs` (`first_diag`/`fanned_offset`, `DIAG_GROWTH` 12, `DIAG_MIN` 24, `Stripe`; `TRAIL_LANES` 6, `MIN_LANES`·높이 채우기 제거) |
-| 46 | 2026-09-10 | UI(상태바·패널) 폰트를 헬베티카로 | ✅ | `src/theme.rs` (`UI_FONT = "Helvetica"`), `src/ui/board.rs`, `src/ui/panel.rs` |
-| 47 | 2026-09-10 | 모든 요소를 헬베티카로 — 보드 위 칩 라벨·제목 배지까지 | ✅ | `src/font.rs` (자체 스트로크 폰트 → `/System/Library/Fonts/Helvetica.ttc` Regular 글리프 외곽선을 `ttf-parser`로 읽어 채우기 경로로; `scale`은 캡 높이 6·scale px 유지), `src/render/paint.rs`, `src/render/svg.rs` |
-| 48 | 2026-09-10 | 새 워크트리에서 상태바에 Claude usage 넣기, 끝나면 리모트에 push | ✅ | `src/usage.rs` (키체인 → `curl` → `Usage`, ISO-8601 파서, 카운트다운), `src/ui/board.rs` (1분 폴링, 상태바 배지), `src/main.rs` (`--usage`) |
-| 49 | 2026-09-10 | 그룹 간 갭은 3행이면 충분하고 그 사이에는 선을 아예 빼기. 중간에 세션이 새로 들어오면 노드를 페이드로 옮기지 말고, 새 선이 왼쪽에서부터 들어오며 아래 선들이 (노드를 얹은 채) 아래로 밀려나게 | ✅ | `src/model.rs` (`GROUP_GAP` 3, `Rows`/`RowKind`, `assign_slots`→`rows_for`: 블록 diff로 행별 from/new 계산, `ROW_SECS` 0.4), `src/render/scene.rs` (`Lane{pos,reveal,visible}`, `lane_params_at`/`lane_path_at` 보간, `build_lanes_for`, 자리 키에서 레인 번호 제거, 왼쪽부터 드러나는 선 + 칩 게이트), `src/ui/board.rs` (슬라이드 중 매 프레임 레인 리빌드) |
+| 51 | 2026-09-10 | 라이트 테마에서 녹색 계열 텍스트 색을 오렌지로 | ✅ | `src/theme.rs` (`PALETTE.text_on` → `#F04A0E`, 패널 전용 `UI_ACCENT` 신설, `ORANGE.text_on`은 녹색 유지), `src/ui/panel.rs`, `src/ui/devtools.rs` |
+| 52 | 2026-09-10 | 상태바의 usage를 프로그레스로 보여주기 | ✅ | `src/ui/board.rs` (`usage_label` → `usage_now`, `usage_meter`: 44×4 트랙 + 패킷 색 채움, stale이면 바까지 45%) |
+| 53 | 2026-09-10 | done 인 subagent는 unplugged 말고 다른 디자인으로 | ✅ | `src/render/scene.rs` (`ChipDraw.settled`, `SETTLE_SHRINK` 0.25 — 서브는 `p`를 0으로 두어 파형·소켓·이탈 없이 제자리에서 idle 색 + 높이 16→12) |
 
 상태: ✅ 완료 / 🔨 진행 중 / 📋 대기

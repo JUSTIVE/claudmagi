@@ -155,12 +155,11 @@ impl Board {
         }
     }
 
-    /// Status-bar text for the plan usage, and whether it is stale (#48).
+    /// Plan usage for the status bar, and whether the reading is stale (#48).
     /// Nothing until the first successful fetch.
-    fn usage_label(&self, now: Instant) -> Option<(String, bool)> {
+    fn usage_now(&self, now: Instant) -> Option<(Usage, bool)> {
         let (u, at) = self.usage?;
-        let stale = now.duration_since(at) > usage::STALE_AFTER;
-        Some((u.label(usage::now_secs()), stale))
+        Some((u, now.duration_since(at) > usage::STALE_AFTER))
     }
 
     fn source(&self) -> Arc<dyn SessionSource> {
@@ -314,7 +313,7 @@ impl Render for Board {
         };
         let dev_open = self.dev.open;
         let settings_open = self.settings_panel.open;
-        let usage_label = self.usage_label(now);
+        let usage = self.usage_now(now);
 
         div()
             .relative()
@@ -448,17 +447,21 @@ impl Render for Board {
                             .flex()
                             .items_center()
                             .gap_1()
-                            .when_some(usage_label, |d, (text, stale)| {
+                            .when_some(usage, |d, (u, stale)| {
+                                let secs = usage::now_secs();
                                 d.child(
                                     div()
                                         .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
                                         .px_2()
                                         .py_0p5()
                                         .rounded_sm()
                                         .border_1()
                                         .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
-                                        .when(stale, |d| d.text_color(theme::hsla(theme::with_alpha(palette.ink, 0.45))))
-                                        .child(SharedString::from(text)),
+                                        .child(usage_meter("5H", u.five_hour, secs, palette, stale))
+                                        .child(usage_meter("7D", u.seven_day, secs, palette, stale)),
                                 )
                             })
                             .child(status_button(
@@ -505,6 +508,56 @@ impl Render for Board {
 }
 
 /// Small bordered button for the status bar.
+/// One plan-usage window as a bar: `5H \u{25ac}\u{25ac}\u{2591}\u{2591} 22% \u{21bb}2H10M`. The fill is the
+/// board's packet colour so it reads in every theme; a stale reading fades the
+/// whole meter, bar included. (#52)
+fn usage_meter(
+    name: &'static str,
+    w: usage::Window,
+    now: u64,
+    palette: Palette,
+    stale: bool,
+) -> gpui::Div {
+    const TRACK_W: f32 = 44.0;
+    let frac = (w.utilization / 100.0).clamp(0.0, 1.0);
+    let fade = if stale { 0.45 } else { 1.0 };
+    let ink = |a: f32| theme::hsla(theme::with_alpha(palette.ink, a * fade));
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_color(ink(0.9))
+        .child(div().flex_none().text_color(ink(0.55)).child(name))
+        .child(
+            div()
+                .flex_none()
+                .w(px(TRACK_W))
+                .h(px(4.))
+                .rounded_full()
+                .bg(ink(0.18))
+                .child(
+                    div()
+                        .w(px(TRACK_W * frac))
+                        .h_full()
+                        .rounded_full()
+                        .bg(theme::hsla(theme::with_alpha(palette.packet, fade))),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .child(SharedString::from(format!("{}%", w.utilization.round() as i64))),
+        )
+        .when_some(w.resets_at, |d, r| {
+            d.child(
+                div()
+                    .flex_none()
+                    .text_color(ink(0.55))
+                    .child(SharedString::from(format!("\u{21bb}{}", usage::countdown(r, now)))),
+            )
+        })
+}
+
 fn status_button(
     id: &'static str,
     label: impl Into<SharedString>,

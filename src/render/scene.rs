@@ -31,6 +31,9 @@ pub const BOTTOM_PAD: f32 = 34.0;
 /// `LEAD_LANES + sessions + TRAIL_LANES` lanes, never padded to the window.
 pub const TRAIL_LANES: usize = TRAIL_ROWS;
 pub const TITLE_SCALE: f32 = 2.6;
+/// How much of its height a settled subagent gives up (#53): 16 → 12.
+pub const SETTLE_SHRINK: f32 = 0.25;
+
 /// Path distance between a chip's trailing edge and the next subagent chip.
 pub const SUB_GAP: f32 = 44.0;
 /// The two session chips of a lane pair are staggered along their diagonal
@@ -114,6 +117,10 @@ pub struct ChipDraw {
     pub width: f32,
     pub label: String,
     pub p: f32,
+    /// A finished subagent sinks in place instead of unplugging (#53): it
+    /// keeps the trace running through it, takes the idle colours and loses a
+    /// quarter of its height. Sessions always leave this at 0.
+    pub settled: f32,
     pub hover: f32,
     pub alpha: f32,
     pub phase: Phase,
@@ -520,7 +527,13 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Inst
             }
             None => (pl.s_c, 1.0),
         };
-        let p = smoothstep(anim.disconnect);
+        // Sessions unplug; subagents settle in place (#53), so the same
+        // disconnect animation drives a different look for each.
+        let t = smoothstep(anim.disconnect);
+        let (p, settled) = match pl.target {
+            Target::Sub(..) => (0.0, t),
+            Target::Session(_) => (t, 0.0),
+        };
         let (center, tangent) = lane.path.point_at(s_c + p * pl.style.pull);
         // On a lane still drawing in, the chip shows as the trace reaches it (#49).
         let reveal_gate = if lane.reveal < 1.0 {
@@ -535,6 +548,7 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Inst
             width: pl.width,
             label: pl.label,
             p,
+            settled,
             hover: anim.hover_t,
             alpha: anim.alpha(now).min(parent_alpha) * reloc_alpha * reveal_gate,
             phase,
@@ -739,15 +753,17 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             Phase::NeedsUser | Phase::Working => (pal.chip_needs, pal.text_needs),
             Phase::Idle => (pal.chip_idle, pal.text_idle),
         };
-        let fill_c = theme::with_alpha(theme::lerp(pal.chip, fill_off, c.p), c.alpha);
-        let text_c = theme::with_alpha(theme::lerp(pal.text_on, text_off, c.p), c.alpha);
+        let off = c.p.max(c.settled);
+        let fill_c = theme::with_alpha(theme::lerp(pal.chip, fill_off, off), c.alpha);
+        let text_c = theme::with_alpha(theme::lerp(pal.text_on, text_off, off), c.alpha);
+        let h = st.h * (1.0 - SETTLE_SHRINK * c.settled);
 
         if c.hover > 0.01 {
             let grow = 5.0 + 1.5 * c.hover;
             out.push(Shape::RoundedRect {
                 center,
                 w: c.width + grow,
-                h: st.h + grow,
+                h: h + grow,
                 r: st.r + 2.5,
                 angle,
                 color: theme::with_alpha(pal.outline, c.hover * c.alpha),
@@ -757,7 +773,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         out.push(Shape::RoundedRect {
             center,
             w: c.width,
-            h: st.h,
+            h,
             r: st.r,
             angle,
             color: fill_c,
@@ -997,7 +1013,8 @@ mod tests {
             let x = d.center.x;
             assert!(x - d.width / 2.0 >= 0.0 && x + d.width / 2.0 <= layout.width, "{} stays on screen", d.label);
         }
-        assert_eq!(draws[2].p, 1.0, "finished subagent is unplugged");
+        assert_eq!(draws[2].settled, 1.0, "finished subagent settles in place");
+        assert_eq!(draws[2].p, 0.0, "and never unplugs, so the trace runs through it (#53)");
         assert!((draws[0].tangent.angle_deg() - 45.0).abs() < 1.0, "first session rides the diagonal");
         assert!((draws[3].tangent.angle_deg() - 45.0).abs() < 1.0, "so does the second (#29)");
         for d in &draws[1..3] {

@@ -3,7 +3,7 @@
 
 use gpui::{ClickEvent, Context, ElementId, MouseButton, SharedString, Stateful, div, prelude::*, px};
 
-use crate::theme::{self, PALETTE, Rgba};
+use crate::theme::{self, PALETTE, Rgba, UI_ACCENT};
 use crate::ui::board::Board;
 
 #[derive(Default)]
@@ -41,7 +41,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, active: 
 
 pub fn section(title: impl Into<SharedString>) -> gpui::Div {
     div().flex().flex_col().gap_1p5().px_3().py_2().border_t_1().border_color(dim(0.12)).child(
-        div().text_color(c(PALETTE.text_on)).text_size(px(10.)).child(title.into()),
+        div().text_color(c(UI_ACCENT)).text_size(px(10.)).child(title.into()),
     )
 }
 
@@ -82,7 +82,7 @@ impl Board {
             .flex_col()
             .rounded_lg()
             .border_1()
-            .border_color(c(theme::with_alpha(PALETTE.text_on, 0.45)))
+            .border_color(c(theme::with_alpha(UI_ACCENT, 0.45)))
             .bg(c(theme::with_alpha(PALETTE.chip, 0.96)))
             .shadow_lg()
             .font_family(theme::UI_FONT)
@@ -98,7 +98,7 @@ impl Board {
                     .justify_between()
                     .px_3()
                     .py_2()
-                    .child(div().text_color(c(PALETTE.text_on)).child(title))
+                    .child(div().text_color(c(UI_ACCENT)).child(title))
                     .child(
                         div()
                             .id(close_id)
