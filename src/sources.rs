@@ -60,6 +60,8 @@ pub struct ClaudeSource {
     tabs: Mutex<Option<WarpTabs>>,
     prs: pr::Tracker,
     tickets: ticket::Tracker,
+    /// Set once the first snapshot has waited on Warp; it never waits again.
+    tabs_tried: std::sync::atomic::AtomicBool,
 }
 
 impl SessionSource for ClaudeSource {
@@ -69,7 +71,7 @@ impl SessionSource for ClaudeSource {
 
     fn snapshot(&self) -> Vec<SessionInfo> {
         let mut list = read_sessions();
-        let tabs = self.warp_tabs();
+        let tabs = self.warp_tabs_settled(&list);
         for s in &mut list {
             s.subagents = self.subagents_for(s);
             if let Some(uuid) = &s.warp_session_uuid {
@@ -96,11 +98,22 @@ impl SessionSource for ClaudeSource {
 
 /// How often to ask Warp for its pane → tab map.
 const WARP_TABS_TTL: Duration = Duration::from_secs(5);
+/// How soon to retry after a miss. A failed read must not pass for "no tabs"
+/// until the normal TTL expires, or the board groups by pane, lays itself out
+/// wrong, and then slides every row when the real answer lands (#59).
+const WARP_TABS_RETRY: Duration = Duration::from_millis(400);
+/// How hard the first snapshot insists on an answer before giving up, once
+/// per process. Sessions are grouped by it, so a wrong first layout is worse
+/// than a slightly later first paint.
+const FIRST_TABS_TRIES: usize = 6;
+const FIRST_TABS_WAIT: Duration = Duration::from_millis(250);
 const WARPCTRL_TIMEOUT: Duration = Duration::from_millis(1500);
 
 struct WarpTabs {
     map: HashMap<String, String>,
     fetched: Instant,
+    /// Whether this came from a fetch that actually returned panes.
+    good: bool,
 }
 
 /// Runs a command with a wall-clock limit and returns its stdout on success.
@@ -292,12 +305,45 @@ impl ClaudeSource {
     /// `warpctrl` can answer.
     fn warp_tabs(&self) -> HashMap<String, String> {
         let mut guard = self.tabs.lock().unwrap_or_else(|e| e.into_inner());
-        let stale = guard.as_ref().is_none_or(|t| t.fetched.elapsed() > WARP_TABS_TTL);
-        if stale {
-            let map = fetch_warp_tabs().unwrap_or_default();
-            *guard = Some(WarpTabs { map, fetched: Instant::now() });
+        let ttl = match guard.as_ref() {
+            Some(t) if t.good => WARP_TABS_TTL,
+            _ => WARP_TABS_RETRY,
+        };
+        if guard.as_ref().is_none_or(|t| t.fetched.elapsed() > ttl) {
+            match fetch_warp_tabs() {
+                Some(map) if !map.is_empty() => {
+                    *guard = Some(WarpTabs { map, fetched: Instant::now(), good: true });
+                }
+                // A miss keeps whatever good map we already had — Warp being
+                // briefly unreadable is not the same as having no tabs (#59).
+                _ => match guard.as_mut() {
+                    Some(t) => t.fetched = Instant::now(),
+                    None => *guard = Some(WarpTabs { map: HashMap::new(), fetched: Instant::now(), good: false }),
+                },
+            }
         }
         guard.as_ref().map(|t| t.map.clone()).unwrap_or_default()
+    }
+
+    /// Warp's pane → tab map, insisting on a real answer the first time it is
+    /// needed. Sessions are grouped by it, so painting before it lands means
+    /// showing a layout that is simply wrong and then re-laying it out (#59).
+    /// After the first attempt this never blocks again, so a machine without
+    /// Warp pays the cost once.
+    fn warp_tabs_settled(&self, list: &[SessionInfo]) -> HashMap<String, String> {
+        let mut tabs = self.warp_tabs();
+        let wants = list.iter().any(|s| s.warp_session_uuid.is_some());
+        let first = !self.tabs_tried.swap(true, std::sync::atomic::Ordering::Relaxed);
+        if first && wants && tabs.is_empty() {
+            for _ in 0..FIRST_TABS_TRIES {
+                std::thread::sleep(FIRST_TABS_WAIT);
+                tabs = self.warp_tabs();
+                if !tabs.is_empty() {
+                    break;
+                }
+            }
+        }
+        tabs
     }
 }
 
@@ -531,6 +577,7 @@ impl ClaudeSource {
     pub fn eager() -> Self {
         let mut s = Self::default();
         s.prs.budget = usize::MAX;
+        s.tickets.budget = usize::MAX;
         s
     }
 
@@ -560,10 +607,11 @@ impl ClaudeSource {
             // so the team prefixes are all known by the time we pick (#57).
             self.tickets.scan(&s.session_id, transcript.as_deref());
         }
+        let mut ticket_budget = self.tickets.budget;
         for s in list.iter_mut() {
             let title = s.pr.as_ref().map(|p| p.title.clone());
             let name = s.label();
-            s.ticket = self.tickets.pick(&s.session_id, &name, title.as_deref());
+            s.ticket = self.tickets.pick(&s.session_id, &name, title.as_deref(), &mut ticket_budget, now);
         }
     }
 
@@ -781,19 +829,6 @@ impl FakeSource {
         }
     }
 
-    /// Gives a sandbox session a synthetic PR, or takes it away. Cycling runs
-    /// Draft → Open → Failing → Merged → Closed → none, so every connector
-    /// look can be checked from the test panel (#56).
-    pub fn cycle_pr(&self, session_id: &str) {
-        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            s.pr = match &s.pr {
-                None => Some(pr::Pr::synthetic(fake_pr_number(s.pid), pr::Look::Draft)),
-                Some(p) if p.look() == pr::Look::Closed => None,
-                Some(p) => Some(pr::Pr::synthetic(p.id.number, p.look().next())),
-            };
-        }
-    }
-
     pub fn set_pr(&self, session_id: &str, look: Option<pr::Look>) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             let n = s.pr.as_ref().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
@@ -802,10 +837,18 @@ impl FakeSource {
     }
 
     /// Toggles a synthetic Linear issue on a sandbox session (#57).
+    /// Sets a sandbox session's Linear node, or removes it (#58).
+    pub fn set_ticket(&self, session_id: &str, status: Option<Option<ticket::Status>>) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            let seq = (s.pid - 90_000).max(0) as u32;
+            s.ticket = status.map(|st| ticket::Ticket::synthetic(seq, st));
+        }
+    }
+
     pub fn cycle_ticket(&self, session_id: &str) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             s.ticket = match &s.ticket {
-                None => Some(ticket::Ticket::synthetic((s.pid - 90_000).max(0) as u32)),
+                None => Some(ticket::Ticket::synthetic((s.pid - 90_000).max(0) as u32, Some(ticket::Status::Started))),
                 Some(_) => None,
             };
         }

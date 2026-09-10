@@ -21,8 +21,10 @@ pub struct Palette {
     pub text_idle: Rgba,
     pub outline: Rgba,
     pub ink: Rgba,
-    /// Failing CI on a PR connector — the one alarm colour (#56).
+    /// Failing CI on a PR connector — the one alarm colour (#56), and the
+    /// label that reads on top of it (#58).
     pub alarm: Rgba,
+    pub on_alarm: Rgba,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -37,7 +39,8 @@ pub const PALETTE: Palette = Palette {
     text_idle: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 }, // #FFB03A
     outline: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },   // hover ring: black (#11)
     ink: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 },
-    alarm: Rgba { r: 0.851, g: 0.176, b: 0.125, a: 1.0 }, // #D92D20
+    alarm: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },    // #F04A0E — a failing PR is orange (#58)
+    on_alarm: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink, as on the orange needs-input chip
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -55,7 +58,8 @@ pub const ORANGE: Palette = Palette {
     text_needs: Rgba { r: 1.0, g: 0.690, b: 0.227, a: 1.0 },   // #FFB03A
     chip_idle: Rgba { r: 0.165, g: 0.078, b: 0.063, a: 1.0 }, // #2A1410
     text_idle: AMBER_DIM,
-    alarm: Rgba { r: 0.549, g: 0.114, b: 0.094, a: 1.0 }, // #8C1D18, deep enough to part from the black chips
+    alarm: Rgba { r: 0.549, g: 0.114, b: 0.094, a: 1.0 }, // #8C1D18 — orange on orange is invisible
+    on_alarm: AMBER_DIM,
     ..PALETTE
 };
 
@@ -69,7 +73,6 @@ pub const DARK: Palette = Palette {
     chip_idle: Rgba { r: 0.290, g: 0.110, b: 0.086, a: 1.0 }, // #4A1C16 — lifted off the dark board (#50)
     outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
-    alarm: Rgba { r: 1.0, g: 0.353, b: 0.290, a: 1.0 }, // #FF5A4A, lifted for the dark board
     ..PALETTE
 };
 

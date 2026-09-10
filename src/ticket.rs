@@ -7,26 +7,96 @@
 //! a `linear.app` link in the transcript or the ticket tag GitHub PR titles
 //! carry. Sessions named something else fall back to those two sources.
 //!
-//! There is no state here, only identity. `orca linear issue <KEY> --json`
-//! would give status and assignee, but on this machine it answers
-//! `runtime_unavailable` — the same dead end as `warpctrl` in #43 — so the
-//! node shows the key and links out to it.
+//! Status comes from `orca linear issue <KEY> --json`, which works whenever
+//! the Orca app is running — unlike `warpctrl` in #43, this one has a
+//! documented way to turn it on. With Orca closed the CLI answers
+//! `runtime_unavailable` and the node falls back to showing just the key, so
+//! the board degrades instead of breaking. Failures are cached for longer than
+//! hits so a closed Orca is not re-asked every second. (#58)
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::pr::tail;
 
 /// How much of a transcript's tail is searched, matching the PR scan.
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
+/// How long a fetched issue stays fresh.
+pub const TTL: Duration = Duration::from_secs(60);
+/// How long a failure sticks. Orca is usually closed rather than briefly
+/// unhappy, and retrying every minute per ticket would be pure noise.
+pub const MISS_TTL: Duration = Duration::from_secs(5 * 60);
+/// `orca` calls allowed per snapshot, matching the `gh` ration.
+const FETCH_BUDGET: usize = 2;
+
+/// Linear's canonical workflow state types, which every custom status maps on
+/// to. Names and colours are per team; the type is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// `triage` and `backlog`: not picked up.
+    Backlog,
+    /// `unstarted`: ready for someone.
+    Todo,
+    /// `started`: in progress.
+    Started,
+    /// `completed`.
+    Done,
+    /// `canceled` and `duplicate`.
+    Cancelled,
+}
+
+impl Status {
+    pub const ALL: [Status; 5] = [Status::Backlog, Status::Todo, Status::Started, Status::Done, Status::Cancelled];
+
+    pub fn from_type(t: &str) -> Option<Status> {
+        Some(match t {
+            "triage" | "backlog" => Status::Backlog,
+            "unstarted" => Status::Todo,
+            "started" => Status::Started,
+            "completed" => Status::Done,
+            "canceled" | "duplicate" => Status::Cancelled,
+            _ => return None,
+        })
+    }
+
+    pub fn short(self) -> &'static str {
+        match self {
+            Status::Backlog => "BACKLOG",
+            Status::Todo => "TODO",
+            Status::Started => "DOING",
+            Status::Done => "DONE",
+            Status::Cancelled => "CANCELLED",
+        }
+    }
+
+    /// Single letter for the test panel's state row.
+    pub fn letter(self) -> &'static str {
+        match self {
+            Status::Backlog => "B",
+            Status::Todo => "T",
+            Status::Started => "S",
+            Status::Done => "D",
+            Status::Cancelled => "C",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ticket {
     /// `PJM-1953`.
     pub key: String,
-    /// The Linear workspace slug, when one has been seen.
+    /// The Linear workspace slug, when one has been seen in a link.
     pub workspace: Option<String>,
+    /// Filled in once Orca answers; `None` while it is closed.
+    pub status: Option<Status>,
+    /// The team's own name for the status, e.g. `🔨진행 중`.
+    pub state_name: String,
+    pub title: String,
+    /// Linear's own URL for the issue, which beats one built from a slug.
+    pub canonical_url: Option<String>,
 }
 
 impl Ticket {
@@ -34,14 +104,52 @@ impl Ticket {
         self.key.clone()
     }
 
-    /// Where a click goes. Without a workspace slug there is no URL to build.
+    /// Where a click goes: Linear's own URL, else one built from a slug seen
+    /// in the transcript.
     pub fn url(&self) -> Option<String> {
-        self.workspace.as_ref().map(|w| format!("https://linear.app/{w}/issue/{}", self.key))
+        self.canonical_url
+            .clone()
+            .or_else(|| self.workspace.as_ref().map(|w| format!("https://linear.app/{w}/issue/{}", self.key)))
     }
 
-    pub fn synthetic(seq: u32) -> Self {
-        Self { key: format!("PJM-{}", 1900 + seq), workspace: None }
+    pub fn new(key: String, workspace: Option<String>) -> Self {
+        Self { key, workspace, status: None, state_name: String::new(), title: String::new(), canonical_url: None }
     }
+
+    pub fn synthetic(seq: u32, status: Option<Status>) -> Self {
+        let key = format!("PJM-{}", 1900 + seq);
+        Self {
+            state_name: status.map(|s| s.short().to_string()).unwrap_or_default(),
+            title: format!("synthetic issue {key}"),
+            status,
+            canonical_url: None,
+            workspace: None,
+            key,
+        }
+    }
+}
+
+/// Asks Orca for one issue. `None` when Orca is closed, the CLI is missing, or
+/// the key does not resolve — all of which just mean "no status on the node".
+pub fn fetch(key: &str) -> Option<Ticket> {
+    let out = Command::new("orca").args(["linear", "issue", key, "--json"]).output().ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    if v.get("ok").and_then(|o| o.as_bool()) != Some(true) {
+        return None;
+    }
+    let issue = v.get("result")?.get("issue")?;
+    let state = issue.get("state");
+    let text = |v: Option<&serde_json::Value>, k: &str| {
+        v.and_then(|v| v.get(k)).and_then(|s| s.as_str()).unwrap_or_default().to_string()
+    };
+    Some(Ticket {
+        key: text(Some(issue), "identifier"),
+        workspace: None,
+        status: state.and_then(|s| s.get("type")).and_then(|t| t.as_str()).and_then(Status::from_type),
+        state_name: text(state, "name"),
+        title: text(Some(issue), "title"),
+        canonical_url: issue.get("url").and_then(|u| u.as_str()).map(|s| s.to_string()),
+    })
 }
 
 /// `ABC-123` shape, uppercased. Deliberately loose: it says the string could
@@ -146,7 +254,6 @@ fn team_of(key: &str) -> Option<String> {
 }
 
 /// Per-session issue resolution, rescanned only when a transcript grows.
-#[derive(Default)]
 pub struct Tracker {
     /// session id → (transcript size when scanned, keys, workspace).
     seen: Mutex<HashMap<String, (u64, Vec<String>, Option<String>)>>,
@@ -155,6 +262,23 @@ pub struct Tracker {
     /// Team prefixes that have appeared in a real `linear.app` link, pooled
     /// across sessions — the board's answer to "is this a Linear team?".
     teams: Mutex<HashSet<String>>,
+    /// Issue key → what Orca last said, and when. `None` is cached too, for
+    /// longer, so a closed Orca is not re-asked constantly (#58).
+    issues: Mutex<HashMap<String, (Option<Ticket>, Instant)>>,
+    /// `orca` calls allowed per snapshot; `--prs` lifts it.
+    pub budget: usize,
+}
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self {
+            budget: FETCH_BUDGET,
+            seen: Mutex::default(),
+            workspace: Mutex::default(),
+            teams: Mutex::default(),
+            issues: Mutex::default(),
+        }
+    }
 }
 
 impl Tracker {
@@ -181,8 +305,9 @@ impl Tracker {
         }
     }
 
-    /// The issue for a session, from what `scan` has pooled so far.
-    pub fn pick(&self, session_id: &str, name: &str, pr_title: Option<&str>) -> Option<Ticket> {
+    /// The issue for a session, from what `scan` has pooled so far, with its
+    /// Linear status when Orca could be reached (#58).
+    pub fn pick(&self, session_id: &str, name: &str, pr_title: Option<&str>, budget: &mut usize, now: Instant) -> Option<Ticket> {
         let linked = self
             .seen
             .lock()
@@ -191,7 +316,35 @@ impl Tracker {
             .unwrap_or_default();
         let teams = self.teams.lock().map(|t| t.clone()).unwrap_or_default();
         let key = choose(name, pr_title, &linked, &teams)?;
-        Some(Ticket { key, workspace: self.workspace() })
+        let workspace = self.workspace();
+        Some(match self.state(&key, budget, now) {
+            Some(mut issue) => {
+                issue.workspace = workspace;
+                issue
+            }
+            None => Ticket::new(key, workspace),
+        })
+    }
+
+    /// Cached Linear state for an issue, rationed like the PR fetches.
+    fn state(&self, key: &str, budget: &mut usize, now: Instant) -> Option<Ticket> {
+        if let Ok(map) = self.issues.lock() {
+            if let Some((hit, at)) = map.get(key) {
+                let ttl = if hit.is_some() { TTL } else { MISS_TTL };
+                if now.duration_since(*at) < ttl {
+                    return hit.clone();
+                }
+            }
+        }
+        if *budget == 0 {
+            return self.issues.lock().ok()?.get(key).and_then(|(hit, _)| hit.clone());
+        }
+        *budget -= 1;
+        let fetched = fetch(key);
+        if let Ok(mut map) = self.issues.lock() {
+            map.insert(key.to_string(), (fetched.clone(), now));
+        }
+        fetched
     }
 
     /// The most-seen workspace slug. Example text in skills and docs mentions

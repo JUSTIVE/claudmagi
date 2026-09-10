@@ -51,22 +51,27 @@ pub struct Pr {
     pub id: PrRef,
     pub title: String,
     pub state: State,
+    /// True once review has signed off (`gh`'s `reviewDecision`).
+    pub approved: bool,
     /// Checks that concluded green, and ones that concluded red. Cancelled and
     /// skipped runs count as neither — a cancelled job is not a failure.
     pub passed: u32,
     pub failed: u32,
 }
 
-/// How the board draws a connector.
+/// How the board draws a connector. Colour is the whole signal (#57), and
+/// filled always means "further along" than outlined (#58).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
-    /// Outline only: not asking for review yet.
+    /// Ink outline: not asking for review yet.
     Draft,
-    /// Filled: open and nothing is red.
+    /// Green outline: open, waiting on review.
     Open,
-    /// Red pins: at least one check failed.
+    /// Filled green: review signed off.
+    Approved,
+    /// Filled orange: at least one check failed.
     Failing,
-    /// Sunk into the board: landed.
+    /// Filled black: landed.
     Merged,
     /// Dim outline: closed without merging.
     Closed,
@@ -79,6 +84,7 @@ impl Pr {
             State::Closed => Look::Closed,
             _ if self.failed > 0 => Look::Failing,
             State::Draft => Look::Draft,
+            State::Open if self.approved => Look::Approved,
             State::Open => Look::Open,
         }
     }
@@ -95,17 +101,19 @@ impl Pr {
 
     /// A made-up PR for the sandbox, one per look.
     pub fn synthetic(number: u32, look: Look) -> Self {
-        let (state, passed, failed) = match look {
-            Look::Draft => (State::Draft, 3, 0),
-            Look::Open => (State::Open, 12, 0),
-            Look::Failing => (State::Open, 8, 2),
-            Look::Merged => (State::Merged, 14, 0),
-            Look::Closed => (State::Closed, 0, 0),
+        let (state, approved, passed, failed) = match look {
+            Look::Draft => (State::Draft, false, 3, 0),
+            Look::Open => (State::Open, false, 12, 0),
+            Look::Approved => (State::Open, true, 12, 0),
+            Look::Failing => (State::Open, false, 8, 2),
+            Look::Merged => (State::Merged, false, 14, 0),
+            Look::Closed => (State::Closed, false, 0, 0),
         };
         Self {
             id: PrRef { repo: "sandbox/demo".into(), number },
             title: format!("synthetic pull request {number}"),
             state,
+            approved,
             passed,
             failed,
         }
@@ -113,21 +121,30 @@ impl Pr {
 }
 
 impl Look {
-    pub const ALL: [Look; 5] = [Look::Draft, Look::Open, Look::Failing, Look::Merged, Look::Closed];
+    pub const ALL: [Look; 6] =
+        [Look::Draft, Look::Open, Look::Approved, Look::Failing, Look::Merged, Look::Closed];
 
     pub fn short(self) -> &'static str {
         match self {
             Look::Draft => "DRAFT",
             Look::Open => "OPEN",
+            Look::Approved => "OK",
             Look::Failing => "FAIL",
             Look::Merged => "MERGED",
             Look::Closed => "CLOSED",
         }
     }
 
-    pub fn next(self) -> Look {
-        let i = Self::ALL.iter().position(|l| *l == self).unwrap_or(0);
-        Self::ALL[(i + 1) % Self::ALL.len()]
+    /// Single letter for the test panel's state row (#58).
+    pub fn letter(self) -> &'static str {
+        match self {
+            Look::Draft => "D",
+            Look::Open => "O",
+            Look::Approved => "A",
+            Look::Failing => "F",
+            Look::Merged => "M",
+            Look::Closed => "C",
+        }
     }
 }
 
@@ -227,7 +244,7 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
             "-R",
             &id.repo,
             "--json",
-            "number,title,state,isDraft,statusCheckRollup",
+            "number,title,state,isDraft,reviewDecision,statusCheckRollup",
         ])
         .output()
         .ok()?;
@@ -263,7 +280,15 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
             }
         }
     }
-    Pr { id: id.clone(), title: v.get("title").and_then(|t| t.as_str()).unwrap_or_default().into(), state, passed, failed }
+    let approved = v.get("reviewDecision").and_then(|r| r.as_str()) == Some("APPROVED");
+    Pr {
+        id: id.clone(),
+        title: v.get("title").and_then(|t| t.as_str()).unwrap_or_default().into(),
+        state,
+        approved,
+        passed,
+        failed,
+    }
 }
 
 /// Hands a PR URL to the browser (#57).
@@ -396,8 +421,14 @@ mod tests {
     #[test]
     fn state_and_checks_decide_the_look() {
         let id = PrRef { repo: "o/r".into(), number: 1 };
-        let base = Pr { id, title: String::new(), state: State::Open, passed: 1, failed: 0 };
+        let base = Pr { id, title: String::new(), state: State::Open, approved: false, passed: 1, failed: 0 };
         assert_eq!(base.look(), Look::Open);
+        assert_eq!(Pr { approved: true, ..base.clone() }.look(), Look::Approved);
+        assert_eq!(
+            Pr { approved: true, failed: 1, ..base.clone() }.look(),
+            Look::Failing,
+            "a red check outranks a sign-off"
+        );
         assert_eq!(Pr { state: State::Draft, ..base.clone() }.look(), Look::Draft);
         assert_eq!(Pr { failed: 1, ..base.clone() }.look(), Look::Failing);
         assert_eq!(Pr { state: State::Draft, failed: 1, ..base.clone() }.look(), Look::Failing, "red beats draft");

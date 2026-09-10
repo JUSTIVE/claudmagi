@@ -4,6 +4,8 @@
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::model::Phase;
+use crate::pr;
+use crate::ticket;
 use crate::theme::{self, PALETTE, Rgba};
 use crate::ui::board::{Board, Mode};
 use crate::ui::panel::{Which, button, c, dim, section};
@@ -142,22 +144,6 @@ impl Board {
                             sb.add_sub(&sid, true);
                         }),
                 );
-                // PR connector: cycles none → draft → open → fail → merged →
-                // closed → none, so every look is reachable here (#56).
-                let sb = sandbox.clone();
-                let sid = info.session_id.clone();
-                let pr_label = info.pr.as_ref().map(|p| p.look().short()).unwrap_or("+PR");
-                row = row.child(
-                    button(SharedString::from(format!("pr-{i}")), pr_label, info.pr.is_some())
-                        .on_click(move |_, _, _| sb.cycle_pr(&sid)),
-                );
-                // Linear node at the head of the lane (#57).
-                let sb = sandbox.clone();
-                let sid = info.session_id.clone();
-                row = row.child(
-                    button(SharedString::from(format!("ticket-{i}")), "TICKET", info.ticket.is_some())
-                        .on_click(move |_, _, _| sb.cycle_ticket(&sid)),
-                );
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
                 row = row.child(
@@ -176,6 +162,72 @@ impl Board {
                 );
             }
             list = list.child(row);
+
+            // Link nodes get their own row: five PR states plus "none" is more
+            // than the session row can hold, and cycling through them to reach
+            // one was tedious (#58).
+            if info.synthetic {
+                let look = info.pr.as_ref().map(|p| p.look());
+                let mut links = div().flex().items_center().gap_1().pl_3().child(
+                    div()
+                        .w(px(56.))
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(dim(0.55))
+                        .child(match &info.pr {
+                            Some(p) => p.label(),
+                            None => "PR".into(),
+                        }),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                links = links.child(
+                    button(SharedString::from(format!("pr-none-{i}")), "−", look.is_none())
+                        .on_click(move |_, _, _| sb.set_pr(&sid, None)),
+                );
+                for l in pr::Look::ALL {
+                    let sb = sandbox.clone();
+                    let sid = info.session_id.clone();
+                    links = links.child(
+                        button(SharedString::from(format!("pr-{i}-{}", l.letter())), l.letter(), look == Some(l))
+                            .on_click(move |_, _, _| sb.set_pr(&sid, Some(l))),
+                    );
+                }
+                list = list.child(links);
+
+                // And the same for the Linear node at the other end (#58).
+                let status = info.ticket.as_ref().map(|t| t.status);
+                let mut tickets = div().flex().items_center().gap_1().pl_3().child(
+                    div()
+                        .w(px(56.))
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(dim(0.55))
+                        .child(match &info.ticket {
+                            Some(t) => t.label(),
+                            None => "LINEAR".into(),
+                        }),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                tickets = tickets.child(
+                    button(SharedString::from(format!("tk-none-{i}")), "−", status.is_none())
+                        .on_click(move |_, _, _| sb.set_ticket(&sid, None)),
+                );
+                for st in ticket::Status::ALL {
+                    let sb = sandbox.clone();
+                    let sid = info.session_id.clone();
+                    tickets = tickets.child(
+                        button(
+                            SharedString::from(format!("tk-{i}-{}", st.letter())),
+                            st.letter(),
+                            status == Some(Some(st)),
+                        )
+                        .on_click(move |_, _, _| sb.set_ticket(&sid, Some(Some(st)))),
+                    );
+                }
+                list = list.child(tickets);
+            }
 
             // Subagents, indented under their session.
             for (j, sub) in info.subagents.iter().enumerate() {

@@ -187,6 +187,7 @@ pub struct TicketDraw {
     pub center: Pt,
     pub width: f32,
     pub label: String,
+    pub status: Option<ticket::Status>,
     pub alpha: f32,
     pub hover: f32,
     pub url: Option<String>,
@@ -669,6 +670,7 @@ pub fn ticket_draws(model: &BoardModel, lanes: &[Lane], chips: &[ChipDraw]) -> V
             center: Pt::new(TICKET_EDGE + width / 2.0, entry.y),
             width,
             label,
+            status: t.status,
             alpha: c.alpha,
             hover: 0.0,
             url: (!session.info.synthetic).then(|| t.url()).flatten(),
@@ -939,9 +941,25 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
                 stroke: Some(1.5),
             });
         }
-        out.push(Shape::RoundedRect { center, w: t.width, h: PR_H, r: 2.5, angle: 0.0, color: ink(0.10), stroke: None });
-        out.push(Shape::RoundedRect { center, w: t.width, h: PR_H, r: 2.5, angle: 0.0, color: ink(0.7), stroke: Some(1.3) });
-        out.push(Shape::Text { text: t.label.clone(), scale: PR_TEXT, stroke: 1.1, angle: 0.0, center, color: ink(0.8) });
+        let at = |c: Rgba| theme::with_alpha(c, a);
+        // Same grammar as the PR end of the lane: outlined while it is still
+        // in flight, filled once something has happened to it, black for
+        // done. Amber is the "in progress" colour, unused by the PR looks so
+        // the two ends never say the same thing. (#58)
+        let (fill, stroke, label) = match t.status {
+            None | Some(ticket::Status::Backlog) => (Some(ink(0.10)), Some(ink(0.45)), ink(0.6)),
+            Some(ticket::Status::Todo) => (Some(ink(0.10)), Some(ink(0.8)), ink(0.85)),
+            Some(ticket::Status::Started) => (Some(at(pal.text_idle)), None, at(pal.ink)),
+            Some(ticket::Status::Done) => (Some(at(pal.chip)), None, at(pal.bg)),
+            Some(ticket::Status::Cancelled) => (None, Some(ink(0.3)), ink(0.42)),
+        };
+        if let Some(color) = fill {
+            out.push(Shape::RoundedRect { center, w: t.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: None });
+        }
+        if let Some(color) = stroke {
+            out.push(Shape::RoundedRect { center, w: t.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: Some(1.3) });
+        }
+        out.push(Shape::Text { text: t.label.clone(), scale: PR_TEXT, stroke: 1.1, angle: 0.0, center, color: label });
     }
 
     // PR connectors, docked on the right edge. With the pins gone the body
@@ -951,11 +969,15 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         let center = to_screen(c.center);
         let a = c.alpha;
         let ink = |k: f32| theme::with_alpha(pal.ink, k * a);
+        let at = |c: Rgba| theme::with_alpha(c, a);
+        // Outlined means still in flight, filled means resolved one way or
+        // another; green good, orange broken, black landed. (#58)
         let (fill, stroke, label) = match c.look {
             pr::Look::Draft => (None, Some(ink(0.8)), ink(0.85)),
-            pr::Look::Open => (Some(theme::with_alpha(pal.text_on, a)), None, theme::with_alpha(pal.ink, a)),
-            pr::Look::Failing => (Some(theme::with_alpha(pal.alarm, a)), None, theme::with_alpha(pal.bg, a)),
-            pr::Look::Merged => (Some(ink(0.55)), None, theme::with_alpha(pal.bg, a)),
+            pr::Look::Open => (None, Some(at(pal.text_on)), ink(0.85)),
+            pr::Look::Approved => (Some(at(pal.text_on)), None, at(pal.ink)),
+            pr::Look::Failing => (Some(at(pal.alarm)), None, at(pal.on_alarm)),
+            pr::Look::Merged => (Some(at(pal.chip)), None, at(pal.bg)),
             pr::Look::Closed => (None, Some(ink(0.3)), ink(0.42)),
         };
         if c.hover > 0.01 {

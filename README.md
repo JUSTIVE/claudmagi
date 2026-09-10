@@ -68,11 +68,13 @@ is the whole signal — hollow draft, green open, alarm-red failing, grey merged
 faint closed.
 
 The Linear issue docks at the left edge, where the lane begins: the work comes
-from a ticket and leaves through a PR. Its key is the session's own name when
+from a ticket and leaves through a PR. Both ends share a grammar — outlined
+while a thing is still in flight, filled once it has resolved, black for done. Its key is the session's own name when
 something corroborates it — a `linear.app` link, a `[ABC-123]` tag in the PR
 title, or a team prefix the board has seen in a real link — otherwise the PR
-title's tag. There is no status on it: `orca linear issue` answers
-`runtime_unavailable` here. Clicking either node opens it in the browser.
+title's tag. Status comes from `orca linear issue <KEY> --json`, which needs the
+Orca app to be running; with Orca closed the node falls back to showing just
+the key. Clicking either node opens it in the browser.
 `claudmagi --prs` prints what resolved.
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·

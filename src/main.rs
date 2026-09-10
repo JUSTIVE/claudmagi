@@ -67,9 +67,12 @@ fn main() {
                     fake.set_pr(id, Some(look));
                 }
             }
-            // Tickets on most lanes, so both edges are exercised (#57).
-            for id in ids.iter().take(count.saturating_sub(1)) {
-                fake.cycle_ticket(id);
+            // One ticket status per lane, so both edges show their whole
+            // vocabulary in a demo render (#57, #58).
+            for (i, st) in ticket::Status::ALL.into_iter().enumerate() {
+                if let Some(id) = ids.get(i) {
+                    fake.set_ticket(id, Some(Some(st)));
+                }
             }
             fake.snapshot()
         } else {
@@ -116,10 +119,16 @@ fn main() {
     if args.iter().any(|a| a == "--prs") {
         let source = ClaudeSource::eager();
         for s in source.snapshot() {
-            let ticket = s.ticket.as_ref().map(|t| t.label()).unwrap_or_else(|| "-".into());
+            let ticket = match &s.ticket {
+                Some(t) => match t.status {
+                    Some(st) => format!("{} {}", t.label(), st.short()),
+                    None => format!("{} ?", t.label()),
+                },
+                None => "-".into(),
+            };
             match &s.pr {
                 Some(p) => println!(
-                    "{:<16} {:<10} {} {:<7} {}✓ {}✗  {}",
+                    "{:<16} {:<20} {} {:<7} {}✓ {}✗  {}",
                     s.label(),
                     ticket,
                     p.label(),
@@ -128,7 +137,7 @@ fn main() {
                     p.failed,
                     p.title
                 ),
-                None => println!("{:<16} {:<10} -", s.label(), ticket),
+                None => println!("{:<16} {:<20} -", s.label(), ticket),
             }
         }
         return;
