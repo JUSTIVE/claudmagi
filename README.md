@@ -57,7 +57,7 @@ Data and rendering are separate layers; only `ui/` touches gpui.
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
 | Data | `pr.rs`, `ticket.rs` | What a session links out to: the GitHub PR (transcript → `gh`) and the Linear issue (name, PR title tag, or transcript links). |
-| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims, Warp focus. |
+| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims + the launch `PATH` fix, Warp focus. |
 
 Pull requests: a session's PR is read out of its own transcript — the last
 `github.com/<owner>/<repo>/pull/<n>` inside a message body whose repo matches

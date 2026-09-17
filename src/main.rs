@@ -28,6 +28,9 @@ use ui::board::Board;
 actions!(claudmagi, [Quit]);
 
 fn main() {
+    // Before anything else, and before any thread exists to race it: a bundle
+    // launched from Finder has no `gh` on its `PATH` (#66).
+    unsafe { mac::widen_path() };
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(i) = args.iter().position(|a| a == "--svg") {
