@@ -20,6 +20,11 @@ pub trait SessionSource: Send + Sync {
     fn name(&self) -> &'static str;
     /// Current sessions, oldest first. May block on IO; call off the UI thread.
     fn snapshot(&self) -> Vec<SessionInfo>;
+    /// Something about the last snapshot the board should say out loud —
+    /// today, only that Warp's tabs are unreadable (#67).
+    fn note(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// The login name of whoever runs the board, uppercased for the badge (#15).
@@ -84,6 +89,10 @@ impl SessionSource for ClaudeSource {
         self.attach_links(&mut list);
         list
     }
+
+    fn note(&self) -> Option<&'static str> {
+        self.tabs_miss()?.note()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -115,6 +124,34 @@ struct WarpTabs {
     fetched: Instant,
     /// Whether this came from a fetch that actually returned panes.
     good: bool,
+    /// Why the last fetch came up empty, when it did (#67).
+    miss: Option<TabsMiss>,
+}
+
+/// Why Warp's pane -> tab map is missing. `Denied` is the one worth saying out
+/// loud: the database is right there and macOS will not open it (#67).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabsMiss {
+    /// No Warp database on this machine.
+    NoDatabase,
+    /// `~/Library/Group Containers` is Full Disk Access territory, and the
+    /// app has not been granted it. A terminal never sees this -- it runs
+    /// under the grant its own terminal app holds -- so it only ever shows up
+    /// in the installed bundle.
+    Denied,
+    /// The database opened but `sqlite3` or the query did not answer.
+    Unreadable,
+}
+
+impl TabsMiss {
+    /// What the status bar says. Only a denial gets a line: the other two
+    /// mean "no Warp here", which the empty board already shows.
+    fn note(self) -> Option<&'static str> {
+        match self {
+            Self::Denied => Some("NO WARP TABS \u{2014} GRANT FULL DISK ACCESS"),
+            Self::NoDatabase | Self::Unreadable => None,
+        }
+    }
 }
 
 /// Runs a command with a wall-clock limit and returns its stdout on success.
@@ -172,15 +209,29 @@ const WARP_DB_QUERY: &str = "select lower(hex(tp.uuid)), t.window_id, pn.tab_id 
      join pane_nodes pn on pn.id = tp.id \
      join tabs t on t.id = pn.tab_id";
 
-/// Reads the pane → tab map straight from Warp's database. `None` when no
-/// database is present or `sqlite3` fails; an empty map when Warp simply has
-/// no terminal panes open.
-fn fetch_warp_tabs_from_db() -> Option<HashMap<String, String>> {
-    let db = warp_db_candidates().into_iter().find(|p| p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))?;
+/// Reads the pane → tab map straight from Warp's database. An empty map when
+/// Warp simply has no terminal panes open; a `TabsMiss` when there is nothing
+/// to read or nothing is allowed to read it.
+fn fetch_warp_tabs_from_db() -> Result<HashMap<String, String>, TabsMiss> {
+    let db = warp_db_candidates()
+        .into_iter()
+        .find(|p| p.is_file() && p.metadata().map(|m| m.len() > 0).unwrap_or(false))
+        .ok_or(TabsMiss::NoDatabase)?;
+    // Open it here rather than letting `sqlite3` be the first to try. A TCC
+    // refusal reaches us from `sqlite3` as "authorization denied" on a stderr
+    // we discard plus a non-zero exit — the same shape as a corrupt file —
+    // whereas `File::open` says `PermissionDenied` and nothing else does.
+    // `stat` is not restricted, so the candidate above is still found (#67).
+    if let Err(e) = std::fs::File::open(&db) {
+        return Err(match e.kind() {
+            std::io::ErrorKind::PermissionDenied => TabsMiss::Denied,
+            _ => TabsMiss::Unreadable,
+        });
+    }
     let mut cmd = std::process::Command::new("/usr/bin/sqlite3");
     cmd.args(["-readonly", "-batch", "-noheader", "-separator", " "]).arg(&db).arg(WARP_DB_QUERY);
-    let text = run_with_timeout(cmd, WARPCTRL_TIMEOUT)?;
-    Some(parse_pane_rows(&text))
+    let text = run_with_timeout(cmd, WARPCTRL_TIMEOUT).ok_or(TabsMiss::Unreadable)?;
+    Ok(parse_pane_rows(&text))
 }
 
 /// Parses `uuid window tab` lines into `uuid → "<window>-<tab>"`. Tab ids are
@@ -237,8 +288,13 @@ fn fetch_warp_tabs_from_warpctrl() -> Option<HashMap<String, String>> {
 /// The database first (always available), then `warpctrl` (only with Warp's
 /// local control on). A successful but empty answer from the database is
 /// final: Warp has no terminal panes, so there is nothing for warpctrl to add.
-fn fetch_warp_tabs() -> Option<HashMap<String, String>> {
-    fetch_warp_tabs_from_db().or_else(fetch_warp_tabs_from_warpctrl)
+fn fetch_warp_tabs() -> Result<HashMap<String, String>, TabsMiss> {
+    match fetch_warp_tabs_from_db() {
+        Ok(map) => Ok(map),
+        // `warpctrl` needs no Full Disk Access, so it is worth trying even
+        // when the database was the thing that was refused.
+        Err(miss) => fetch_warp_tabs_from_warpctrl().ok_or(miss),
+    }
 }
 
 fn looks_like_uuid(s: &str) -> bool {
@@ -311,19 +367,31 @@ impl ClaudeSource {
             _ => WARP_TABS_RETRY,
         };
         if guard.as_ref().is_none_or(|t| t.fetched.elapsed() > ttl) {
-            match fetch_warp_tabs() {
-                Some(map) if !map.is_empty() => {
-                    *guard = Some(WarpTabs { map, fetched: Instant::now(), good: true });
+            let got = fetch_warp_tabs();
+            let miss = got.as_ref().err().copied();
+            match got {
+                Ok(map) if !map.is_empty() => {
+                    *guard = Some(WarpTabs { map, fetched: Instant::now(), good: true, miss: None });
                 }
                 // A miss keeps whatever good map we already had — Warp being
                 // briefly unreadable is not the same as having no tabs (#59).
                 _ => match guard.as_mut() {
-                    Some(t) => t.fetched = Instant::now(),
-                    None => *guard = Some(WarpTabs { map: HashMap::new(), fetched: Instant::now(), good: false }),
+                    Some(t) => {
+                        t.fetched = Instant::now();
+                        t.miss = miss;
+                    }
+                    None => {
+                        *guard = Some(WarpTabs { map: HashMap::new(), fetched: Instant::now(), good: false, miss })
+                    }
                 },
             }
         }
         guard.as_ref().map(|t| t.map.clone()).unwrap_or_default()
+    }
+
+    /// Why the last fetch came up empty, for the status bar (#67).
+    fn tabs_miss(&self) -> Option<TabsMiss> {
+        self.tabs.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.miss)
     }
 
     /// Warp's pane → tab map, insisting on a real answer the first time it is
@@ -335,7 +403,9 @@ impl ClaudeSource {
         let mut tabs = self.warp_tabs();
         let wants = list.iter().any(|s| s.warp_session_uuid.is_some());
         let first = !self.tabs_tried.swap(true, std::sync::atomic::Ordering::Relaxed);
-        if first && wants && tabs.is_empty() {
+        // A refusal is not a race: waiting 1.5s for it to resolve only
+        // delays the first paint (#67).
+        if first && wants && tabs.is_empty() && self.tabs_miss() != Some(TabsMiss::Denied) {
             for _ in 0..FIRST_TABS_TRIES {
                 std::thread::sleep(FIRST_TABS_WAIT);
                 tabs = self.warp_tabs();
@@ -1145,6 +1215,16 @@ mod tests {
         assert_eq!(m.get("80602dab57304503b001386bf769bcd9").map(String::as_str), Some("1-1"), "dashes and case are normalised");
         assert_eq!(m.get("0bd9a62647ef4dc3ab9a54e9966df502").map(String::as_str), Some("1-2"));
         assert!(parse_pane_rows("").is_empty());
+    }
+
+    #[test]
+    fn only_a_refusal_is_worth_a_line_in_the_status_bar() {
+        // No Warp and a broken Warp both look like "no tabs", which the board
+        // already shows by grouping per pane. A refusal looks identical and
+        // is the one the user can do something about (#67).
+        assert!(TabsMiss::Denied.note().is_some());
+        assert_eq!(TabsMiss::NoDatabase.note(), None);
+        assert_eq!(TabsMiss::Unreadable.note(), None);
     }
 
     #[test]

@@ -18,6 +18,18 @@ open -a claudmagi
 The script renders the icon from the board itself (`--icon`), ad-hoc signs the
 bundle, and falls back to `~/Applications` if `/Applications` is not writable.
 
+Then grant the app **Full Disk Access** once, in System Settings → Privacy &
+Security. Warp keeps the pane → tab map in its group container
+(`~/Library/Group Containers/2BBY89MBSN.dev.warp/…/warp.sqlite`), and macOS
+puts that whole directory behind that one permission. Without it the board
+still runs, but every pane becomes its own group instead of the panes of a tab
+sitting together, and the status bar says `NO WARP TABS`. Running from a
+terminal never shows this: a CLI inherits the grant its terminal app already
+holds, which is why `--list` can print tabs while the installed app cannot
+(#67). The bundle is ad-hoc signed, so its signature changes on every
+`tools/bundle.sh`; if the grouping goes away after a rebuild, toggle the
+permission off and on again.
+
 ## Run from source
 
 ```sh

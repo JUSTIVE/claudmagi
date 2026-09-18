@@ -71,6 +71,8 @@ pub struct Board {
     /// when it was fetched, plus the latest error if the poll is failing.
     usage: Option<(Usage, Instant)>,
     usage_error: Option<usage::UsageError>,
+    /// What the live source wants said in the status bar (#67).
+    source_note: Option<&'static str>,
 }
 
 impl Board {
@@ -81,11 +83,13 @@ impl Board {
         cx.spawn(async move |this, cx| {
             loop {
                 let Ok(source) = this.update(cx, |board, _| board.source()) else { break };
-                let list = cx.background_executor().spawn(async move { source.snapshot() }).await;
+                let (list, note) =
+                    cx.background_executor().spawn(async move { (source.snapshot(), source.note()) }).await;
                 let now = Instant::now();
                 let ok = this.update(cx, |board, cx| {
                     board.sandbox.churn(now);
                     board.model.apply(list, now);
+                    board.source_note = note;
                     cx.notify();
                 });
                 if ok.is_err() {
@@ -165,6 +169,7 @@ impl Board {
             focus_handle,
             usage: None,
             usage_error: None,
+            source_note: None,
         }
     }
 
@@ -420,6 +425,7 @@ impl Render for Board {
             Mode::Live => None,
             Mode::Sandbox => Some("SANDBOX"),
         };
+        let source_note = self.source_note;
         let dev_open = self.dev.open;
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
@@ -566,6 +572,20 @@ impl Render for Board {
                                         .bg(theme::hsla(palette.ink))
                                         .text_color(theme::hsla(palette.bg))
                                         .child(tag),
+                                )
+                            })
+                            // The board looks right when Warp's tabs are
+                            // unreadable — every pane just becomes its own
+                            // group — so the only way to tell is to say it
+                            // (#67).
+                            .when_some(source_note, |d, note| {
+                                d.child(
+                                    div()
+                                        .px_1p5()
+                                        .rounded_sm()
+                                        .bg(theme::hsla(palette.alarm))
+                                        .text_color(theme::hsla(palette.on_alarm))
+                                        .child(note),
                                 )
                             }),
                     )

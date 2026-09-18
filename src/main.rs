@@ -176,7 +176,15 @@ fn main() {
         return;
     }
     if args.iter().any(|a| a == "--list") {
-        for s in ClaudeSource::default().snapshot() {
+        let source = ClaudeSource::default();
+        let list = source.snapshot();
+        // A terminal runs under its own terminal app's Full Disk Access, so
+        // this line is the bundle's symptom showing up where it can be read
+        // (#67).
+        if let Some(note) = source.note() {
+            eprintln!("{note}");
+        }
+        for s in list {
             println!(
                 "{:<14} {:<12} {:<40} {:?} {:<18} {}",
                 s.label(),
