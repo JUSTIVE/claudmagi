@@ -110,6 +110,13 @@ pub struct SessionInfo {
     pub prs: Vec<crate::pr::Pr>,
     /// The Linear issue behind the work, drawn at the head of the lane (#57).
     pub ticket: Option<crate::ticket::Ticket>,
+    /// The background job this session *is* (`kind: "bg"`): the handle its
+    /// parent parked it under.
+    pub job: Option<String>,
+    /// The background job this session parked. A parked job is a `claude`
+    /// process of its own in the parent's Warp pane, so it rides the parent's
+    /// trace instead of drawing a second chip for that pane (#68).
+    pub parked_job: Option<String>,
 }
 
 impl SessionInfo {
@@ -133,6 +140,8 @@ impl SessionInfo {
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
             prs: Vec::new(),
             ticket: None,
+            job: None,
+            parked_job: None,
         };
         s.set_phase(phase);
         s

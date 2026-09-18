@@ -2,7 +2,7 @@
 
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/).
 
-Every running `claude` process becomes a chip riding on a trace, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. While Claude is
+Every running `claude` process becomes a chip riding on a trace, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
 session needs you (permission prompt, question, dialog) or finishes its turn, the
 trace goes slack and the chip pulls out of its socket. Click a chip to jump to the

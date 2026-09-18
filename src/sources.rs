@@ -87,6 +87,7 @@ impl SessionSource for ClaudeSource {
             }
         }
         self.attach_links(&mut list);
+        fold_parked_jobs(&mut list);
         list
     }
 
@@ -436,6 +437,15 @@ struct RawSession {
     tempo: Option<String>,
     #[serde(default)]
     started_at: Option<u64>,
+    /// `interactive` for a session at a prompt, `bg` for a parked job.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Set on a `bg` session: the job handle it runs under.
+    #[serde(default)]
+    job_id: Option<String>,
+    /// Set on the session that parked that job.
+    #[serde(default)]
+    parked_job_id: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -588,6 +598,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
         .into_iter()
         .map(|r| {
             let env = proc_env(r.pid).unwrap_or_default();
+            let parked = r.kind.as_deref() == Some("bg");
             SessionInfo {
                 pid: r.pid,
                 session_id: r.session_id,
@@ -610,11 +621,74 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                 },
                 prs: Vec::new(),
                 ticket: None,
+                job: if parked { r.job_id } else { None },
+                parked_job: r.parked_job_id,
             }
         })
         .collect();
     out.sort_by_key(|s| (s.started_at, s.pid));
     out
+}
+
+/// A parked job is a `claude` process the parent session spawned, so it
+/// inherits the parent's Warp environment: left on its own it draws a second
+/// chip claiming the pane its parent already holds (#68). Hang it off the
+/// parent's trace the way a subagent hangs, and let the parent's lane carry
+/// whatever links the job's own transcript turned up. A job whose parent is
+/// gone keeps its chip: nothing else on the board points at that pane.
+fn fold_parked_jobs(list: &mut Vec<SessionInfo>) {
+    let parents: HashMap<String, usize> =
+        list.iter().enumerate().filter_map(|(i, s)| Some((s.parked_job.clone()?, i))).collect();
+    if parents.is_empty() {
+        return;
+    }
+    let mut kept: Vec<SessionInfo> = Vec::with_capacity(list.len());
+    // Where each session of the old list landed, so a job can find its parent
+    // after the jobs have been taken out.
+    let mut at: HashMap<usize, usize> = HashMap::new();
+    let mut jobs: Vec<(usize, SessionInfo)> = Vec::new();
+    for (i, s) in std::mem::take(list).into_iter().enumerate() {
+        match s.job.as_deref().and_then(|j| parents.get(j)) {
+            Some(&parent) if parent != i => jobs.push((parent, s)),
+            _ => {
+                at.insert(i, kept.len());
+                kept.push(s);
+            }
+        }
+    }
+    for (parent, job) in jobs {
+        let Some(&k) = at.get(&parent) else {
+            kept.push(job);
+            continue;
+        };
+        let chip = job_chip(&job);
+        let parent = &mut kept[k];
+        for pr in job.prs {
+            if !parent.prs.iter().any(|p| p.id == pr.id) {
+                parent.prs.push(pr);
+            }
+        }
+        parent.ticket = parent.ticket.take().or(job.ticket);
+        parent.subagents.push(chip);
+        parent.subagents.extend(job.subagents);
+        parent.subagents.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.agent_id.cmp(&b.agent_id)));
+    }
+    kept.sort_by_key(|s| (s.started_at, s.pid));
+    *list = kept;
+}
+
+/// How a parked job rides its parent's trace: a chip carrying the handle
+/// `/jobs` knows it by, plugged in only while the job is actually working.
+fn job_chip(job: &SessionInfo) -> SubagentInfo {
+    let handle = job.job.clone().unwrap_or_else(|| job.session_id.clone());
+    SubagentInfo {
+        agent_id: handle.clone(),
+        agent_type: handle,
+        description: format!("background job in {}", job.short_cwd()),
+        running: job.phase() == Phase::Working,
+        started_at: job.started_at,
+        updated_at: job.started_at,
+    }
 }
 
 impl ClaudeSource {
@@ -1126,6 +1200,38 @@ mod tests {
         assert_eq!(src.len(), 2);
         src.clear();
         assert!(src.is_empty());
+    }
+
+    /// A parked job inherits its parent's Warp pane, so folding it in is what
+    /// keeps one chip per pane (#68).
+    #[test]
+    fn a_parked_job_hangs_off_the_session_that_parked_it() {
+        let mut parent = SessionInfo::synthetic(1, "PJM-1980", Phase::Idle);
+        parent.parked_job = Some("ffc501a5".into());
+        let mut job = SessionInfo::synthetic(2, "PJM-1980", Phase::Working);
+        job.job = Some("ffc501a5".into());
+        job.group = parent.group.clone();
+        job.warp_focus_url = Some("warp://session/143e3f3a".into());
+        job.prs = vec![pr::Pr::synthetic(42, pr::Look::Open)];
+        let mut list = vec![parent, job];
+        fold_parked_jobs(&mut list);
+        assert_eq!(list.len(), 1, "the job no longer claims its parent's pane");
+        assert_eq!(list[0].subagents.len(), 1);
+        assert_eq!(list[0].subagents[0].label(), "FFC501A5");
+        assert!(list[0].subagents[0].running, "a working job stays plugged in");
+        assert_eq!(list[0].prs.len(), 1, "the job's pull request rides the parent's lane");
+    }
+
+    #[test]
+    fn a_parked_job_whose_parent_is_gone_keeps_its_own_chip() {
+        let mut other = SessionInfo::synthetic(1, "PJM-1202", Phase::Idle);
+        other.parked_job = Some("deadbeef".into());
+        let mut job = SessionInfo::synthetic(2, "PJM-1980", Phase::Working);
+        job.job = Some("ffc501a5".into());
+        let mut list = vec![other, job];
+        fold_parked_jobs(&mut list);
+        assert_eq!(list.len(), 2, "nothing else on the board points at that pane");
+        assert!(list.iter().all(|s| s.subagents.is_empty()));
     }
 
     #[test]

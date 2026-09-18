@@ -28,6 +28,7 @@
 
 ## claudmagi 매핑
 - 세션 1개 = 칩 1개. 라벨은 `~/.claude/sessions/<pid>.json`의 `name` 대문자.
+- 파킹된 백그라운드 잡(`kind: "bg"`)은 자기 칩을 갖지 않고 부모 세션의 트레이스에 서브에이전트처럼 매달린다 — 부모가 띄운 프로세스라 Warp 환경변수를 그대로 물려받아, 그냥 두면 같은 pane을 가리키는 칩이 둘이 된다. 잡의 `jobId`와 부모의 `parkedJobId`로 짝을 찾고(`fold_parked_jobs`), 잡의 PR·티켓은 부모 레인으로 합친다. 라벨은 `/jobs` 핸들, 연결 여부는 세션과 같은 기준(`status == busy`). 부모가 사라진 잡은 자기 칩을 유지한다 — 그 pane을 가리키는 게 더는 없다. (#68)
 - `status == busy` 이고 `waitingFor` 없음 → 연결 상태.
 - `waitingFor` 있음(권한/다이얼로그) 또는 `tempo/state == blocked` → 분리 + 앰버(입력 필요).
 - `status == idle` → 세션은 분리 + idle 색(적갈 칩 + 앰버 라벨), 서브에이전트는 제자리에서 가라앉음(#53).
