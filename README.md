@@ -26,9 +26,18 @@ still runs, but every pane becomes its own group instead of the panes of a tab
 sitting together, and the status bar says `NO WARP TABS`. Running from a
 terminal never shows this: a CLI inherits the grant its terminal app already
 holds, which is why `--list` can print tabs while the installed app cannot
-(#67). The bundle is ad-hoc signed, so its signature changes on every
-`tools/bundle.sh`; if the grouping goes away after a rebuild, toggle the
-permission off and on again.
+(#67).
+
+The grant is recorded against the app's code requirement, so **grant it to a
+bundle signed with a certificate**: `tools/bundle.sh` picks the first Developer
+ID, else the first Apple Development certificate in your keychain
+(`CLAUDMAGI_SIGN_ID` overrides it), and that requirement survives every
+rebuild. With no certificate the bundle falls back to ad-hoc, whose
+requirement is the binary's own hash, and every rebuild voids the grant.
+Switching identity changes the requirement once, so after the first
+certificate build the old entry no longer matches: **remove claudmagi from the
+Full Disk Access list with `−` and add it again with `+`** — toggling the
+switch off and on keeps the stale requirement and stays denied (#69).
 
 ## Run from source
 

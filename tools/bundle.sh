@@ -59,7 +59,29 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "warning: ad-hoc codesign failed"
+# Signing identity. TCC keys a Full Disk Access grant to the code requirement
+# it recorded when you granted it, and for an ad-hoc signature that requirement
+# is the binary's own cdhash — so every rebuild silently voided the grant and
+# the tab grouping died with it, and toggling the switch off and on did not
+# help because the toggle keeps the stored requirement (#69). A certificate
+# gives a requirement that outlives rebuilds. Set CLAUDMAGI_SIGN_ID to pick
+# one; otherwise the first Developer ID, else the first Apple Development
+# certificate in the keychain. Ad-hoc stays the fallback.
+find_identity() {
+  security find-identity -v -p codesigning 2>/dev/null | awk -v want="$1" '
+    index($0, "\"" want) { print $2; exit }'
+}
+SIGN_ID=${CLAUDMAGI_SIGN_ID:-$(find_identity "Developer ID Application")}
+: ${SIGN_ID:=$(find_identity "Apple Development")}
+if [[ -n "$SIGN_ID" ]] && codesign --force --deep --sign "$SIGN_ID" "$APP" >/dev/null 2>&1; then
+  echo "signed with $SIGN_ID"
+else
+  if [[ -n "$SIGN_ID" ]]; then
+    echo "warning: signing with $SIGN_ID failed, falling back to ad-hoc"
+  fi
+  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || echo "warning: ad-hoc codesign failed"
+  echo "warning: ad-hoc signature, so Full Disk Access must be re-added after every rebuild"
+fi
 
 if [[ "${1:-}" == "--no-install" ]]; then
   echo "built $APP"
