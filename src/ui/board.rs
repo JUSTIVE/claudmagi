@@ -339,6 +339,13 @@ impl Board {
         self.open_link(label, app, web, "Linear issue", cx);
     }
 
+    /// Opens the pane the `NO WARP TABS` tag asks for (#70). That tag is the
+    /// only place the board can say the permission is missing, so it is also
+    /// the way there.
+    fn open_full_disk_access(&mut self, cx: &mut Context<Self>) {
+        self.open_link("FULL DISK ACCESS".into(), Some(PRIVACY_ALL_FILES.into()), None, "settings pane", cx);
+    }
+
     /// Jumps to the session's terminal (chip click / test panel). Subagent
     /// chips jump to their parent session.
     pub(crate) fn activate(&mut self, target: Target, cx: &mut Context<Self>) {
@@ -426,6 +433,7 @@ impl Render for Board {
             Mode::Sandbox => Some("SANDBOX"),
         };
         let source_note = self.source_note;
+        let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
@@ -578,14 +586,19 @@ impl Render for Board {
                             // unreadable — every pane just becomes its own
                             // group — so the only way to tell is to say it
                             // (#67).
-                            .when_some(source_note, |d, note| {
+                            .when_some(source_note, move |d, note| {
                                 d.child(
                                     div()
+                                        .id("source-note")
                                         .px_1p5()
                                         .rounded_sm()
                                         .bg(theme::hsla(palette.alarm))
                                         .text_color(theme::hsla(palette.on_alarm))
-                                        .child(note),
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(theme::hsla(theme::with_alpha(palette.alarm, 0.75))))
+                                        .child(note)
+                                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                        .on_click(open_fda),
                                 )
                             }),
                     )
@@ -706,6 +719,11 @@ fn usage_meter(
             )
         })
 }
+
+/// System Settings → Privacy & Security → Full Disk Access. The pane ids are
+/// what `x-apple.systempreferences` has taken since the days of the old
+/// Preferences app, and Settings still answers to them.
+const PRIVACY_ALL_FILES: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
 fn status_button(
     id: &'static str,

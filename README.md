@@ -37,7 +37,9 @@ requirement is the binary's own hash, and every rebuild voids the grant.
 Switching identity changes the requirement once, so after the first
 certificate build the old entry no longer matches: **remove claudmagi from the
 Full Disk Access list with `−` and add it again with `+`** — toggling the
-switch off and on keeps the stale requirement and stays denied (#69).
+switch off and on keeps the stale requirement and stays denied (#69). The
+`NO WARP TABS` tag in the status bar is the button that opens that pane
+(#70).
 
 ## Run from source
 
