@@ -122,78 +122,43 @@ fn card_bg(theme: Palette) -> Rgba {
     theme::with_alpha(theme::lerp(theme.bg, theme.ink, CARD_LIFT), CARD_ALPHA)
 }
 
-fn luma(c: Rgba) -> f32 {
-    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
-}
-
-/// WCAG's ratio, which is what "readable" means here.
-fn contrast(a: Rgba, b: Rgba) -> f32 {
-    let (hi, lo) = if luma(a) > luma(b) { (luma(a), luma(b)) } else { (luma(b), luma(a)) };
-    (hi + 0.05) / (lo + 0.05)
-}
-
-/// The floor a state word has to clear against the card behind it.
-const READABLE: f32 = 3.0;
-
-/// A board colour made to survive as text on the card. The board's state
-/// colours are made for chips: the working green lives on a near-black chip,
-/// and printed straight onto a near-white card it arrives at 1.3:1. Mixing in
-/// the ink buys contrast in whichever direction the theme's ink runs, and the
-/// least ink that clears the floor keeps the most hue, so it is worth
-/// bisecting for rather than stepping towards.
-///
-/// The orange board has little headroom either way, so its words come out
-/// close to ink and the word itself carries the meaning. That is the board's
-/// own habit: it says things with maroon and amber chips, not coloured text.
-/// (#75)
-fn readable(colour: Rgba, card: Rgba, ink: Rgba) -> Rgba {
-    if contrast(colour, card) >= READABLE {
-        return colour;
-    }
-    if contrast(ink, card) < READABLE {
-        return ink;
-    }
-    // Contrast along `colour → ink` dips where the two pass the card's own
-    // brightness, so this is not a monotonic search. Keeping `hi` on a value
-    // that clears the floor walks it down to the edge of the stretch next to
-    // the ink, which is the one that always clears.
-    let (mut lo, mut hi) = (0.0f32, 1.0f32);
-    for _ in 0..12 {
-        let mid = 0.5 * (lo + hi);
-        if contrast(theme::lerp(colour, ink, mid), card) >= READABLE {
-            hi = mid;
-        } else {
-            lo = mid;
-        }
-    }
-    theme::lerp(colour, ink, hi)
-}
-
-/// What a row's state word says about the node, in the board's own terms.
+/// What the board would draw for this node. The row's dot copies it: filled
+/// where the board fills and outlined where it outlines (#58), in the colour
+/// it would wear out there. The themes have already solved reading these
+/// against their own boards — the orange board's waiting chip is maroon
+/// precisely because orange on orange vanishes — and the card is that board
+/// lifted 7%, so nothing needs adjusting on the way in. (#76)
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    /// Under way: the colour a plugged-in chip wears.
-    Live,
-    /// Wants a person, or has failed.
-    Alarm,
-    /// Waiting its turn.
-    Waiting,
-    /// Finished, landed or abandoned.
-    Quiet,
-    /// CI is still churning (#62).
-    Busy,
+pub enum Style {
+    /// A session chip in one of its phases.
+    Chip(Phase),
+    /// A pull request connector (#57).
+    Pr(pr::Look),
+    /// The Linear node at the head of a lane; `None` before Orca answers.
+    Ticket(Option<ticket::Status>),
 }
 
-impl Tone {
-    fn color(self, theme: Palette, card: Rgba) -> gpui::Hsla {
-        let raw = match self {
-            Tone::Live => theme.text_on,
-            Tone::Alarm => theme.alarm,
-            Tone::Waiting => theme.text_idle,
-            Tone::Busy => theme.busy,
-            Tone::Quiet => return theme::hsla(theme::with_alpha(theme.ink, 0.5)),
-        };
-        theme::hsla(readable(raw, card, theme.ink))
+impl Style {
+    /// `(filled, colour)`, from the same tables `scene` paints with.
+    fn dot(self, theme: Palette) -> (bool, gpui::Hsla) {
+        let at = theme::hsla;
+        let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
+        match self {
+            Style::Chip(Phase::Working) => (true, at(theme.chip)),
+            Style::Chip(Phase::NeedsUser) => (true, at(theme.chip_needs)),
+            Style::Chip(Phase::Idle) => (true, at(theme.chip_idle)),
+            Style::Pr(pr::Look::Draft) => (false, ink(0.8)),
+            Style::Pr(pr::Look::Open) => (false, at(theme.text_on)),
+            Style::Pr(pr::Look::Approved) => (true, at(theme.text_on)),
+            Style::Pr(pr::Look::Failing) => (true, at(theme.alarm)),
+            Style::Pr(pr::Look::Merged) => (true, at(theme.chip)),
+            Style::Pr(pr::Look::Closed) => (false, ink(0.3)),
+            Style::Ticket(Some(ticket::Status::Started)) => (true, at(theme.text_idle)),
+            Style::Ticket(Some(ticket::Status::Done)) => (true, at(theme.chip)),
+            Style::Ticket(Some(ticket::Status::Cancelled)) => (false, ink(0.3)),
+            Style::Ticket(Some(ticket::Status::Todo)) => (false, ink(0.8)),
+            Style::Ticket(None | Some(ticket::Status::Backlog)) => (false, ink(0.45)),
+        }
     }
 }
 
@@ -209,15 +174,18 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// The node's shape on the board, as close as a glyph gets.
-    fn glyph(self) -> &'static str {
-        match self {
-            Kind::Session => "▪",
-            Kind::Ticket => "◆",
-            Kind::Pr => "●",
+    /// The node's shape on the board, as close as a glyph gets, hollow when
+    /// the board would draw it as an outline.
+    fn glyph(self, filled: bool) -> &'static str {
+        match (self, filled) {
+            (Kind::Session, true) => "▪",
+            (Kind::Session, false) => "▫",
+            (Kind::Ticket, true) => "◆",
+            (Kind::Ticket, false) => "◇",
+            (Kind::Pr, true) => "●",
+            (Kind::Pr, false) => "○",
         }
     }
-
 }
 
 /// What picking a row does: the same thing clicking that node does.
@@ -233,10 +201,8 @@ pub enum Action {
 pub struct Entry {
     pub kind: Kind,
     pub label: String,
-    /// Where the node stands, in the same word the board and `--prs` use
-    /// (#75).
-    pub state: String,
-    pub tone: Tone,
+    /// Where the node stands, said the way the board says it (#75, #76).
+    pub style: Style,
     pub detail: String,
     pub action: Action,
     /// What the query is scored against. The label leads; the rest are worth
@@ -311,15 +277,9 @@ impl Board {
         for (i, chip) in self.model.chips.iter().enumerate() {
             let info = &chip.info;
             let label = info.label();
-            let (state, tone) = match info.phase() {
-                Phase::Working => ("WORKING", Tone::Live),
-                Phase::NeedsUser => ("NEEDS YOU", Tone::Alarm),
-                Phase::Idle => ("IDLE", Tone::Waiting),
-            };
             out.push(Entry {
                 kind: Kind::Session,
-                state: state.into(),
-                tone,
+                style: Style::Chip(info.phase()),
                 detail: info.short_cwd(),
                 action: Action::Session(i),
                 fields: vec![label.clone(), info.short_cwd(), info.group_label()],
@@ -329,24 +289,10 @@ impl Board {
                 let key = (Kind::Ticket, t.key.clone());
                 if !seen.contains(&key) {
                     seen.push(key);
-                    // Linear's own word for it when Orca is closed and no
-                    // status came back (#58).
-                    let state = match t.status {
-                        Some(s) => s.short().to_string(),
-                        None if !t.state_name.is_empty() => t.state_name.clone(),
-                        None => "NO STATUS".into(),
-                    };
-                    let tone = match t.status {
-                        Some(ticket::Status::Started) => Tone::Live,
-                        Some(ticket::Status::Todo) => Tone::Waiting,
-                        Some(_) => Tone::Quiet,
-                        None => Tone::Quiet,
-                    };
                     out.push(Entry {
                         kind: Kind::Ticket,
                         label: t.key.clone(),
-                        state,
-                        tone,
+                        style: Style::Ticket(t.status),
                         detail: t.title.clone(),
                         action: Action::Open {
                             label: t.key.clone(),
@@ -365,21 +311,9 @@ impl Board {
                     continue;
                 }
                 seen.push(key);
-                let look = pr.look();
-                let tone = if pr.running() {
-                    Tone::Busy
-                } else {
-                    match look {
-                        pr::Look::Open | pr::Look::Approved => Tone::Live,
-                        pr::Look::Failing => Tone::Alarm,
-                        pr::Look::Draft => Tone::Waiting,
-                        pr::Look::Merged | pr::Look::Closed => Tone::Quiet,
-                    }
-                };
                 out.push(Entry {
                     kind: Kind::Pr,
-                    state: if pr.running() { format!("{} ⟳", look.short()) } else { look.short().into() },
-                    tone,
+                    style: Style::Pr(pr.look()),
                     detail: format!("{} · {}", pr.id.repo, pr.title),
                     action: Action::Open {
                         label: label.clone(),
@@ -477,7 +411,10 @@ impl Board {
                     .cursor_pointer()
                     .when(on, |d| d.bg(sel_bg))
                     .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
-                    .child(div().w(px(12.)).flex_none().text_color(accent).child(entry.kind.glyph()))
+                    .child({
+                        let (filled, colour) = entry.style.dot(theme);
+                        div().w(px(12.)).flex_none().text_size(px(12.)).text_color(colour).child(entry.kind.glyph(filled))
+                    })
                     .child(
                         div()
                             .w(px(132.))
@@ -485,15 +422,6 @@ impl Board {
                             .overflow_hidden()
                             .text_color(at(if on { 1.0 } else { 0.85 }))
                             .child(entry.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .w(px(76.))
-                            .flex_none()
-                            .overflow_hidden()
-                            .text_size(px(10.))
-                            .text_color(entry.tone.color(theme, card_rgba))
-                            .child(entry.state.clone()),
                     )
                     .child(
                         div()
@@ -572,6 +500,16 @@ mod tests {
 
     const THEMES: [Palette; 3] = [theme::PALETTE, theme::ORANGE, theme::DARK];
 
+    fn luma(c: Rgba) -> f32 {
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+    }
+
+    /// WCAG's ratio, which is what "readable" means here.
+    fn contrast(a: Rgba, b: Rgba) -> f32 {
+        let (hi, lo) = if luma(a) > luma(b) { (luma(a), luma(b)) } else { (luma(b), luma(a)) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
     /// Every board has to get a card of its own, readable and distinct from
     /// the board behind it. Building the card from `chip` failed exactly here:
     /// the white and orange boards share that colour (#72).
@@ -599,37 +537,41 @@ mod tests {
         }
     }
 
-    /// The board's state colours are made for chips, so the working green
-    /// arrives at 1.3:1 on a near-white card. Every tone has to come out
-    /// readable on every board (#75).
+    /// The board's one law about connectors: filled is always further along
+    /// than outlined (#58). The row's dot repeats it, so a glance down the
+    /// list sorts landed from pending without reading a word (#76).
     #[test]
-    fn every_state_colour_survives_the_card_it_is_printed_on() {
-        let tones = [Tone::Live, Tone::Alarm, Tone::Waiting, Tone::Quiet, Tone::Busy];
-        for t in THEMES {
-            let card = card_bg(t);
-            for tone in tones {
-                let raw = match tone {
-                    Tone::Live => t.text_on,
-                    Tone::Alarm => t.alarm,
-                    Tone::Waiting => t.text_idle,
-                    Tone::Busy => t.busy,
-                    Tone::Quiet => t.ink,
-                };
-                let got = readable(raw, card, t.ink);
-                assert!(
-                    contrast(got, card) >= READABLE,
-                    "a state word has to read on its card (got {:.1}:1)",
-                    contrast(got, card)
-                );
-            }
+    fn a_filled_dot_always_means_further_along() {
+        let filled = |s: Style| s.dot(theme::PALETTE).0;
+        for done in [pr::Look::Approved, pr::Look::Failing, pr::Look::Merged] {
+            assert!(filled(Style::Pr(done)), "{done:?} is filled on the board");
+        }
+        for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Closed] {
+            assert!(!filled(Style::Pr(pending)), "{pending:?} is an outline on the board");
+        }
+        assert!(filled(Style::Ticket(Some(ticket::Status::Started))));
+        assert!(filled(Style::Ticket(Some(ticket::Status::Done))));
+        for early in [ticket::Status::Backlog, ticket::Status::Todo, ticket::Status::Cancelled] {
+            assert!(!filled(Style::Ticket(Some(early))), "{early:?} is an outline on the board");
+        }
+        assert!(!filled(Style::Ticket(None)), "an issue Orca has not answered for yet");
+        for phase in Phase::ALL {
+            assert!(filled(Style::Chip(phase)), "a chip is a solid thing in every phase");
         }
     }
 
+    /// Every phase has to be told apart by the dot alone, since the word that
+    /// used to say so is gone (#76).
     #[test]
-    fn a_colour_that_already_reads_is_left_alone() {
-        let card = card_bg(theme::PALETTE);
-        let ink = theme::PALETTE.ink;
-        assert_eq!(readable(ink, card, ink), ink, "ink on its own card needs no help");
+    fn each_phase_gets_its_own_chip_colour() {
+        for t in THEMES {
+            let colours: Vec<gpui::Hsla> = Phase::ALL.iter().map(|p| Style::Chip(*p).dot(t).1).collect();
+            for (i, a) in colours.iter().enumerate() {
+                for b in &colours[i + 1..] {
+                    assert_ne!(a, b, "two phases would draw the same dot");
+                }
+            }
+        }
     }
 
     #[test]
