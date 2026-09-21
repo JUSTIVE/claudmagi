@@ -110,6 +110,12 @@ pub struct SessionInfo {
     pub prs: Vec<crate::pr::Pr>,
     /// The Linear issue behind the work, drawn at the head of the lane (#57).
     pub ticket: Option<crate::ticket::Ticket>,
+    /// When the work in this session last turned over: the moment it was
+    /// renamed, which is how a tab announces that it is on something new.
+    /// Zero when it still carries the name it started with, so a session that
+    /// simply carries on (or was resumed onto an older transcript) keeps
+    /// everything its transcript ever linked (#74).
+    pub context_since: u64,
     /// The background job this session *is* (`kind: "bg"`): the handle its
     /// parent parked it under.
     pub job: Option<String>,
@@ -140,6 +146,7 @@ impl SessionInfo {
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
             prs: Vec::new(),
             ticket: None,
+            context_since: 0,
             job: None,
             parked_job: None,
         };

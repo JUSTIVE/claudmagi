@@ -195,7 +195,7 @@ fn repo_of(cwd: &str) -> Option<String> {
 /// Every PR of `repo` mentioned in a message body in the transcript's tail,
 /// oldest number first. A ticket often has more than one (#63); the newest
 /// are kept when there are more than `MAX_PER_SESSION`.
-pub fn scan_transcript(path: &Path, repo: &str) -> Vec<u32> {
+pub fn scan_transcript(path: &Path, repo: &str, since: u64) -> Vec<u32> {
     let Some(text) = tail(path, TAIL_BYTES) else { return Vec::new() };
     let needle = format!("github.com/{repo}/pull/");
     let mut found: Vec<u32> = Vec::new();
@@ -203,6 +203,10 @@ pub fn scan_transcript(path: &Path, repo: &str) -> Vec<u32> {
         // Cheap gate: parsing every record of a two-megabyte tail is the
         // expensive part, and almost no line mentions a PR.
         if !line.contains(&needle) {
+            continue;
+        }
+        // A PR from before the tab turned to new work is not this work's (#74).
+        if !in_context(line, since) {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
@@ -233,6 +237,22 @@ fn numbers_in(haystack: &str, needle: &str) -> Vec<u32> {
         from = start.max(from + i + 1);
     }
     out
+}
+
+/// Unix millis of a transcript line, read straight out of its `timestamp`
+/// field. Parsing the whole record to date it costs more than the scan it is
+/// gating, and every line that carries a message carries this.
+pub fn line_millis(line: &str) -> Option<u64> {
+    const KEY: &str = "\"timestamp\":\"";
+    let at = line.find(KEY)? + KEY.len();
+    let end = line[at..].find('"')? + at;
+    Some(crate::usage::parse_iso8601(&line[at..end])? * 1000)
+}
+
+/// Whether a line belongs to the session's current context. Lines with no
+/// timestamp are kept: only a line that can be dated can be ruled out.
+pub fn in_context(line: &str, since: u64) -> bool {
+    since == 0 || line_millis(line).is_none_or(|at| at >= since)
 }
 
 /// Last `bytes` of a file, starting at a line boundary. Shared with the
@@ -372,7 +392,7 @@ pub struct Tracker {
     /// cwd → `owner/repo`; `None` means "checked, not a GitHub checkout".
     repos: Mutex<HashMap<String, Option<String>>>,
     /// session id → (transcript size when scanned, what it resolved to).
-    refs: Mutex<HashMap<String, (u64, Vec<PrRef>)>>,
+    refs: Mutex<HashMap<String, (u64, u64, Vec<PrRef>)>>,
     shared: Arc<Shared>,
     /// Fetch inline instead of on the worker, for the one-shot diagnostics.
     pub eager: bool,
@@ -406,21 +426,25 @@ impl Tracker {
 
     /// The PRs a session points at, oldest first, rescanned only when its
     /// transcript grew.
-    pub fn resolve(&self, session_id: &str, cwd: &str, transcript: Option<&Path>) -> Vec<PrRef> {
+    pub fn resolve(&self, session_id: &str, cwd: &str, transcript: Option<&Path>, since: u64) -> Vec<PrRef> {
         let Some(path) = transcript else { return Vec::new() };
         let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Vec::new() };
         if let Ok(map) = self.refs.lock() {
-            if let Some((seen, hit)) = map.get(session_id) {
-                if *seen == size {
+            if let Some((seen, from, hit)) = map.get(session_id) {
+                // A rename moves the boundary, which is a new answer even
+                // though the file has not grown (#74).
+                if *seen == size && *from == since {
                     return hit.clone();
                 }
             }
         }
         let Some(repo) = self.repo(cwd) else { return Vec::new() };
-        let found: Vec<PrRef> =
-            scan_transcript(path, &repo).into_iter().map(|number| PrRef { repo: repo.clone(), number }).collect();
+        let found: Vec<PrRef> = scan_transcript(path, &repo, since)
+            .into_iter()
+            .map(|number| PrRef { repo: repo.clone(), number })
+            .collect();
         if let Ok(mut map) = self.refs.lock() {
-            map.insert(session_id.to_string(), (size, found.clone()));
+            map.insert(session_id.to_string(), (size, since, found.clone()));
         }
         found
     }
@@ -500,6 +524,18 @@ mod tests {
             "a ticket can have several (#63)"
         );
         assert!(numbers_in("nothing here", needle).is_empty());
+    }
+
+    #[test]
+    fn a_line_is_dated_by_its_own_timestamp() {
+        let line = r#"{"type":"pr-link","prNumber":8792,"timestamp":"2026-09-18T09:00:00.000Z"}"#;
+        let at = line_millis(line).expect("a dated line");
+        assert!(in_context(line, 0), "no boundary means the whole transcript counts");
+        assert!(in_context(line, at), "the moment of the turn is still this context");
+        assert!(in_context(line, at - 1));
+        assert!(!in_context(line, at + 1), "written before the tab turned to new work");
+        assert_eq!(line_millis(r#"{"type":"mode","mode":"normal"}"#), None);
+        assert!(in_context(r#"{"type":"mode"}"#, at), "a line that cannot be dated is kept");
     }
 
     #[test]

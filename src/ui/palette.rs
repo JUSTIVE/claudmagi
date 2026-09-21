@@ -110,10 +110,6 @@ const CARD_ALPHA: f32 = 0.97;
 /// much that it stops being the same material.
 const CARD_LIFT: f32 = 0.07;
 
-fn luma(c: Rgba) -> f32 {
-    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
-}
-
 /// The card is the board's own surface lifted a little: background from
 /// `bg`, text from `ink`, accents from `packet`, which is the same recipe the
 /// status bar follows and the only one that reads on all three boards.
@@ -466,6 +462,10 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn luma(c: Rgba) -> f32 {
+        0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+    }
 
     /// Every board has to get a card of its own, readable and distinct from
     /// the board behind it. Building the card from `chip` failed exactly here:

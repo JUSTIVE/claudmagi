@@ -229,23 +229,30 @@ pub fn keys_in(text: &str) -> Vec<String> {
 
 /// Every `linear.app/<workspace>/issue/<KEY>` in the transcript's tail, newest
 /// last, with the workspace slugs they came from.
-pub fn scan_transcript(path: &Path) -> (Vec<String>, Vec<String>) {
+pub fn scan_transcript(path: &Path, since: u64) -> (Vec<String>, Vec<String>) {
     let Some(text) = tail(path, TAIL_BYTES) else { return (Vec::new(), Vec::new()) };
     const NEEDLE: &str = "linear.app/";
     let (mut keys, mut spaces) = (Vec::new(), Vec::new());
-    let mut from = 0;
-    while let Some(i) = text[from..].find(NEEDLE) {
-        let at = from + i + NEEDLE.len();
-        from = at;
-        let rest = &text[at..];
-        let Some((workspace, tail_of)) = rest.split_once("/issue/") else { continue };
-        if workspace.is_empty() || workspace.contains('/') || workspace.len() > 60 {
+    // Line by line, so each link can be dated: an issue the tab worked on
+    // before it turned to something new is not this work's (#74).
+    for line in text.lines() {
+        if !line.contains(NEEDLE) || !crate::pr::in_context(line, since) {
             continue;
         }
-        let word: String = tail_of.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-        if let Some(k) = key_shaped(&word) {
-            keys.push(k);
-            spaces.push(workspace.to_string());
+        let mut from = 0;
+        while let Some(i) = line[from..].find(NEEDLE) {
+            let at = from + i + NEEDLE.len();
+            from = at;
+            let rest = &line[at..];
+            let Some((workspace, tail_of)) = rest.split_once("/issue/") else { continue };
+            if workspace.is_empty() || workspace.contains('/') || workspace.len() > 60 {
+                continue;
+            }
+            let word: String = tail_of.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+            if let Some(k) = key_shaped(&word) {
+                keys.push(k);
+                spaces.push(workspace.to_string());
+            }
         }
     }
     (keys, spaces)
@@ -311,7 +318,7 @@ impl Shared {
 #[derive(Default)]
 pub struct Tracker {
     /// session id → (transcript size when scanned, keys, workspace).
-    seen: Mutex<HashMap<String, (u64, Vec<String>, Option<String>)>>,
+    seen: Mutex<HashMap<String, (u64, u64, Vec<String>, Option<String>)>>,
     /// The workspace slug seen most often, shared by every session.
     workspace: Mutex<HashMap<String, usize>>,
     /// Team prefixes that have appeared in a real `linear.app` link, pooled
@@ -327,13 +334,18 @@ impl Tracker {
     /// Reads a transcript once, pooling its workspace slugs and team prefixes.
     /// Every session is scanned before any is judged, so the answer does not
     /// depend on which session the snapshot happened to reach first.
-    pub fn scan(&self, session_id: &str, transcript: Option<&Path>) {
+    pub fn scan(&self, session_id: &str, transcript: Option<&Path>, since: u64) {
         let Some(path) = transcript else { return };
         let size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
-        if self.seen.lock().is_ok_and(|m| m.get(session_id).is_some_and(|(seen, ..)| *seen == size)) {
+        // A rename is a new answer even when the file has not grown (#74).
+        let fresh = self
+            .seen
+            .lock()
+            .is_ok_and(|m| m.get(session_id).is_some_and(|(seen, from, ..)| *seen == size && *from == since));
+        if fresh {
             return;
         }
-        let (keys, spaces) = scan_transcript(path);
+        let (keys, spaces) = scan_transcript(path, since);
         if let Ok(mut tally) = self.workspace.lock() {
             for w in &spaces {
                 *tally.entry(w.clone()).or_insert(0) += 1;
@@ -343,7 +355,7 @@ impl Tracker {
             teams.extend(keys.iter().filter_map(|k| team_of(k)));
         }
         if let Ok(mut m) = self.seen.lock() {
-            m.insert(session_id.to_string(), (size, keys, spaces.last().cloned()));
+            m.insert(session_id.to_string(), (size, since, keys, spaces.last().cloned()));
         }
     }
 
@@ -353,7 +365,7 @@ impl Tracker {
             .seen
             .lock()
             .ok()
-            .and_then(|m| m.get(session_id).map(|(_, keys, _)| keys.clone()))
+            .and_then(|m| m.get(session_id).map(|(_, _, keys, _)| keys.clone()))
             .unwrap_or_default();
         let teams = self.teams.lock().map(|t| t.clone()).unwrap_or_default();
         choose(name, pr_titles, &linked, &teams)

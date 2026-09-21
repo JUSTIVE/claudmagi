@@ -437,6 +437,10 @@ struct RawSession {
     tempo: Option<String>,
     #[serde(default)]
     started_at: Option<u64>,
+    /// Unix millis at which the current `name` took effect. Later than
+    /// `started_at` only when the session was renamed mid-life (#74).
+    #[serde(default)]
+    name_since: Option<u64>,
     /// `interactive` for a session at a prompt, `bg` for a parked job.
     #[serde(default)]
     kind: Option<String>,
@@ -599,6 +603,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
         .map(|r| {
             let env = proc_env(r.pid).unwrap_or_default();
             let parked = r.kind.as_deref() == Some("bg");
+            let started = r.started_at.unwrap_or(0);
             SessionInfo {
                 pid: r.pid,
                 session_id: r.session_id,
@@ -608,7 +613,8 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                 waiting_for: r.waiting_for,
                 state: r.state,
                 tempo: r.tempo,
-                started_at: r.started_at.unwrap_or(0),
+                started_at: started,
+                context_since: r.name_since.filter(|t| *t > started).unwrap_or(0),
                 tty: ttys.get(&r.pid).cloned(),
                 warp_focus_url: env.get("WARP_FOCUS_URL").cloned(),
                 warp_session_uuid: env.get("WARP_TERMINAL_SESSION_UUID").cloned(),
@@ -763,18 +769,18 @@ impl ClaudeSource {
         let paths: Vec<Option<PathBuf>> = list.iter().map(|s| self.transcript(s)).collect();
         let mut want_prs = Vec::new();
         for (s, transcript) in list.iter_mut().zip(&paths) {
-            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref());
+            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref(), s.context_since);
             s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
             want_prs.extend(refs);
             // Pool every transcript's Linear links before judging any of them,
             // so the team prefixes are all known by the time we pick (#57).
-            self.tickets.scan(&s.session_id, transcript.as_deref());
+            self.tickets.scan(&s.session_id, transcript.as_deref(), s.context_since);
         }
         // Naming what the board shows before reading it back means an eager
         // tracker has already fetched everything by the time we look (#64).
         self.prs.want(want_prs);
         for (s, transcript) in list.iter_mut().zip(&paths) {
-            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref());
+            let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref(), s.context_since);
             s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
         }
 
