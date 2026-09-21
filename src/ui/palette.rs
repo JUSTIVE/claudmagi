@@ -105,18 +105,24 @@ fn boundary_bonus(hay: &[char], j: usize) -> i32 {
 
 /// How opaque the card is over the board it covers.
 const CARD_ALPHA: f32 = 0.97;
+/// How far the card's background is lifted off the board's, towards the ink.
+/// Enough to read as a card of its own against the board behind it, not so
+/// much that it stops being the same material.
+const CARD_LIFT: f32 = 0.07;
 
 fn luma(c: Rgba) -> f32 {
     0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
 }
 
-/// The card is one chip blown up, so it takes the theme's chip colour and its
-/// text is whatever reads on a chip there. The white and orange boards have
-/// near-black chips and take a near-white ink; the dark board's chips are
-/// white (#32), so its ink is the board's own near-black. (#72)
-fn card_ink(theme: Palette) -> Rgba {
-    const WHITE: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
-    if luma(theme.chip) > 0.5 { theme.bg } else { WHITE }
+/// The card is the board's own surface lifted a little: background from
+/// `bg`, text from `ink`, accents from `packet`, which is the same recipe the
+/// status bar follows and the only one that reads on all three boards.
+///
+/// Not the chip colour, tempting as a chip-shaped card was: the white and
+/// orange boards share `chip` and `text_on`, so a card built from those came
+/// out identical on both and looked like neither (#72, #73).
+fn card_bg(theme: Palette) -> Rgba {
+    theme::with_alpha(theme::lerp(theme.bg, theme.ink, CARD_LIFT), CARD_ALPHA)
 }
 
 // ---------------------------------------------------------------------------
@@ -349,14 +355,11 @@ impl Board {
         // `self.palette()` is the board's colours; `self.palette` is this
         // search. Bind the colours once so the rest reads unambiguously.
         let theme = self.palette();
-        let ink = card_ink(theme);
+        let ink = theme.ink;
         let at = |a: f32| theme::hsla(theme::with_alpha(ink, a));
-        let (accent, card, edge) = (
-            theme::hsla(theme.text_on),
-            theme::hsla(theme::with_alpha(theme.chip, CARD_ALPHA)),
-            theme::hsla(theme::with_alpha(theme.text_on, 0.45)),
-        );
-        let (rule, sel_bg, hover_bg) = (at(0.12), at(0.14), at(0.07));
+        let (accent, card, edge) =
+            (theme::hsla(theme.packet), theme::hsla(card_bg(theme)), at(0.35));
+        let (rule, sel_bg, hover_bg) = (at(0.15), at(0.13), at(0.06));
 
         let mut list = div().flex().flex_col();
         for (i, entry) in rows {
@@ -464,14 +467,35 @@ impl Board {
 mod tests {
     use super::*;
 
-    /// The card is the theme's chip, so its ink has to flip with the chip:
-    /// the dark board is the one whose chips are white (#32, #72).
+    /// Every board has to get a card of its own, readable and distinct from
+    /// the board behind it. Building the card from `chip` failed exactly here:
+    /// the white and orange boards share that colour (#72).
     #[test]
-    fn the_cards_ink_follows_the_themes_chip() {
-        for light_chip in [theme::PALETTE, theme::ORANGE] {
-            assert!(luma(card_ink(light_chip)) > 0.5, "a near-black chip takes a near-white ink");
+    fn every_board_gets_its_own_readable_card() {
+        // WCAG's ratio rather than a raw difference: the orange board's card
+        // is mid-luma and its ink is dark, which reads fine and no subtraction
+        // of brightnesses says so.
+        let contrast = |a: Rgba, b: Rgba| {
+            let (hi, lo) = if luma(a) > luma(b) { (luma(a), luma(b)) } else { (luma(b), luma(a)) };
+            (hi + 0.05) / (lo + 0.05)
+        };
+        let themes = [theme::PALETTE, theme::ORANGE, theme::DARK];
+        for t in themes {
+            let card = card_bg(t);
+            let ratio = contrast(card, t.ink);
+            assert!(ratio > 4.5, "the board's ink has to read on its own card (got {ratio:.1}:1)");
+            assert!(
+                (luma(card) - luma(t.bg)).abs() > 0.005,
+                "the card has to lift off the board behind it"
+            );
         }
-        assert!(luma(card_ink(theme::DARK)) < 0.5, "the dark board's white chip takes a dark ink");
+        let cards: Vec<Rgba> = themes.iter().map(|t| card_bg(*t)).collect();
+        for (i, a) in cards.iter().enumerate() {
+            for b in &cards[i + 1..] {
+                let apart = (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs();
+                assert!(apart > 0.05, "no two boards may hand out the same card");
+            }
+        }
     }
 
     #[test]
