@@ -18,6 +18,7 @@ use crate::render::scene::{self, ChipDraw, Frame, GAP, Lane, Layout};
 use crate::settings::Settings;
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
+use crate::ui::palette::PaletteState;
 use crate::ui::panel::PanelState;
 use crate::usage::{self, Usage};
 use crate::{mac, warp};
@@ -73,6 +74,8 @@ pub struct Board {
     usage_error: Option<usage::UsageError>,
     /// What the live source wants said in the status bar (#67).
     source_note: Option<&'static str>,
+    /// The ⌘K search over everything on the board (#71).
+    pub(crate) palette: PaletteState,
 }
 
 impl Board {
@@ -90,6 +93,7 @@ impl Board {
                     board.sandbox.churn(now);
                     board.model.apply(list, now);
                     board.source_note = note;
+                    board.palette_refresh();
                     cx.notify();
                 });
                 if ok.is_err() {
@@ -170,6 +174,7 @@ impl Board {
             usage: None,
             usage_error: None,
             source_note: None,
+            palette: PaletteState::default(),
         }
     }
 
@@ -283,7 +288,7 @@ impl Board {
     /// chip's Warp jump does (#57). `first` is tried before `then`, so a
     /// Linear node can prefer its desktop app and still land somewhere if the
     /// scheme is not registered (#60).
-    fn open_link(
+    pub(crate) fn open_link(
         &mut self,
         label: String,
         first: Option<String>,
@@ -435,6 +440,7 @@ impl Render for Board {
         let source_note = self.source_note;
         let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
+        let palette_open = self.palette.open;
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
 
@@ -445,6 +451,18 @@ impl Render for Board {
             .when(self.model.hovered.is_some() || self.hovered_pr.is_some() || self.hovered_ticket.is_some(), |d| d.cursor_pointer())
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let cmd = ev.keystroke.modifiers.platform;
+                // ⌘K opens and closes it; while it is open every other key
+                // is typing, not a shortcut (#71).
+                if cmd && ev.keystroke.key == "k" {
+                    this.toggle_palette();
+                    cx.notify();
+                    return;
+                }
+                if this.palette.open {
+                    this.palette_key(ev, cx);
+                    cx.notify();
+                    return;
+                }
                 match ev.keystroke.key.as_str() {
                     "escape" if this.settings_panel.open => this.settings_panel.open = false,
                     "escape" if this.dev.open => this.dev.open = false,
@@ -494,6 +512,13 @@ impl Render for Board {
                         this.pressed_pr = None;
                         this.pressed_ticket = None;
                         this.drag_anchor = Some(mac::mouse_location());
+                    }
+                    // A click on the board is a click past the palette: the
+                    // card itself stops propagation, so anything reaching here
+                    // was outside it (#71).
+                    if this.palette.open {
+                        this.palette.open = false;
+                        this.palette.results.clear();
                     }
                     cx.notify();
                 }),
@@ -666,6 +691,9 @@ impl Render for Board {
                 }
                 d.child(dock)
             })
+            // The search sits over the board, near the top, where a palette
+            // is looked for (#71).
+            .when(palette_open, |d| d.child(self.render_palette(cx)))
     }
 }
 
