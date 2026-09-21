@@ -13,9 +13,8 @@
 use gpui::{ClickEvent, Context, KeyDownEvent, MouseButton, SharedString, div, prelude::*, px};
 
 use crate::model::Target;
-use crate::theme::{self, PALETTE};
+use crate::theme::{self, Palette, Rgba};
 use crate::ui::board::Board;
-use crate::ui::panel::{c, dim};
 
 pub const PALETTE_W: f32 = 520.0;
 /// How many matches the list shows at once.
@@ -98,6 +97,26 @@ pub fn score(query: &str, hay: &str) -> Option<i32> {
 
 fn boundary_bonus(hay: &[char], j: usize) -> i32 {
     if is_boundary(hay, j) { BOUNDARY } else { 0 }
+}
+
+// ---------------------------------------------------------------------------
+// Colours
+// ---------------------------------------------------------------------------
+
+/// How opaque the card is over the board it covers.
+const CARD_ALPHA: f32 = 0.97;
+
+fn luma(c: Rgba) -> f32 {
+    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+}
+
+/// The card is one chip blown up, so it takes the theme's chip colour and its
+/// text is whatever reads on a chip there. The white and orange boards have
+/// near-black chips and take a near-white ink; the dark board's chips are
+/// white (#32), so its ink is the board's own near-black. (#72)
+fn card_ink(theme: Palette) -> Rgba {
+    const WHITE: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+    if luma(theme.chip) > 0.5 { theme.bg } else { WHITE }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +346,18 @@ impl Board {
         let rows: Vec<(usize, Entry)> = self.palette.results.iter().cloned().enumerate().collect();
         let empty = rows.is_empty();
 
+        // `self.palette()` is the board's colours; `self.palette` is this
+        // search. Bind the colours once so the rest reads unambiguously.
+        let theme = self.palette();
+        let ink = card_ink(theme);
+        let at = |a: f32| theme::hsla(theme::with_alpha(ink, a));
+        let (accent, card, edge) = (
+            theme::hsla(theme.text_on),
+            theme::hsla(theme::with_alpha(theme.chip, CARD_ALPHA)),
+            theme::hsla(theme::with_alpha(theme.text_on, 0.45)),
+        );
+        let (rule, sel_bg, hover_bg) = (at(0.12), at(0.14), at(0.07));
+
         let mut list = div().flex().flex_col();
         for (i, entry) in rows {
             let on = i == selected;
@@ -339,15 +370,15 @@ impl Board {
                     .px_3()
                     .py_1()
                     .cursor_pointer()
-                    .when(on, |d| d.bg(dim(0.14)))
-                    .when(!on, |d| d.hover(|s| s.bg(dim(0.07))))
-                    .child(div().w(px(12.)).flex_none().text_color(c(PALETTE.text_on)).child(entry.kind.glyph()))
+                    .when(on, |d| d.bg(sel_bg))
+                    .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
+                    .child(div().w(px(12.)).flex_none().text_color(accent).child(entry.kind.glyph()))
                     .child(
                         div()
                             .w(px(132.))
                             .flex_none()
                             .overflow_hidden()
-                            .text_color(dim(if on { 1.0 } else { 0.85 }))
+                            .text_color(at(if on { 1.0 } else { 0.85 }))
                             .child(entry.label.clone()),
                     )
                     .child(
@@ -355,7 +386,7 @@ impl Board {
                             .w(px(52.))
                             .flex_none()
                             .text_size(px(10.))
-                            .text_color(dim(0.45))
+                            .text_color(at(0.45))
                             .child(entry.kind.word()),
                     )
                     .child(
@@ -363,7 +394,7 @@ impl Board {
                             .flex_1()
                             .overflow_hidden()
                             .text_size(px(10.))
-                            .text_color(dim(0.55))
+                            .text_color(at(0.55))
                             .child(entry.detail.clone()),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -388,12 +419,12 @@ impl Board {
                     .flex_col()
                     .rounded_lg()
                     .border_1()
-                    .border_color(c(theme::with_alpha(PALETTE.text_on, 0.45)))
-                    .bg(c(theme::with_alpha(PALETTE.chip, 0.97)))
+                    .border_color(edge)
+                    .bg(card)
                     .shadow_lg()
                     .font_family(theme::UI_FONT)
                     .text_size(px(11.))
-                    .text_color(dim(0.85))
+                    .text_color(at(0.85))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(
@@ -404,15 +435,15 @@ impl Board {
                             .px_3()
                             .py_2()
                             .border_b_1()
-                            .border_color(dim(0.12))
-                            .child(div().flex_none().text_color(c(PALETTE.text_on)).child("⌘K"))
+                            .border_color(rule)
+                            .child(div().flex_none().text_color(accent).child("⌘K"))
                             .child(div().flex_1().child(format!("{query}▌")))
                             .when(!query.is_empty(), |d| {
-                                d.child(div().flex_none().text_size(px(10.)).text_color(dim(0.4)).child("⌫ 지우기"))
+                                d.child(div().flex_none().text_size(px(10.)).text_color(at(0.4)).child("⌫ 지우기"))
                             }),
                     )
                     .when(empty, |d| {
-                        d.child(div().px_3().py_2().text_color(dim(0.45)).child("찾는 노드가 없습니다"))
+                        d.child(div().px_3().py_2().text_color(at(0.45)).child("찾는 노드가 없습니다"))
                     })
                     .when(!empty, |d| d.child(list))
                     .child(
@@ -420,9 +451,9 @@ impl Board {
                             .px_3()
                             .py_1p5()
                             .border_t_1()
-                            .border_color(dim(0.12))
+                            .border_color(rule)
                             .text_size(px(10.))
-                            .text_color(dim(0.45))
+                            .text_color(at(0.45))
                             .child("↑↓ 이동 · ⏎ 열기 · esc 닫기"),
                     ),
             )
@@ -432,6 +463,16 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The card is the theme's chip, so its ink has to flip with the chip:
+    /// the dark board is the one whose chips are white (#32, #72).
+    #[test]
+    fn the_cards_ink_follows_the_themes_chip() {
+        for light_chip in [theme::PALETTE, theme::ORANGE] {
+            assert!(luma(card_ink(light_chip)) > 0.5, "a near-black chip takes a near-white ink");
+        }
+        assert!(luma(card_ink(theme::DARK)) < 0.5, "the dark board's white chip takes a dark ink");
+    }
 
     #[test]
     fn an_unbroken_run_beats_the_same_letters_scattered() {
