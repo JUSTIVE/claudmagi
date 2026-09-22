@@ -118,7 +118,7 @@ const CARD_LIFT: f32 = 0.07;
 /// Not the chip colour, tempting as a chip-shaped card was: the white and
 /// orange boards share `chip` and `text_on`, so a card built from those came
 /// out identical on both and looked like neither (#72, #73).
-fn card_bg(theme: Palette) -> Rgba {
+pub(crate) fn card_bg(theme: Palette) -> Rgba {
     theme::with_alpha(theme::lerp(theme.bg, theme.ink, CARD_LIFT), CARD_ALPHA)
 }
 

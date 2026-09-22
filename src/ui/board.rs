@@ -11,6 +11,7 @@ use gpui::{
     MouseUpEvent, Pixels, ScrollWheelEvent, SharedString, Stateful, Window, canvas, div, prelude::*, px,
 };
 
+use crate::font;
 use crate::geom::Pt;
 use crate::model::{BoardModel, Target};
 use crate::render::paint::PathCache;
@@ -24,6 +25,17 @@ use crate::usage::{self, Usage};
 use crate::{mac, warp};
 
 pub const STATUS_H: f32 = 30.0;
+/// The hover tooltip on a pull request connector (#77): how far it keeps from
+/// the viewport's edges, from the connector itself, and how wide it may run.
+const TIP_MARGIN: f32 = 8.0;
+const TIP_GAP: f32 = 8.0;
+const TIP_PAD: f32 = 8.0;
+const TIP_H: f32 = 22.0;
+const TIP_MIN: f32 = 90.0;
+const TIP_MAX: f32 = 340.0;
+/// Scale at which `font::measure` sizes the box: the board's own metric, at
+/// roughly the cap height gpui gives an 11px D-DIN.
+const TIP_SCALE: f32 = 1.32;
 /// Session registry poll interval.
 const POLL_MS: u64 = 1000;
 /// Redraw cadence: the packets glide at 30fps, which halves the CPU of a
@@ -344,6 +356,52 @@ impl Board {
         self.open_link(label, app, web, "Linear issue", cx);
     }
 
+    /// The hovered pull request's title, parked next to its connector (#77).
+    ///
+    /// The connector is drawn in design units and scrolls with the board, so
+    /// its place on screen is `(x, y - scroll) * zoom`. The box takes a width
+    /// of its own rather than letting the text decide one, which is what lets
+    /// the clamp be exact: whatever the estimate, the box is that wide, so
+    /// keeping it inside the viewport is arithmetic and not a guess. It sits
+    /// above the connector, and flips below when there is no room up there.
+    fn pr_tooltip(&self, w: f32, h: f32) -> Option<gpui::Div> {
+        let draw = self.prs.get(self.hovered_pr?)?;
+        let title = draw.title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let zoom = self.layout.zoom;
+        let (cx, cy) = (draw.center.x * zoom, (draw.center.y - self.scroll_y) * zoom);
+        let half = scene::PR_H / 2.0 * zoom;
+
+        let want = font::measure(title, TIP_SCALE) + 2.0 * TIP_PAD;
+        let (left, top, tip_w) = tip_box((cx, cy), half, want, (w, h));
+
+        let theme = self.palette();
+        let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
+        Some(
+            div()
+                .absolute()
+                .left(px(left))
+                .top(px(top))
+                .w(px(tip_w))
+                .h(px(TIP_H))
+                .flex()
+                .items_center()
+                .px(px(TIP_PAD))
+                .rounded_sm()
+                .border_1()
+                .border_color(ink(0.35))
+                .bg(theme::hsla(crate::ui::palette::card_bg(theme)))
+                .shadow_lg()
+                .font_family(theme::UI_FONT)
+                .text_size(px(11.))
+                .text_color(ink(0.85))
+                .overflow_hidden()
+                .child(SharedString::from(title.to_string())),
+        )
+    }
+
     /// Opens the pane the `NO WARP TABS` tag asks for (#70). That tag is the
     /// only place the board can say the permission is missing, so it is also
     /// the way there.
@@ -441,6 +499,7 @@ impl Render for Board {
         let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
         let palette_open = self.palette.open;
+        let pr_tip = self.pr_tooltip(w, h);
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
 
@@ -694,7 +753,29 @@ impl Render for Board {
             // The search sits over the board, near the top, where a palette
             // is looked for (#71).
             .when(palette_open, |d| d.child(self.render_palette(cx)))
+            .when_some(pr_tip, |d, tip| d.child(tip))
     }
+}
+
+/// Where a connector's tooltip goes: `(left, top, width)` in window pixels,
+/// from the connector's centre, its half height, the width the text would
+/// like, and the viewport. It sits above the connector and flips below when
+/// there is no room up there, and it never crosses the margin on any side,
+/// the status bar included.
+///
+/// The box takes a width of its own rather than letting the text decide one.
+/// That is what makes the clamp exact: however far off the estimate is, the
+/// box is that wide, so staying inside the viewport is arithmetic rather than
+/// a guess. (#77)
+fn tip_box(centre: (f32, f32), half: f32, want: f32, vp: (f32, f32)) -> (f32, f32, f32) {
+    let ((cx, cy), (w, h)) = (centre, vp);
+    let room = (w - 2.0 * TIP_MARGIN).max(TIP_MIN);
+    let tip_w = want.clamp(TIP_MIN, TIP_MAX.min(room));
+    let left = (cx - tip_w / 2.0).clamp(TIP_MARGIN, (w - TIP_MARGIN - tip_w).max(TIP_MARGIN));
+    let floor = (h - STATUS_H - TIP_MARGIN - TIP_H).max(TIP_MARGIN);
+    let above = cy - half - TIP_GAP - TIP_H;
+    let top = if above >= TIP_MARGIN { above } else { cy + half + TIP_GAP };
+    (left, top.clamp(TIP_MARGIN, floor), tip_w)
 }
 
 /// Small bordered button for the status bar.
@@ -774,4 +855,70 @@ fn status_button(
         .child(label.into())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(on_click)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VP: (f32, f32) = (980.0, 620.0);
+    /// Half the height of a connector, at zoom 1.
+    const HALF: f32 = scene::PR_H / 2.0;
+
+    #[test]
+    fn a_tooltip_sits_above_the_connector_it_belongs_to() {
+        let (left, top, w) = tip_box((500.0, 300.0), HALF, 200.0, VP);
+        assert_eq!(w, 200.0, "a width that fits is kept");
+        assert_eq!(left, 500.0 - 100.0, "centred on the connector");
+        assert_eq!(top, 300.0 - HALF - TIP_GAP - TIP_H, "clear of it, above");
+    }
+
+    #[test]
+    fn a_tooltip_flips_below_a_connector_near_the_top() {
+        let (_, top, _) = tip_box((500.0, 12.0), HALF, 200.0, VP);
+        assert_eq!(top, 12.0 + HALF + TIP_GAP, "there is no room above, so it goes under");
+    }
+
+    /// The whole point of the ask: wherever the connector is, the box stays
+    /// on screen (#77).
+    #[test]
+    fn a_tooltip_never_leaves_the_viewport() {
+        let (w, h) = VP;
+        let mut xs = vec![];
+        let mut x = -60.0;
+        while x <= w + 60.0 {
+            xs.push(x);
+            x += 20.0;
+        }
+        for cx in xs {
+            let mut cy = -60.0;
+            while cy <= h + 60.0 {
+                for want in [40.0, 200.0, 900.0] {
+                    let (left, top, tip_w) = tip_box((cx, cy), HALF, want, VP);
+                    assert!(left >= TIP_MARGIN, "off the left at {cx},{cy}");
+                    assert!(left + tip_w <= w - TIP_MARGIN + 0.01, "off the right at {cx},{cy}");
+                    assert!(top >= TIP_MARGIN, "off the top at {cx},{cy}");
+                    assert!(
+                        top + TIP_H <= h - STATUS_H - TIP_MARGIN + 0.01,
+                        "under the status bar at {cx},{cy}"
+                    );
+                }
+                cy += 20.0;
+            }
+        }
+    }
+
+    #[test]
+    fn a_narrow_window_shrinks_the_tooltip_rather_than_overflowing() {
+        let narrow = (160.0, 620.0);
+        let (left, _, tip_w) = tip_box((80.0, 300.0), HALF, 900.0, narrow);
+        assert!(tip_w <= narrow.0 - 2.0 * TIP_MARGIN, "it gives up width before it gives up the edge");
+        assert!(left >= TIP_MARGIN && left + tip_w <= narrow.0 - TIP_MARGIN);
+    }
+
+    #[test]
+    fn a_long_title_stops_at_the_maximum() {
+        let (_, _, tip_w) = tip_box((500.0, 300.0), HALF, 4000.0, VP);
+        assert_eq!(tip_w, TIP_MAX, "a title does not get to run the width of the board");
+    }
 }

@@ -93,7 +93,9 @@ inside the session poll — and the trace runs into the leftmost connector of
 that chain, where the body's colour
 is the whole signal — hollow draft, green outline open, filled green approved,
 orange failing, black merged, faint closed — with a yellow border laid over
-any of them while CI is still running.
+any of them while CI is still running. Hovering a connector puts the pull
+request's own title beside it, above where there is room and below where there
+is not, and never off the edge of the window (#77).
 
 The Linear issue docks at the left edge, where the lane begins: the work comes
 from a ticket and leaves through a PR. Both ends share a grammar — outlined

@@ -177,6 +177,9 @@ pub struct PrDraw {
     pub center: Pt,
     pub width: f32,
     pub label: String,
+    /// The pull request's own title, for the hover tooltip (#77). Empty on
+    /// the `+n` badge, which stands for several.
+    pub title: String,
     pub look: pr::Look,
     /// CI is still working: a yellow border on top of whatever look it has (#62).
     pub running: bool,
@@ -666,6 +669,7 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
                 center: Pt::new(right + w / 2.0, 0.0),
                 width: w,
                 label,
+                title: String::new(),
                 look: pr::Look::Closed,
                 running: false,
                 alpha: c.alpha,
@@ -698,6 +702,7 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
                 center: Pt::new(x + w / 2.0, y),
                 width: w,
                 label: pr.label(),
+                title: pr.title.clone(),
                 look: pr.look(),
                 running: pr.running(),
                 alpha: c.alpha,
