@@ -173,7 +173,13 @@ pub fn outline(text: &str, scale: f32) -> Vec<Cmd> {
 /// Builds a filled path for `text`, centred on `center`, rotated by
 /// `angle_deg` (clockwise, screen coordinates).
 pub fn build(text: &str, scale: f32, angle_deg: f32, center: (f32, f32)) -> Option<Path<Pixels>> {
-    let cmds = outline(text, scale);
+    path_of(outline(text, scale), angle_deg, center)
+}
+
+/// Builds a filled path from outline commands, centred on `center` and
+/// rotated by `angle_deg`. Labels come from glyphs and the chip marks come
+/// from SVG (#80), and past this point they are the same thing.
+pub fn path_of(cmds: Vec<Cmd>, angle_deg: f32, center: (f32, f32)) -> Option<Path<Pixels>> {
     if cmds.is_empty() {
         return None;
     }

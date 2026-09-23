@@ -9,6 +9,7 @@ use gpui::{Bounds, Path, PathBuilder, PathStyle, Pixels, StrokeOptions, Window, 
 use lyon::path::{LineCap, LineJoin};
 
 use crate::font;
+use crate::logos;
 use crate::geom::Pt;
 use crate::render::scene::Shape;
 use crate::theme;
@@ -120,6 +121,13 @@ fn key_of(shape: &Shape) -> Option<u64> {
                 q(v).hash(&mut h);
             }
         }
+        Shape::Mark { mark, size, angle, center, .. } => {
+            4u8.hash(&mut h);
+            mark.hash(&mut h);
+            for v in [*size, *angle, center.x, center.y] {
+                q(v).hash(&mut h);
+            }
+        }
     }
     Some(h.finish())
 }
@@ -130,6 +138,9 @@ fn build(shape: &Shape) -> Option<Path<Pixels>> {
         Shape::Stroke { pieces, width, .. } => stroke_path(pieces, *width),
         Shape::RoundedRect { center, w, h, r, angle, stroke, .. } => rounded_rect(*center, *w, *h, *r, *angle, *stroke),
         Shape::Text { text, scale, angle, center, .. } => font::build(text, *scale, *angle, (center.x, center.y)),
+        Shape::Mark { mark, size, angle, center, .. } => {
+            font::path_of(logos::outline(*mark, *size), *angle, (center.x, center.y))
+        }
     }
 }
 
@@ -140,6 +151,8 @@ fn cost_of(shape: &Shape) -> usize {
         Shape::Stroke { pieces, .. } => pieces.iter().map(|p| p.len()).sum::<usize>() * 14,
         Shape::RoundedRect { .. } => 48,
         Shape::Text { text, .. } => text.len() * 160,
+        // A mark is a couple of glyphs' worth of curves.
+        Shape::Mark { .. } => 400,
     }
 }
 
@@ -181,7 +194,10 @@ impl PathCache {
                     window.paint_quad(fill(bounds, theme::hsla(*color)));
                     continue;
                 }
-                Shape::Stroke { color, .. } | Shape::RoundedRect { color, .. } | Shape::Text { color, .. } => *color,
+                Shape::Stroke { color, .. }
+                | Shape::RoundedRect { color, .. }
+                | Shape::Text { color, .. }
+                | Shape::Mark { color, .. } => *color,
             };
             let path = match key_of(shape) {
                 Some(key) => {

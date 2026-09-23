@@ -3,6 +3,8 @@
 use std::fmt::Write as _;
 
 use crate::font;
+use crate::geom::Pt;
+use crate::logos;
 use crate::render::scene::Shape;
 use crate::theme::Rgba;
 
@@ -55,30 +57,20 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                     center.y
                 );
             }
-            Shape::Text { text, scale, angle, center, color, .. } => {
-                let mut d = String::new();
-                for cmd in font::outline(text, *scale) {
-                    let (cx, cy) = (center.x, center.y);
-                    match cmd {
-                        font::Cmd::Move(x, y) => write!(d, "M{:.2} {:.2}", cx + x, cy + y),
-                        font::Cmd::Line(x, y) => write!(d, "L{:.2} {:.2}", cx + x, cy + y),
-                        font::Cmd::Quad { cx: qx, cy: qy, x, y } => {
-                            write!(d, "Q{:.2} {:.2} {:.2} {:.2}", cx + qx, cy + qy, cx + x, cy + y)
-                        }
-                        font::Cmd::Cubic { c1x, c1y, c2x, c2y, x, y } => write!(
-                            d,
-                            "C{:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
-                            cx + c1x,
-                            cy + c1y,
-                            cx + c2x,
-                            cy + c2y,
-                            cx + x,
-                            cy + y
-                        ),
-                        font::Cmd::Close => write!(d, "Z"),
-                    }
-                    .ok();
+            Shape::Mark { mark, size, angle, center, color } => {
+                let d = path_data(&logos::outline(*mark, *size), *center);
+                if !d.is_empty() {
+                    let _ = writeln!(
+                        s,
+                        r#"<path d="{d}" fill="{}" fill-rule="nonzero" transform="rotate({angle:.2} {:.2} {:.2})"/>"#,
+                        svg_color(*color),
+                        center.x,
+                        center.y
+                    );
                 }
+            }
+            Shape::Text { text, scale, angle, center, color, .. } => {
+                let d = path_data(&font::outline(text, *scale), *center);
                 if !d.is_empty() {
                     let _ = writeln!(
                         s,
@@ -93,4 +85,33 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
     }
     s.push_str("</svg>\n");
     s
+}
+
+/// Outline commands as SVG path data, laid down around `center`. Labels and
+/// marks are the same kind of outline by the time they reach here (#80).
+fn path_data(cmds: &[font::Cmd], center: Pt) -> String {
+    let (cx, cy) = (center.x, center.y);
+    let mut d = String::new();
+    for cmd in cmds {
+        match *cmd {
+            font::Cmd::Move(x, y) => write!(d, "M{:.2} {:.2}", cx + x, cy + y),
+            font::Cmd::Line(x, y) => write!(d, "L{:.2} {:.2}", cx + x, cy + y),
+            font::Cmd::Quad { cx: qx, cy: qy, x, y } => {
+                write!(d, "Q{:.2} {:.2} {:.2} {:.2}", cx + qx, cy + qy, cx + x, cy + y)
+            }
+            font::Cmd::Cubic { c1x, c1y, c2x, c2y, x, y } => write!(
+                d,
+                "C{:.2} {:.2} {:.2} {:.2} {:.2} {:.2}",
+                cx + c1x,
+                cy + c1y,
+                cx + c2x,
+                cy + c2y,
+                cx + x,
+                cy + y
+            ),
+            font::Cmd::Close => write!(d, "Z"),
+        }
+        .ok();
+    }
+    d
 }

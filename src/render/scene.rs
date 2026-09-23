@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::font;
+use crate::logos;
 use crate::geom::{Polyline, Pt, smoothstep};
 use crate::model::{BoardModel, Phase, RowKind, Rows, TRAIL_ROWS, Target};
 use crate::pr;
@@ -83,6 +84,9 @@ pub struct ChipStyle {
     pub min_w: f32,
     pub text_scale: f32,
     pub text_stroke: f32,
+    /// Side of the mark that rides inside the chip, or 0 for a chip that
+    /// carries none (#80).
+    pub logo: f32,
     /// How far the chip slides away from its socket when unplugged.
     pub pull: f32,
     pub wave_len: f32,
@@ -92,9 +96,21 @@ pub struct ChipStyle {
     pub notch: f32,
 }
 
+/// Space between the mark and the label it stands in front of.
+pub const LOGO_GAP: f32 = 5.0;
+
 impl ChipStyle {
     pub fn width(&self, label: &str) -> f32 {
-        self.min_w.max(font::measure(label, self.text_scale) + 2.0 * self.pad)
+        let extra = if self.logo > 0.0 { self.logo + LOGO_GAP } else { 0.0 };
+        (self.min_w + extra).max(font::measure(label, self.text_scale) + 2.0 * self.pad + extra)
+    }
+
+    /// Where the mark and the label sit along the chip's own axis, measured
+    /// from its centre: `[pad][mark][gap][label][pad]`.
+    pub fn slots(&self, label: &str, width: f32) -> (f32, f32) {
+        let text = font::measure(label, self.text_scale);
+        let mark = -width / 2.0 + self.pad + self.logo / 2.0;
+        (mark, width / 2.0 - self.pad - text / 2.0)
     }
 }
 
@@ -103,6 +119,7 @@ pub const SESSION_STYLE: ChipStyle = ChipStyle {
     r: 4.0,
     pad: 13.0,
     min_w: 56.0,
+    logo: 10.0,
     text_scale: 1.5,
     text_stroke: 1.45,
     pull: 16.0,
@@ -118,6 +135,10 @@ pub const SUB_STYLE: ChipStyle = ChipStyle {
     r: 3.0,
     pad: 9.0,
     min_w: 40.0,
+    // A subagent chip is 16 tall and sinks to 12 when it settles (#53). A
+    // mark in there would be mush, and its parent's chip already says whose
+    // agent it is.
+    logo: 0.0,
     text_scale: 1.1,
     text_stroke: 1.15,
     pull: 11.0,
@@ -232,6 +253,9 @@ pub enum Shape {
     Stroke { pieces: Vec<Vec<Pt>>, width: f32, color: Rgba },
     RoundedRect { center: Pt, w: f32, h: f32, r: f32, angle: f32, color: Rgba, stroke: Option<f32> },
     Text { text: String, scale: f32, stroke: f32, angle: f32, center: Pt, color: Rgba },
+    /// A service's mark inside a node, drawn from the same kind of outline a
+    /// label is (#80).
+    Mark { mark: logos::Mark, size: f32, angle: f32, center: Pt, color: Rgba },
 }
 
 impl Shape {
@@ -261,6 +285,10 @@ impl Shape {
                 *center = *center * z;
                 *scale *= z;
                 *stroke *= z;
+            }
+            Shape::Mark { center, size, .. } => {
+                *center = *center * z;
+                *size *= z;
             }
         }
     }
@@ -1000,12 +1028,25 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             color: fill_c,
             stroke: None,
         });
+        // The mark rides inside the chip, and the label steps aside for it.
+        // Both offsets run along the chip's own axis, since the chip is
+        // rotated onto its trace (#80).
+        let (mark_dx, text_dx) = st.slots(&c.label, c.width);
+        if st.logo > 0.0 {
+            out.push(Shape::Mark {
+                mark: logos::Mark::Claude,
+                size: st.logo,
+                angle,
+                center: center + c.tangent * mark_dx,
+                color: text_c,
+            });
+        }
         out.push(Shape::Text {
             text: c.label.clone(),
             scale: st.text_scale,
             stroke: st.text_stroke,
             angle,
-            center,
+            center: if st.logo > 0.0 { center + c.tangent * text_dx } else { center },
             color: text_c,
         });
     }

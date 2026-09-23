@@ -7,6 +7,9 @@ license = "MIT"
 
 [dependencies]
 gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
+# Flattens the chip marks into paths the board can draw, on screen and in an
+# `--svg` export alike (#79, #80). Already in the tree underneath gpui.
+usvg = "0.45"
 lyon = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -31,8 +34,3 @@ codegen-units = 1
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
-
-[dev-dependencies]
-# The same parser gpui renders the chip marks with, so a replacement that it
-# cannot read fails a test instead of turning up as an empty chip (#79).
-usvg = "0.45"
