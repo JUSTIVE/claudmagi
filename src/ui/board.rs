@@ -247,9 +247,17 @@ impl Board {
         self.lanes_moving = moving;
     }
 
+    /// How far down the board can be pushed.
+    ///
+    /// The status bar is drawn over the board's bottom edge, so what can be
+    /// seen is shorter than the window by that much, and scrolling has to run
+    /// that much further or the lowest lane never comes out from under it.
+    /// The bar is a fixed number of window pixels, so in design units it
+    /// grows as the board is zoomed out: past a zoom of about 0.88 it is
+    /// taller than `BOTTOM_PAD` and the last lane's connectors were being
+    /// clipped (#81).
     fn clamp_scroll(&mut self) {
-        let max = (self.layout.content_height() - self.layout.height).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max);
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll(&self.layout));
     }
 
     fn to_design(&self, p: gpui::Point<Pixels>) -> Pt {
@@ -757,6 +765,24 @@ impl Render for Board {
     }
 }
 
+/// How far down the board can be pushed.
+///
+/// The status bar is drawn over the board's bottom edge, so what can be seen
+/// is shorter than the window by that much, and the scroll has to run that
+/// much further or the lowest lane never comes out from under it. The bar is
+/// a fixed number of window pixels, so in the board's own units it grows as
+/// the board is zoomed out: past a zoom of about 0.88 it is taller than
+/// `BOTTOM_PAD`, and the last lane's connectors were being clipped (#81).
+fn max_scroll(layout: &Layout) -> f32 {
+    let visible = visible_height(layout);
+    (layout.content_height() - visible).max(0.0)
+}
+
+/// Board height the user can actually see, in design units.
+fn visible_height(layout: &Layout) -> f32 {
+    (layout.height - STATUS_H / layout.zoom).max(1.0)
+}
+
 /// Where a connector's tooltip goes: `(left, top, width)` in window pixels,
 /// from the connector's centre, its half height, the width the text would
 /// like, and the viewport. It sits above the connector and flips below when
@@ -862,6 +888,28 @@ mod tests {
     use super::*;
 
     const VP: (f32, f32) = (980.0, 620.0);
+
+    /// Pushed all the way down, the lowest lane has to be clear of the status
+    /// bar. The bar is a fixed number of window pixels, so zooming out makes
+    /// it taller in the board's own units, and it used to swallow the last
+    /// lane's connectors (#81).
+    #[test]
+    fn the_lowest_lane_clears_the_status_bar_at_every_zoom() {
+        for zoom in [0.5, 0.8, 1.0, 1.5, 3.0] {
+            for sessions in [0, 1, 6, 14, 30] {
+                let layout = Layout::new(VP.0, VP.1, sessions, zoom);
+                let visible = visible_height(&layout);
+                // The lowest thing on the board sits `BOTTOM_PAD` above where
+                // the content ends.
+                let lowest = layout.content_height() - scene::BOTTOM_PAD - max_scroll(&layout);
+                assert!(
+                    lowest + scene::PR_H / 2.0 <= visible,
+                    "zoom {zoom}, {sessions} sessions: the last lane reaches {lowest} of a visible {visible}"
+                );
+            }
+        }
+    }
+
     /// Half the height of a connector, at zoom 1.
     const HALF: f32 = scene::PR_H / 2.0;
 

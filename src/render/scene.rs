@@ -1106,7 +1106,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             pr::Look::Open => (None, Some(at(pal.text_on)), ink(0.85)),
             pr::Look::Approved => (Some(at(pal.text_on)), None, at(pal.ink)),
             pr::Look::Failing => (Some(at(pal.alarm)), None, at(pal.on_alarm)),
-            pr::Look::Merged => (Some(at(pal.chip)), None, at(pal.bg)),
+            pr::Look::Merged => (Some(at(pal.merged)), None, at(pal.on_merged)),
             pr::Look::Closed => (None, Some(ink(0.3)), ink(0.42)),
         };
         if c.hover > 0.01 {

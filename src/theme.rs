@@ -27,6 +27,12 @@ pub struct Palette {
     pub on_alarm: Rgba,
     /// Border on a PR whose CI is still running (#62).
     pub busy: Rgba,
+    /// A landed pull request, and the label that reads on it (#82). Its own
+    /// colour rather than the chip's black: merged is the one PR state that
+    /// is neither good news nor bad, and it is worth telling apart at a
+    /// glance from a session chip sitting on the same lane.
+    pub merged: Rgba,
+    pub on_merged: Rgba,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -44,6 +50,8 @@ pub const PALETTE: Palette = Palette {
     alarm: Rgba { r: 0.941, g: 0.290, b: 0.055, a: 1.0 },    // #F04A0E — a failing PR is orange (#58)
     on_alarm: Rgba { r: 0.070, g: 0.040, b: 0.020, a: 1.0 }, // ink, as on the orange needs-input chip
     busy: Rgba { r: 0.851, g: 0.643, b: 0.0, a: 1.0 },       // #D9A400 — yellow that still reads on white
+    merged: Rgba { r: 0.510, g: 0.314, b: 0.875, a: 1.0 },   // #8250DF — the purple a merged PR wears on GitHub
+    on_merged: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -64,6 +72,10 @@ pub const ORANGE: Palette = Palette {
     alarm: Rgba { r: 0.549, g: 0.114, b: 0.094, a: 1.0 }, // #8C1D18 — orange on orange is invisible
     on_alarm: AMBER_DIM,
     busy: Rgba { r: 1.0, g: 0.878, b: 0.400, a: 1.0 }, // #FFE066, bright against the orange board
+    // Deep enough to hold its own against the orange board, where the white
+    // board's purple would read as another warm blob.
+    merged: Rgba { r: 0.294, g: 0.161, b: 0.549, a: 1.0 }, // #4B298C
+    on_merged: Rgba { r: 0.937, g: 0.902, b: 1.0, a: 1.0 }, // #EFE6FF
     ..PALETTE
 };
 
@@ -78,6 +90,10 @@ pub const DARK: Palette = Palette {
     outline: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     ink: Rgba { r: 0.929, g: 0.906, b: 0.871, a: 1.0 },
     busy: Rgba { r: 0.949, g: 0.788, b: 0.298, a: 1.0 }, // #F2C94C, lifted for the dark board
+    // Lifted the way the rest of the dark board is, with the board's own
+    // near-black for the label on top.
+    merged: Rgba { r: 0.639, g: 0.443, b: 0.969, a: 1.0 }, // #A371F7
+    on_merged: Rgba { r: 0.078, g: 0.071, b: 0.063, a: 1.0 }, // #141210
     ..PALETTE
 };
 

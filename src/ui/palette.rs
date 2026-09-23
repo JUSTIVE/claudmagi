@@ -170,7 +170,7 @@ impl Style {
                     pr::Look::Open => body(None, Some(at(theme.text_on)), ink(0.85)),
                     pr::Look::Approved => body(Some(at(theme.text_on)), None, at(theme.ink)),
                     pr::Look::Failing => body(Some(at(theme.alarm)), None, at(theme.on_alarm)),
-                    pr::Look::Merged => body(Some(at(theme.chip)), None, at(theme.bg)),
+                    pr::Look::Merged => body(Some(at(theme.merged)), None, at(theme.on_merged)),
                     pr::Look::Closed => body(None, Some(ink(0.3)), ink(0.42)),
                 };
                 // CI in flight is a border laid over whatever it already is,
