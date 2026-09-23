@@ -76,7 +76,9 @@ impl Board {
             Which::Settings => "settings-close",
         };
         div()
-            .w(px(width))
+            // A panel wider than the window would push its own close button
+            // off the screen (#83).
+            .w(px(width.min(self.window.0 - 36.0).max(180.0)))
             .flex_none()
             .flex()
             .flex_col()

@@ -350,6 +350,26 @@ impl Layout {
         Self { zoom, width, height, bands, lanes }
     }
 
+    /// How far down the board actually reaches, given what is on it.
+    ///
+    /// `content_height` measures the lanes, and that is enough while chips
+    /// sit on their lane's first diagonal. A narrow window pushes them onto
+    /// later stripes, and every stripe drops its lane another `DIAG`, so the
+    /// lowest chip can end up well below where the lanes were reckoned to
+    /// end. Reckoning the bottom from what is drawn keeps the scroll honest
+    /// without padding every ordinary board with empty space. (#83)
+    pub fn board_bottom(&self, chips: &[ChipDraw], prs: &[PrDraw], tickets: &[TicketDraw]) -> f32 {
+        let mut low: f32 = self.content_height();
+        for c in chips {
+            let reach = (c.tangent.y * c.width / 2.0).abs() + (c.tangent.perp().y * c.style.h / 2.0).abs();
+            low = low.max(c.center.y + reach + BOTTOM_PAD);
+        }
+        for node in prs.iter().map(|p| p.center.y).chain(tickets.iter().map(|t| t.center.y)) {
+            low = low.max(node + PR_H / 2.0 + BOTTOM_PAD);
+        }
+        low
+    }
+
     pub fn content_height(&self) -> f32 {
         TOP_PAD + fanned_offset((self.lanes - LEAD_LANES) as i32, self.width) + DIAG + BOTTOM_PAD
     }
@@ -500,7 +520,15 @@ pub fn session_anchor(lane: &Lane, layout: &Layout, chip_w: f32) -> (f32, u32) {
         .find(|(p, _)| inside(layout, p.x, chip_w))
         .or_else(|| cands.iter().find(|(p, _)| p.x - chip_w / 2.0 >= layout.width * LEFT_BOUND))
         .unwrap_or_else(|| cands.last().unwrap());
-    (lane.path.nearest_s(pick.0), pick.1)
+    // A window can be narrow enough that no stripe holds the chip, and then
+    // both rules above give up and let it hang off the right. Staying on
+    // screen wins: a chip nobody can see is worse than one sitting where the
+    // lane labels live. Slide it back along its own 45°, so it keeps the
+    // diagonal it belongs to. (#83)
+    let (lo, hi) = (chip_w / 2.0 + EDGE_MARGIN, layout.width - chip_w / 2.0 - EDGE_MARGIN);
+    let x = if lo > hi { layout.width / 2.0 } else { pick.0.x.clamp(lo, hi) };
+    let at = pick.0 + Pt::new(x - pick.0.x, x - pick.0.x);
+    (lane.path.nearest_s(at), pick.1)
 }
 
 /// Signed arc-length shift of a session chip from its diagonal's midpoint:
@@ -1416,6 +1444,93 @@ mod tests {
         assert!(keys.iter().any(|k| *k >= 1), "some chips moved to the next stripe's diagonal");
         for d in &draws {
             assert!((d.tangent.angle_deg() - 45.0).abs() < 1.0, "{} rides a diagonal", d.label);
+        }
+    }
+
+    /// Nothing the board draws may hang off the window, at any size it can be
+    /// given. Chips ride a 45° diagonal, so the box that has to fit is the
+    /// rotated one (#83).
+    #[test]
+    fn nothing_is_drawn_off_screen_at_any_window_size() {
+        let now = Instant::now();
+        for (w, h) in [
+            (240.0, 200.0),
+            (320.0, 240.0),
+            (420.0, 300.0),
+            (560.0, 380.0),
+            (980.0, 620.0),
+            (1600.0, 900.0),
+            (2400.0, 1400.0),
+        ] {
+            for sessions in [1usize, 3, 9] {
+                let mut model = BoardModel::new();
+                let list: Vec<_> = (0..sessions as u32)
+                    .map(|i| {
+                        let mut s = SessionInfo::synthetic(i + 1, "FEATURE-REPORT", Phase::Working);
+                        s.prs = vec![pr::Pr::synthetic(8792, pr::Look::Merged)];
+                        s.ticket = Some(ticket::Ticket::synthetic(i, Some(ticket::Status::Started)));
+                        s
+                    })
+                    .collect();
+                model.apply(list, now);
+                model.settle();
+                let layout = Layout::new(w, h, model.slot_span(), 1.0);
+                let lanes = layout.build_lanes();
+                let chips = chip_draws(&model, &layout, &lanes, now);
+                let where_ = format!("{w}x{h}, {sessions} sessions");
+
+                for d in &chips {
+                    let (half_w, half_h) = (d.width / 2.0, d.style.h / 2.0);
+                    let (t, n) = (d.tangent, d.tangent.perp());
+                    let reach = (t.x * half_w).abs() + (n.x * half_h).abs();
+                    assert!(d.center.x - reach >= -1.0, "{} runs off the left at {where_}", d.label);
+                    assert!(d.center.x + reach <= layout.width + 1.0, "{} runs off the right at {where_}", d.label);
+                }
+                for c in pr_draws(&model, &layout, &lanes, &chips).iter() {
+                    assert!(c.center.x - c.width / 2.0 >= -1.0, "PR {} off the left at {where_}", c.label);
+                    assert!(
+                        c.center.x + c.width / 2.0 <= layout.width + 1.0,
+                        "PR {} off the right at {where_}",
+                        c.label
+                    );
+                }
+                // Anything drawn below where the board reckons its bottom
+                // can never be scrolled to, so it is as good as clipped.
+                // The bottom is derived from these same elements, so this
+                // half states the contract rather than discovering a breach
+                // — what it does catch is an element the reckoning forgets.
+                let prs = pr_draws(&model, &layout, &lanes, &chips);
+                let tickets = ticket_draws(&model, &lanes, &chips);
+                let floor = layout.board_bottom(&chips, &prs, &tickets);
+                for d in &chips {
+                    let reach = (d.tangent.y * d.width / 2.0).abs() + (d.tangent.perp().y * d.style.h / 2.0).abs();
+                    assert!(d.center.y + reach <= floor + 1.0, "{} sits below the content at {where_}", d.label);
+                    assert!(d.center.y - reach >= -1.0, "{} sits above the board at {where_}", d.label);
+                }
+                // The reckoning has to be doing something in a window this
+                // narrow, where chips are pushed onto stripes the lanes were
+                // never measured for.
+                if w <= 320.0 && sessions >= 9 {
+                    assert!(
+                        floor > layout.content_height() + 1.0,
+                        "at {where_} the chips reach past the lanes, and the bottom has to follow"
+                    );
+                }
+                for c in &prs {
+                    assert!(c.center.y + PR_H / 2.0 <= floor + 1.0, "PR {} is out of reach at {where_}", c.label);
+                }
+                for n in &tickets {
+                    assert!(n.center.y + PR_H / 2.0 <= floor + 1.0, "issue {} is out of reach at {where_}", n.label);
+                }
+                for n in &tickets {
+                    assert!(n.center.x - n.width / 2.0 >= -1.0, "issue {} off the left at {where_}", n.label);
+                    assert!(
+                        n.center.x + n.width / 2.0 <= layout.width + 1.0,
+                        "issue {} off the right at {where_}",
+                        n.label
+                    );
+                }
+            }
         }
     }
 

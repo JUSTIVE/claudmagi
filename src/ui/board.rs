@@ -86,6 +86,11 @@ pub struct Board {
     usage_error: Option<usage::UsageError>,
     /// What the live source wants said in the status bar (#67).
     source_note: Option<&'static str>,
+    /// How far down the last frame reached, so the scroll can get there even
+    /// when a narrow window has pushed chips onto later stripes (#83).
+    content_bottom: f32,
+    /// The window in pixels, for the chrome that has to fit inside it (#83).
+    pub(crate) window: (f32, f32),
     /// The ⌘K search over everything on the board (#71).
     pub(crate) palette: PaletteState,
 }
@@ -186,6 +191,8 @@ impl Board {
             usage: None,
             usage_error: None,
             source_note: None,
+            content_bottom: 0.0,
+            window: (scene::DESIGN_W, scene::DESIGN_H),
             palette: PaletteState::default(),
         }
     }
@@ -257,7 +264,7 @@ impl Board {
     /// taller than `BOTTOM_PAD` and the last lane's connectors were being
     /// clipped (#81).
     fn clamp_scroll(&mut self) {
-        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll(&self.layout));
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll(&self.layout, self.content_bottom));
     }
 
     fn to_design(&self, p: gpui::Point<Pixels>) -> Pt {
@@ -454,6 +461,7 @@ impl Render for Board {
         self.last_tick = now;
         let vp = window.viewport_size();
         let (w, h) = (f32::from(vp.width), f32::from(vp.height));
+        self.window = (w, h);
 
         self.model.tick(dt, now);
         self.ensure_lanes(w, h, now);
@@ -476,6 +484,8 @@ impl Render for Board {
         if let Some(i) = self.hovered_ticket {
             self.tickets[i].hover = 1.0;
         }
+        self.content_bottom = self.layout.board_bottom(&self.draws, &self.prs, &self.tickets);
+        self.clamp_scroll();
         let prs = self.prs.clone();
         let tickets = self.tickets.clone();
         let done_lanes = scene::done_lanes(&self.model, &self.draws);
@@ -760,7 +770,7 @@ impl Render for Board {
             })
             // The search sits over the board, near the top, where a palette
             // is looked for (#71).
-            .when(palette_open, |d| d.child(self.render_palette(cx)))
+            .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
             .when_some(pr_tip, |d, tip| d.child(tip))
     }
 }
@@ -773,9 +783,8 @@ impl Render for Board {
 /// a fixed number of window pixels, so in the board's own units it grows as
 /// the board is zoomed out: past a zoom of about 0.88 it is taller than
 /// `BOTTOM_PAD`, and the last lane's connectors were being clipped (#81).
-fn max_scroll(layout: &Layout) -> f32 {
-    let visible = visible_height(layout);
-    (layout.content_height() - visible).max(0.0)
+fn max_scroll(layout: &Layout, bottom: f32) -> f32 {
+    (bottom - visible_height(layout)).max(0.0)
 }
 
 /// Board height the user can actually see, in design units.
@@ -899,9 +908,10 @@ mod tests {
             for sessions in [0, 1, 6, 14, 30] {
                 let layout = Layout::new(VP.0, VP.1, sessions, zoom);
                 let visible = visible_height(&layout);
-                // The lowest thing on the board sits `BOTTOM_PAD` above where
-                // the content ends.
-                let lowest = layout.content_height() - scene::BOTTOM_PAD - max_scroll(&layout);
+                // With nothing on it the board reaches exactly as far as its
+                // lanes do, and the lowest thing sits `BOTTOM_PAD` above that.
+                let bottom = layout.content_height();
+                let lowest = bottom - scene::BOTTOM_PAD - max_scroll(&layout, bottom);
                 assert!(
                     lowest + scene::PR_H / 2.0 <= visible,
                     "zoom {zoom}, {sessions} sessions: the last lane reaches {lowest} of a visible {visible}"

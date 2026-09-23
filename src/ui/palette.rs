@@ -18,6 +18,24 @@ use crate::{logos, pr, ticket};
 use crate::ui::board::Board;
 
 pub const PALETTE_W: f32 = 520.0;
+/// Keeps the card off the window's edges, and off the status bar below it.
+const EDGE: f32 = 12.0;
+/// How tall one row comes out, for working out how many of them fit.
+const ROW_H: f32 = 26.0;
+/// The header with the query in it, and the footer with the keys.
+const CHROME_H: f32 = 62.0;
+
+/// How the card is laid out in a window of `(w, h)`: `(width, top, rows)`.
+/// A window can be smaller than the card wants to be, and a card that runs
+/// off the screen is worse than a short one, so width and row count both give
+/// way before the margins do. (#83)
+fn card_box(w: f32, h: f32) -> (f32, f32, usize) {
+    let width = PALETTE_W.min(w - 2.0 * EDGE).max(120.0);
+    let top = (h * 0.14).clamp(EDGE, 96.0);
+    let room = h - top - EDGE - CHROME_H - crate::ui::board::STATUS_H;
+    let rows = ((room / ROW_H).floor().max(1.0) as usize).min(MAX_ROWS);
+    (width, top, rows)
+}
 /// One size for every chip in the list, whatever it stands for (#79). On the
 /// board a connector is smaller than a session chip because it has less room;
 /// in a list that difference only reads as noise, and the mark inside says
@@ -410,10 +428,15 @@ impl Board {
         }
     }
 
-    pub(crate) fn render_palette(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_palette(&mut self, w: f32, h: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let (card_w, card_top, fits) = card_box(w, h);
         let query = self.palette.query.clone();
         let selected = self.palette.selected;
-        let rows: Vec<(usize, Entry)> = self.palette.results.iter().cloned().enumerate().collect();
+        // Only as many rows as the window has room for, keeping the selected
+        // one among them.
+        let first = self.palette.selected.saturating_sub(fits.saturating_sub(1));
+        let rows: Vec<(usize, Entry)> =
+            self.palette.results.iter().cloned().enumerate().skip(first).take(fits).collect();
         let empty = rows.is_empty();
 
         // `self.palette()` is the board's colours; `self.palette` is this
@@ -478,14 +501,14 @@ impl Board {
 
         div()
             .absolute()
-            .top(px(96.))
+            .top(px(card_top))
             .left_0()
             .right_0()
             .flex()
             .justify_center()
             .child(
                 div()
-                    .w(px(PALETTE_W))
+                    .w(px(card_w))
                     .flex()
                     .flex_col()
                     .rounded_lg()
@@ -642,6 +665,24 @@ mod tests {
                     assert_ne!(fill, body.text, "a label would vanish into its own body");
                 }
             }
+        }
+    }
+
+    /// The card has a size it would like and a window it has to live in, and
+    /// the window wins (#83).
+    #[test]
+    fn the_card_fits_whatever_window_it_opens_over() {
+        for (w, h) in [(300.0, 240.0), (420.0, 300.0), (620.0, 420.0), (980.0, 620.0), (2400.0, 1400.0)] {
+            let (width, top, rows) = card_box(w, h);
+            assert!(width <= w - 2.0 * EDGE + 0.01, "{w}x{h}: the card is wider than its window");
+            assert!(width <= PALETTE_W, "{w}x{h}: it never grows past the size it wants");
+            assert!(top >= EDGE, "{w}x{h}: it starts below the top edge");
+            assert!(rows >= 1, "{w}x{h}: a search with no rows is no search");
+            let used = top + CHROME_H + rows as f32 * ROW_H;
+            assert!(
+                used <= h - crate::ui::board::STATUS_H + 0.01,
+                "{w}x{h}: the card runs {used} into a window of {h}"
+            );
         }
     }
 
