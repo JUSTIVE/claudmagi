@@ -92,7 +92,7 @@ chain runs long. State comes from `gh pr view` on a small pool of worker threads
 inside the session poll — and the trace runs into the leftmost connector of
 that chain, where the body's colour
 is the whole signal — hollow draft, green outline open, filled green approved,
-orange failing, black merged, faint closed — with a yellow border laid over
+orange failing, purple merged, faint closed — with a yellow border laid over
 any of them while CI is still running. Hovering a connector puts the pull
 request's own title beside it, above where there is room and below where there
 is not, and never off the edge of the window (#77).
