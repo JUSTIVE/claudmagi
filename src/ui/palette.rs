@@ -18,6 +18,9 @@ use crate::{pr, ticket};
 use crate::ui::board::Board;
 
 pub const PALETTE_W: f32 = 520.0;
+/// Width the node column reserves, so the details line up under each other
+/// however wide the chips come out (#78).
+const CHIP_COL: f32 = 156.0;
 /// How many matches the list shows at once.
 const MAX_ROWS: usize = 9;
 
@@ -122,42 +125,66 @@ pub(crate) fn card_bg(theme: Palette) -> Rgba {
     theme::with_alpha(theme::lerp(theme.bg, theme.ink, CARD_LIFT), CARD_ALPHA)
 }
 
-/// What the board would draw for this node. The row's dot copies it: filled
-/// where the board fills and outlined where it outlines (#58), in the colour
-/// it would wear out there. The themes have already solved reading these
-/// against their own boards — the orange board's waiting chip is maroon
-/// precisely because orange on orange vanishes — and the card is that board
-/// lifted 7%, so nothing needs adjusting on the way in. (#76)
+/// What the board would draw for this node, so the row can draw the same
+/// thing. The colours come from `scene`'s own tables, untouched: the themes
+/// have already solved reading these against their own boards — the orange
+/// board's waiting chip is maroon precisely because orange on orange vanishes
+/// — and the card is that board lifted 7%. (#76, #78)
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Style {
     /// A session chip in one of its phases.
     Chip(Phase),
-    /// A pull request connector (#57).
-    Pr(pr::Look),
+    /// A pull request connector, and whether CI is still going (#57, #62).
+    Pr(pr::Look, bool),
     /// The Linear node at the head of a lane; `None` before Orca answers.
     Ticket(Option<ticket::Status>),
 }
 
+/// A node's body: fill, outline, and the label that goes on it. `None` where
+/// the board leaves it off, which is how filled reads as further along than
+/// outlined (#58).
+pub struct Body {
+    pub fill: Option<gpui::Hsla>,
+    pub border: Option<gpui::Hsla>,
+    pub text: gpui::Hsla,
+}
+
 impl Style {
-    /// `(filled, colour)`, from the same tables `scene` paints with.
-    fn dot(self, theme: Palette) -> (bool, gpui::Hsla) {
+    fn body(self, theme: Palette) -> Body {
         let at = theme::hsla;
         let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
+        let body = |fill, border, text| Body { fill, border, text };
         match self {
-            Style::Chip(Phase::Working) => (true, at(theme.chip)),
-            Style::Chip(Phase::NeedsUser) => (true, at(theme.chip_needs)),
-            Style::Chip(Phase::Idle) => (true, at(theme.chip_idle)),
-            Style::Pr(pr::Look::Draft) => (false, ink(0.8)),
-            Style::Pr(pr::Look::Open) => (false, at(theme.text_on)),
-            Style::Pr(pr::Look::Approved) => (true, at(theme.text_on)),
-            Style::Pr(pr::Look::Failing) => (true, at(theme.alarm)),
-            Style::Pr(pr::Look::Merged) => (true, at(theme.chip)),
-            Style::Pr(pr::Look::Closed) => (false, ink(0.3)),
-            Style::Ticket(Some(ticket::Status::Started)) => (true, at(theme.text_idle)),
-            Style::Ticket(Some(ticket::Status::Done)) => (true, at(theme.chip)),
-            Style::Ticket(Some(ticket::Status::Cancelled)) => (false, ink(0.3)),
-            Style::Ticket(Some(ticket::Status::Todo)) => (false, ink(0.8)),
-            Style::Ticket(None | Some(ticket::Status::Backlog)) => (false, ink(0.45)),
+            // A plugged-in chip wears the board's chip colour; one that has
+            // pulled out of its socket wears the colour of why it did.
+            Style::Chip(Phase::Working) => body(Some(at(theme.chip)), None, at(theme.text_on)),
+            Style::Chip(Phase::NeedsUser) => body(Some(at(theme.chip_needs)), None, at(theme.text_needs)),
+            Style::Chip(Phase::Idle) => body(Some(at(theme.chip_idle)), None, at(theme.text_idle)),
+            Style::Pr(look, running) => {
+                let mut out = match look {
+                    pr::Look::Draft => body(None, Some(ink(0.8)), ink(0.85)),
+                    pr::Look::Open => body(None, Some(at(theme.text_on)), ink(0.85)),
+                    pr::Look::Approved => body(Some(at(theme.text_on)), None, at(theme.ink)),
+                    pr::Look::Failing => body(Some(at(theme.alarm)), None, at(theme.on_alarm)),
+                    pr::Look::Merged => body(Some(at(theme.chip)), None, at(theme.bg)),
+                    pr::Look::Closed => body(None, Some(ink(0.3)), ink(0.42)),
+                };
+                // CI in flight is a border laid over whatever it already is,
+                // never a look of its own (#62).
+                if running {
+                    out.border = Some(at(theme.busy));
+                }
+                out
+            }
+            Style::Ticket(Some(ticket::Status::Started)) => {
+                body(Some(at(theme.text_idle)), None, at(theme.ink))
+            }
+            Style::Ticket(Some(ticket::Status::Done)) => body(Some(at(theme.chip)), None, at(theme.bg)),
+            Style::Ticket(Some(ticket::Status::Cancelled)) => body(None, Some(ink(0.3)), ink(0.42)),
+            Style::Ticket(Some(ticket::Status::Todo)) => body(Some(ink(0.10)), Some(ink(0.8)), ink(0.85)),
+            Style::Ticket(None | Some(ticket::Status::Backlog)) => {
+                body(Some(ink(0.10)), Some(ink(0.45)), ink(0.6))
+            }
         }
     }
 }
@@ -171,21 +198,6 @@ pub enum Kind {
     Session,
     Ticket,
     Pr,
-}
-
-impl Kind {
-    /// The node's shape on the board, as close as a glyph gets, hollow when
-    /// the board would draw it as an outline.
-    fn glyph(self, filled: bool) -> &'static str {
-        match (self, filled) {
-            (Kind::Session, true) => "▪",
-            (Kind::Session, false) => "▫",
-            (Kind::Ticket, true) => "◆",
-            (Kind::Ticket, false) => "◇",
-            (Kind::Pr, true) => "●",
-            (Kind::Pr, false) => "○",
-        }
-    }
 }
 
 /// What picking a row does: the same thing clicking that node does.
@@ -313,7 +325,7 @@ impl Board {
                 seen.push(key);
                 out.push(Entry {
                     kind: Kind::Pr,
-                    style: Style::Pr(pr.look()),
+                    style: Style::Pr(pr.look(), pr.running()),
                     detail: format!("{} · {}", pr.id.repo, pr.title),
                     action: Action::Open {
                         label: label.clone(),
@@ -407,22 +419,37 @@ impl Board {
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .py_1()
+                    .py_0p5()
                     .cursor_pointer()
                     .when(on, |d| d.bg(sel_bg))
                     .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
+                    // The row *is* the node: same body, same label colour,
+                    // and a session chip stands taller than a connector the
+                    // way it does out on the board (#78).
                     .child({
-                        let (filled, colour) = entry.style.dot(theme);
-                        div().w(px(12.)).flex_none().text_size(px(12.)).text_color(colour).child(entry.kind.glyph(filled))
-                    })
-                    .child(
+                        let body = entry.style.body(theme);
+                        let session = entry.kind == Kind::Session;
                         div()
-                            .w(px(132.))
+                            .w(px(CHIP_COL))
                             .flex_none()
-                            .overflow_hidden()
-                            .text_color(at(if on { 1.0 } else { 0.85 }))
-                            .child(entry.label.clone()),
-                    )
+                            .flex()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .h(px(if session { 22. } else { 17. }))
+                                    .px(px(if session { 10. } else { 7. }))
+                                    .min_w(px(if session { 56. } else { 30. }))
+                                    .rounded(px(if session { 4. } else { 3. }))
+                                    .when_some(body.fill, |d, c| d.bg(c))
+                                    .when_some(body.border, |d, c| d.border_1().border_color(c))
+                                    .text_size(px(if session { 12. } else { 10. }))
+                                    .text_color(body.text)
+                                    .overflow_hidden()
+                                    .child(entry.label.clone()),
+                            )
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -538,37 +565,71 @@ mod tests {
     }
 
     /// The board's one law about connectors: filled is always further along
-    /// than outlined (#58). The row's dot repeats it, so a glance down the
-    /// list sorts landed from pending without reading a word (#76).
+    /// than outlined (#58). A row is the node, so the law holds there too and
+    /// a glance down the list sorts landed from pending (#76, #78).
     #[test]
-    fn a_filled_dot_always_means_further_along() {
-        let filled = |s: Style| s.dot(theme::PALETTE).0;
+    fn a_filled_body_always_means_further_along() {
+        let filled = |s: Style| s.body(theme::PALETTE).fill.is_some();
         for done in [pr::Look::Approved, pr::Look::Failing, pr::Look::Merged] {
-            assert!(filled(Style::Pr(done)), "{done:?} is filled on the board");
+            assert!(filled(Style::Pr(done, false)), "{done:?} is filled on the board");
         }
         for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Closed] {
-            assert!(!filled(Style::Pr(pending)), "{pending:?} is an outline on the board");
+            assert!(!filled(Style::Pr(pending, false)), "{pending:?} is an outline on the board");
         }
         assert!(filled(Style::Ticket(Some(ticket::Status::Started))));
         assert!(filled(Style::Ticket(Some(ticket::Status::Done))));
-        for early in [ticket::Status::Backlog, ticket::Status::Todo, ticket::Status::Cancelled] {
-            assert!(!filled(Style::Ticket(Some(early))), "{early:?} is an outline on the board");
-        }
-        assert!(!filled(Style::Ticket(None)), "an issue Orca has not answered for yet");
+        assert!(!filled(Style::Ticket(Some(ticket::Status::Cancelled))));
         for phase in Phase::ALL {
             assert!(filled(Style::Chip(phase)), "a chip is a solid thing in every phase");
         }
     }
 
-    /// Every phase has to be told apart by the dot alone, since the word that
-    /// used to say so is gone (#76).
+    /// Running CI is a border over whatever the pull request already is, not
+    /// a look of its own (#62).
     #[test]
-    fn each_phase_gets_its_own_chip_colour() {
+    fn ci_in_flight_borders_a_body_without_replacing_it() {
+        for look in pr::Look::ALL {
+            let (calm, busy) = (Style::Pr(look, false).body(theme::PALETTE), Style::Pr(look, true).body(theme::PALETTE));
+            assert_eq!(calm.fill, busy.fill, "{look:?} keeps its body while CI runs");
+            assert_eq!(busy.border, Some(theme::hsla(theme::PALETTE.busy)), "{look:?} takes the border");
+        }
+    }
+
+    /// Every phase has to be told apart by the chip alone, since the word
+    /// that used to say so is gone (#76).
+    #[test]
+    fn each_phase_gets_its_own_chip_colours() {
         for t in THEMES {
-            let colours: Vec<gpui::Hsla> = Phase::ALL.iter().map(|p| Style::Chip(*p).dot(t).1).collect();
-            for (i, a) in colours.iter().enumerate() {
-                for b in &colours[i + 1..] {
-                    assert_ne!(a, b, "two phases would draw the same dot");
+            let bodies: Vec<(Option<gpui::Hsla>, gpui::Hsla)> =
+                Phase::ALL.iter().map(|p| Style::Chip(*p).body(t)).map(|b| (b.fill, b.text)).collect();
+            for (i, a) in bodies.iter().enumerate() {
+                for b in &bodies[i + 1..] {
+                    assert_ne!(a, b, "two phases would draw the same chip");
+                }
+            }
+        }
+    }
+
+    /// A label has to read on the body it is printed on, and the board's own
+    /// pairings are the ones being copied, so this catches a theme that
+    /// pairs a colour with itself rather than any judgement about taste.
+    #[test]
+    fn a_label_never_lands_on_its_own_colour() {
+        for t in THEMES {
+            let styles = [
+                Style::Chip(Phase::Working),
+                Style::Chip(Phase::NeedsUser),
+                Style::Chip(Phase::Idle),
+                Style::Pr(pr::Look::Merged, false),
+                Style::Pr(pr::Look::Approved, false),
+                Style::Pr(pr::Look::Failing, false),
+                Style::Ticket(Some(ticket::Status::Started)),
+                Style::Ticket(Some(ticket::Status::Done)),
+            ];
+            for s in styles {
+                let body = s.body(t);
+                if let Some(fill) = body.fill {
+                    assert_ne!(fill, body.text, "a label would vanish into its own body");
                 }
             }
         }
