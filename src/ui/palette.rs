@@ -10,17 +10,21 @@
 //! on top of the base. Typing `pjm-20` puts the tickets that carry it whole
 //! above anything that merely owns those six letters somewhere.
 
-use gpui::{ClickEvent, Context, KeyDownEvent, MouseButton, SharedString, div, prelude::*, px};
+use gpui::{ClickEvent, Context, KeyDownEvent, MouseButton, SharedString, div, prelude::*, px, svg};
 
 use crate::model::{Phase, Target};
 use crate::theme::{self, Palette, Rgba};
-use crate::{pr, ticket};
+use crate::{logos, pr, ticket};
 use crate::ui::board::Board;
 
 pub const PALETTE_W: f32 = 520.0;
-/// Width the node column reserves, so the details line up under each other
-/// however wide the chips come out (#78).
-const CHIP_COL: f32 = 156.0;
+/// One size for every chip in the list, whatever it stands for (#79). On the
+/// board a connector is smaller than a session chip because it has less room;
+/// in a list that difference only reads as noise, and the mark inside says
+/// what the node is far better than its height did.
+const CHIP_W: f32 = 150.0;
+const CHIP_H: f32 = 20.0;
+const LOGO: f32 = 11.0;
 /// How many matches the list shows at once.
 const MAX_ROWS: usize = 9;
 
@@ -198,6 +202,17 @@ pub enum Kind {
     Session,
     Ticket,
     Pr,
+}
+
+impl Kind {
+    /// The mark that goes inside the chip: whose thing this is (#79).
+    fn logo(self) -> &'static str {
+        match self {
+            Kind::Session => logos::CLAUDE_PATH,
+            Kind::Ticket => logos::LINEAR_PATH,
+            Kind::Pr => logos::GITHUB_PATH,
+        }
+    }
 }
 
 /// What picking a row does: the same thing clicking that node does.
@@ -423,32 +438,27 @@ impl Board {
                     .cursor_pointer()
                     .when(on, |d| d.bg(sel_bg))
                     .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
-                    // The row *is* the node: same body, same label colour,
-                    // and a session chip stands taller than a connector the
-                    // way it does out on the board (#78).
+                    // The row *is* the node: the same body the board would
+                    // give it (#78), at one size for every kind, with the
+                    // mark of the service it belongs to inside (#79).
                     .child({
                         let body = entry.style.body(theme);
-                        let session = entry.kind == Kind::Session;
                         div()
-                            .w(px(CHIP_COL))
                             .flex_none()
                             .flex()
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .h(px(if session { 22. } else { 17. }))
-                                    .px(px(if session { 10. } else { 7. }))
-                                    .min_w(px(if session { 56. } else { 30. }))
-                                    .rounded(px(if session { 4. } else { 3. }))
-                                    .when_some(body.fill, |d, c| d.bg(c))
-                                    .when_some(body.border, |d, c| d.border_1().border_color(c))
-                                    .text_size(px(if session { 12. } else { 10. }))
-                                    .text_color(body.text)
-                                    .overflow_hidden()
-                                    .child(entry.label.clone()),
-                            )
+                            .items_center()
+                            .gap(px(5.))
+                            .w(px(CHIP_W))
+                            .h(px(CHIP_H))
+                            .px(px(7.))
+                            .rounded(px(4.))
+                            .when_some(body.fill, |d, c| d.bg(c))
+                            .when_some(body.border, |d, c| d.border_1().border_color(c))
+                            .text_size(px(11.))
+                            .text_color(body.text)
+                            .overflow_hidden()
+                            .child(svg().path(entry.kind.logo()).size(px(LOGO)).flex_none().text_color(body.text))
+                            .child(entry.label.clone())
                     })
                     .child(
                         div()
