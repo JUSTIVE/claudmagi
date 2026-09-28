@@ -245,6 +245,13 @@ pub enum Action {
 #[derive(Clone)]
 pub struct Entry {
     pub kind: Kind,
+    /// The session this belongs to. A PR number is often all anyone
+    /// remembers, and finding it should bring its issue and its session along
+    /// (#85).
+    pub owner: usize,
+    /// True when this row came along with a match rather than matching
+    /// itself.
+    pub related: bool,
     pub label: String,
     /// Where the node stands, said the way the board says it (#75, #76).
     pub style: Style,
@@ -283,6 +290,46 @@ pub struct PaletteState {
     pub results: Vec<Entry>,
 }
 
+/// The rows a query earns, best lane first.
+///
+/// A hit brings its lane with it: a pull request number is often all anybody
+/// remembers, and from there the issue and the session are what was actually
+/// wanted (#85). Lanes are ranked by their best hit, and inside a lane the hit
+/// leads with the rest stepped in behind it. Board order breaks ties, so an
+/// empty query reads top to bottom the way the lanes do.
+fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
+    let scores: Vec<Option<i32>> = entries.iter().map(|e| e.score(query)).collect();
+    let mut lanes: Vec<(i32, usize, usize)> = Vec::new(); // best score, anchor, owner
+    for (i, (e, s)) in entries.iter().zip(&scores).enumerate() {
+        let Some(s) = *s else { continue };
+        match lanes.iter_mut().find(|(_, _, owner)| *owner == e.owner) {
+            Some(lane) if s > lane.0 => *lane = (s, i, e.owner),
+            Some(_) => {}
+            None => lanes.push((s, i, e.owner)),
+        }
+    }
+    lanes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    let mut out: Vec<Entry> = Vec::new();
+    for (_, anchor, owner) in lanes {
+        if out.len() >= MAX_ROWS {
+            break;
+        }
+        out.push(entries[anchor].clone());
+        for (i, e) in entries.iter().enumerate() {
+            if i == anchor || e.owner != owner || out.len() >= MAX_ROWS {
+                continue;
+            }
+            let mut e = e.clone();
+            // Only what came along for the ride is stepped in; something that
+            // matched on its own is a hit like any other.
+            e.related = scores[i].is_none();
+            out.push(e);
+        }
+    }
+    out
+}
+
 impl Board {
     pub(crate) fn toggle_palette(&mut self) {
         self.palette.open = !self.palette.open;
@@ -299,17 +346,7 @@ impl Board {
             return;
         }
         let query = self.palette.query.clone();
-        let mut scored: Vec<(i32, usize, Entry)> = self
-            .palette_entries()
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, e)| e.score(&query).map(|s| (s, i, e)))
-            .collect();
-        // Board order breaks ties, so an unfiltered list reads top to bottom
-        // the way the lanes do.
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        scored.truncate(MAX_ROWS);
-        self.palette.results = scored.into_iter().map(|(_, _, e)| e).collect();
+        self.palette.results = rank(self.palette_entries(), &query);
         self.palette.selected = self.palette.selected.min(self.palette.results.len().saturating_sub(1));
     }
 
@@ -325,6 +362,8 @@ impl Board {
             out.push(Entry {
                 kind: Kind::Session,
                 style: Style::Chip(info.phase()),
+                    owner: i,
+                    related: false,
                 detail: info.short_cwd(),
                 action: Action::Session(i),
                 fields: vec![label.clone(), info.short_cwd(), info.group_label()],
@@ -337,6 +376,8 @@ impl Board {
                     out.push(Entry {
                         kind: Kind::Ticket,
                         label: t.key.clone(),
+                        owner: i,
+                        related: false,
                         style: Style::Ticket(t.status),
                         detail: t.title.clone(),
                         action: Action::Open {
@@ -359,6 +400,8 @@ impl Board {
                 out.push(Entry {
                     kind: Kind::Pr,
                     style: Style::Pr(pr.look(), pr.running()),
+                    owner: i,
+                    related: false,
                     detail: format!("{} · {}", pr.id.repo, pr.title),
                     action: Action::Open {
                         label: label.clone(),
@@ -461,6 +504,17 @@ impl Board {
                     .cursor_pointer()
                     .when(on, |d| d.bg(sel_bg))
                     .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
+                    // A row that came along with a hit is stepped in behind
+                    // it, so the thing actually searched for still leads
+                    // (#85).
+                    .child(
+                        div()
+                            .w(px(11.))
+                            .flex_none()
+                            .text_size(px(10.))
+                            .text_color(at(0.35))
+                            .child(if entry.related { "\u{21b3}" } else { "" }),
+                    )
                     // The row *is* the node: the same body the board would
                     // give it (#78), at one size for every kind, with the
                     // mark of the service it belongs to inside (#79).
@@ -488,7 +542,7 @@ impl Board {
                             .flex_1()
                             .overflow_hidden()
                             .text_size(px(10.))
-                            .text_color(at(0.55))
+                            .text_color(at(if entry.related { 0.4 } else { 0.55 }))
                             .child(entry.detail.clone()),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -684,6 +738,72 @@ mod tests {
                 "{w}x{h}: the card runs {used} into a window of {h}"
             );
         }
+    }
+
+    fn entry(owner: usize, kind: Kind, label: &str, fields: &[&str]) -> Entry {
+        Entry {
+            kind,
+            owner,
+            related: false,
+            label: label.into(),
+            style: Style::Chip(Phase::Working),
+            detail: String::new(),
+            action: Action::Session(owner),
+            fields: fields.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// One lane's worth of board: the session, its issue, its pull request.
+    fn lane(owner: usize, name: &str, key: &str, pr: &str) -> Vec<Entry> {
+        vec![
+            entry(owner, Kind::Session, name, &[name]),
+            entry(owner, Kind::Ticket, key, &[key]),
+            entry(owner, Kind::Pr, &format!("#{pr}"), &[&format!("#{pr}"), pr]),
+        ]
+    }
+
+    /// The ask behind #85: a number is all anybody remembers, and what they
+    /// wanted was the work around it.
+    #[test]
+    fn a_hit_brings_its_lane_along() {
+        let mut all = lane(0, "PJM-2033", "PJM-2033", "9052");
+        all.extend(lane(1, "CREPE-7F", "PJM-2042", "8760"));
+        let out = rank(all, "9052");
+
+        assert_eq!(out.len(), 3, "only the lane that owns 9052");
+        assert_eq!(out[0].label, "#9052", "the hit leads");
+        assert!(!out[0].related);
+        let rest: Vec<&str> = out[1..].iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(rest, vec!["PJM-2033", "PJM-2033"], "its session and its issue follow");
+        assert!(out[1..].iter().all(|e| e.related), "they came along rather than matched");
+    }
+
+    #[test]
+    fn the_best_member_of_a_lane_is_the_one_that_leads_it() {
+        let out = rank(lane(0, "PJM-2033", "PJM-2033", "9052"), "pjm-2033");
+        assert_eq!(out[0].label, "PJM-2033");
+        assert!(!out[0].related && !out[1].related, "both the session and the issue matched on their own");
+        assert!(out.iter().any(|e| e.label == "#9052" && e.related), "the pull request rides along");
+    }
+
+    #[test]
+    fn a_lane_nothing_matched_in_stays_out() {
+        let mut all = lane(0, "PJM-2033", "PJM-2033", "9052");
+        all.extend(lane(1, "CREPE-7F", "PJM-2042", "8760"));
+        let out = rank(all, "8760");
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|e| e.owner == 1), "the other lane is not on screen at all");
+    }
+
+    #[test]
+    fn an_empty_query_keeps_the_board_order_and_marks_nothing_as_a_tagalong() {
+        let mut all = lane(0, "PJM-2033", "PJM-2033", "9052");
+        all.extend(lane(1, "CREPE-7F", "PJM-2042", "8760"));
+        let out = rank(all, "");
+        assert_eq!(out.len(), 6);
+        assert!(out.iter().all(|e| !e.related));
+        let owners: Vec<usize> = out.iter().map(|e| e.owner).collect();
+        assert_eq!(owners, vec![0, 0, 0, 1, 1, 1], "lanes stay together, in board order");
     }
 
     #[test]
