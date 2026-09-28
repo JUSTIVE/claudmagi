@@ -20,8 +20,8 @@ use crate::theme::{self, Palette, Rgba};
 pub const GAP: f32 = 22.0;
 pub const PAIR_GAP: f32 = 24.0;
 pub const LINE_W: f32 = 1.6;
-/// A lane whose work finished end to end is drawn bold (#61).
-pub const DONE_LINE_W: f32 = 2.9;
+/// A lane with a session working on it is drawn bold (#61, #84).
+pub const ACTIVE_LINE_W: f32 = 2.9;
 /// Vertical drop of a diagonal. The first diagonal of lane `i` is
 /// `DIAG + i * DIAG_GROWTH` (clamped to `DIAG_MIN` and to what fits before
 /// the next stripe), so the traces fan out from top to bottom (#45); every
@@ -235,7 +235,7 @@ pub struct Frame {
     pub prs: Vec<PrDraw>,
     /// Linear issue nodes at the head of each lane (#57).
     pub tickets: Vec<TicketDraw>,
-    /// Lanes drawn bold because their work is finished end to end (#61).
+    /// Lanes drawn green because their work is finished end to end (#61, #84).
     pub done_lanes: Vec<usize>,
     pub scroll_y: f32,
     pub t: f32,
@@ -805,7 +805,7 @@ pub fn ticket_draws(model: &BoardModel, lanes: &[Lane], chips: &[ChipDraw]) -> V
 
 /// Lanes whose work is finished end to end — the Linear issue is done, the
 /// pull request landed, and the session has gone quiet. Nothing is left to do
-/// on them, so their trace is drawn bold (#61).
+/// on them, so their trace goes green (#61, #84).
 pub fn done_lanes(model: &BoardModel, chips: &[ChipDraw]) -> Vec<usize> {
     chips
         .iter()
@@ -956,12 +956,18 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         };
         let pieces: Vec<Vec<Pt>> =
             pieces.into_iter().map(|piece| piece.into_iter().map(to_screen).collect()).collect();
-        let width = if f.done_lanes.contains(&li) { DONE_LINE_W } else { LINE_W };
-        out.push(Shape::Stroke { pieces, width, color: pal.line });
-
+        // Bold while somebody is working on it, green once the whole lane is
+        // finished: weight says "happening now", colour says "over" (#84).
+        // Any session chip on the lane, not merely the first one there: a
+        // subagent can sort ahead of its parent, and then the lane read as
+        // idle however hard the session was working. The packets were reading
+        // it that way too (#84).
         let working = chips
-            .first()
-            .is_some_and(|c| matches!(c.target, Target::Session(_)) && c.phase == Phase::Working && c.alpha > 0.5);
+            .iter()
+            .any(|c| matches!(c.target, Target::Session(_)) && c.phase == Phase::Working && c.alpha > 0.5);
+        let width = if working { ACTIVE_LINE_W } else { LINE_W };
+        let color = if f.done_lanes.contains(&li) { pal.done } else { pal.line };
+        out.push(Shape::Stroke { pieces, width, color });
         let (spacing, speed, size, alpha) = if working {
             (104.0, 96.0, (7.0, 3.0), 1.0)
         } else {
@@ -1531,6 +1537,43 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Weight says "happening now", colour says "over" — and the two are
+    /// independent, so a lane that is both working and finished shows both
+    /// (#84).
+    #[test]
+    fn a_lane_is_bold_while_it_works_and_green_once_it_is_finished() {
+        let now = Instant::now();
+        let finished = |phase| {
+            let mut s = SessionInfo::synthetic(1, "PJM-1", phase);
+            s.prs = vec![pr::Pr::synthetic(1, pr::Look::Merged)];
+            s.ticket = Some(ticket::Ticket::synthetic(1, Some(ticket::Status::Done)));
+            s
+        };
+        let cases = [
+            (SessionInfo::synthetic(1, "PJM-1", Phase::Working), true, false),
+            (SessionInfo::synthetic(1, "PJM-1", Phase::Idle), false, false),
+            (SessionInfo::synthetic(1, "PJM-1", Phase::NeedsUser), false, false),
+            (finished(Phase::Idle), false, true),
+            (finished(Phase::Working), true, false),
+        ];
+        for (info, bold, green) in cases {
+            let label = format!("{:?}", info.phase());
+            let mut model = BoardModel::new();
+            model.apply(vec![info], now);
+            model.settle();
+            let layout = Layout::new(DESIGN_W, DESIGN_H, model.slot_span(), 1.0);
+            let lanes = layout.build_lanes();
+            let chips = chip_draws(&model, &layout, &lanes, now);
+            let lane = chips.first().expect("a chip").lane;
+            let done = done_lanes(&model, &chips);
+            assert_eq!(done.contains(&lane), green, "{label}: green when the whole lane is finished");
+            let working = chips
+                .first()
+                .is_some_and(|c| matches!(c.target, Target::Session(_)) && c.phase == Phase::Working && c.alpha > 0.5);
+            assert_eq!(working, bold, "{label}: bold while a session works");
         }
     }
 

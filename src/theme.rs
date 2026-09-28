@@ -33,6 +33,9 @@ pub struct Palette {
     /// glance from a session chip sitting on the same lane.
     pub merged: Rgba,
     pub on_merged: Rgba,
+    /// A lane whose work finished end to end (#84). The chip greens are made
+    /// to sit on a chip; this one has to read as a hairline on the board.
+    pub done: Rgba,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -52,6 +55,7 @@ pub const PALETTE: Palette = Palette {
     busy: Rgba { r: 0.851, g: 0.643, b: 0.0, a: 1.0 },       // #D9A400 — yellow that still reads on white
     merged: Rgba { r: 0.510, g: 0.314, b: 0.875, a: 1.0 },   // #8250DF — the purple a merged PR wears on GitHub
     on_merged: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+    done: Rgba { r: 0.078, g: 0.545, b: 0.318, a: 1.0 },     // #148B51 — deep enough to read as a line on white
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -76,6 +80,7 @@ pub const ORANGE: Palette = Palette {
     // board's purple would read as another warm blob.
     merged: Rgba { r: 0.294, g: 0.161, b: 0.549, a: 1.0 }, // #4B298C
     on_merged: Rgba { r: 0.937, g: 0.902, b: 1.0, a: 1.0 }, // #EFE6FF
+    done: Rgba { r: 0.055, g: 0.318, b: 0.196, a: 1.0 }, // #0E5132 — a lighter green disappears into orange
     ..PALETTE
 };
 
@@ -94,6 +99,7 @@ pub const DARK: Palette = Palette {
     // near-black for the label on top.
     merged: Rgba { r: 0.639, g: 0.443, b: 0.969, a: 1.0 }, // #A371F7
     on_merged: Rgba { r: 0.078, g: 0.071, b: 0.063, a: 1.0 }, // #141210
+    done: Rgba { r: 0.231, g: 0.890, b: 0.541, a: 1.0 }, // #3BE38A — the board's own green, lifted for the dark
     ..PALETTE
 };
 
