@@ -124,6 +124,45 @@ pub fn lerp(a: Rgba, b: Rgba, t: f32) -> Rgba {
     }
 }
 
+/// Relative luminance, and WCAG's contrast ratio from it.
+pub fn luma(c: Rgba) -> f32 {
+    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+}
+
+pub fn contrast(a: Rgba, b: Rgba) -> f32 {
+    let (hi, lo) = if luma(a) > luma(b) { (luma(a), luma(b)) } else { (luma(b), luma(a)) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// `colour` made to read against `on`, by mixing in as little `ink` as the
+/// background allows.
+///
+/// A chip fills itself, so the palette's chip colours only ever have to read
+/// against their own chip. Draw one straight onto the board instead — which
+/// is what the comb does, its cells being outlines with nothing behind them
+/// (#86) — and the pairing can collapse: amber on the orange board comes out
+/// at 1.2:1. Contrast along the path to the ink is not monotonic, since the
+/// two pass the background's own brightness, so the search keeps its upper
+/// bound on a value that already clears the floor.
+pub fn readable(colour: Rgba, on: Rgba, ink: Rgba, floor: f32) -> Rgba {
+    if contrast(colour, on) >= floor {
+        return colour;
+    }
+    if contrast(ink, on) < floor {
+        return ink;
+    }
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        if contrast(lerp(colour, ink, mid), on) >= floor {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    lerp(colour, ink, hi)
+}
+
 pub fn with_alpha(c: Rgba, a: f32) -> Rgba {
     Rgba { a: (c.a * a).clamp(0.0, 1.0), ..c }
 }

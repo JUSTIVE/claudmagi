@@ -105,7 +105,12 @@ fn main() {
             Some("dark") => theme::DARK,
             _ => theme::PALETTE,
         };
-        let svg = render_svg(&sessions, w, h, demo, user_zoom, palette);
+        let comb = args.iter().position(|a| a == "--view").and_then(|k| args.get(k + 1)).is_some_and(|v| v == "comb");
+        let svg = if comb {
+            render_comb_svg(&sessions, w, h, palette)
+        } else {
+            render_svg(&sessions, w, h, demo, user_zoom, palette)
+        };
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
         return;
@@ -239,6 +244,17 @@ fn main() {
 }
 
 /// Headless still frame with every animation settled.
+/// The honeycomb view as a one-shot SVG, for looking at it without a window
+/// (#86).
+fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
+    let mut model = BoardModel::new();
+    model.apply(list.to_vec(), Instant::now());
+    model.settle();
+    let comb = render::comb::lay_out(&model, width, height);
+    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0));
+    render::svg::to_svg(&shapes, width, comb.height.max(height))
+}
+
 fn render_svg(
     list: &[SessionInfo],
     width: f32,

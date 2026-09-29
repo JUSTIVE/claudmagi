@@ -3,7 +3,7 @@
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::render::scene;
-use crate::settings::BoardTheme;
+use crate::settings::{BoardTheme, BoardView};
 use crate::ui::board::Board;
 use crate::ui::panel::{Which, button, dim, section};
 
@@ -13,6 +13,17 @@ const ZOOM_PRESETS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 impl Board {
     pub(crate) fn toggle_settings(&mut self) {
         self.settings_panel.toggle();
+    }
+
+    pub(crate) fn set_view(&mut self, view: BoardView, cx: &mut Context<Self>) {
+        if self.settings.view != view {
+            self.settings.view = view;
+            self.settings.save();
+            // The two views measure their content differently, so the old
+            // scroll means nothing in the new one (#86).
+            self.scroll_y = 0.0;
+            cx.notify();
+        }
     }
 
     pub(crate) fn set_theme(&mut self, theme: BoardTheme, cx: &mut Context<Self>) {
@@ -25,6 +36,7 @@ impl Board {
 
     pub(crate) fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = self.settings.theme;
+        let view = self.settings.view;
         let zoom = self.settings.zoom;
         let zoom_pct = format!("{:.0}%", zoom * 100.0);
 
@@ -33,6 +45,14 @@ impl Board {
             themes = themes.child(
                 button(SharedString::from(format!("theme-{}", t.label())), t.label(), t == theme)
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.set_theme(t, cx))),
+            );
+        }
+
+        let mut views = div().flex().flex_wrap().gap_1();
+        for v in BoardView::ALL {
+            views = views.child(
+                button(SharedString::from(format!("view-{}", v.label())), v.label(), v == view)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.set_view(v, cx))),
             );
         }
 
@@ -46,6 +66,7 @@ impl Board {
         }
 
         self.panel_chrome(Which::Settings, "SETTINGS", PANEL_W, cx)
+            .child(section("VIEW").child(views))
             .child(section("BACKGROUND").child(themes))
             .child(
                 section("UI SIZE")

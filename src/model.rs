@@ -478,7 +478,11 @@ impl Rows {
 }
 
 /// Everything the renderer needs, updated by `apply` (data) and `tick` (time).
-#[derive(Default)]
+///
+/// Cloneable so a painter can be handed a snapshot: the comb view builds its
+/// shapes inside the canvas callback, where the board itself is no longer in
+/// reach (#86).
+#[derive(Clone, Default)]
 pub struct BoardModel {
     pub chips: Vec<ChipState>,
     pub hovered: Option<Target>,

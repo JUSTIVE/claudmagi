@@ -16,7 +16,8 @@ use crate::geom::Pt;
 use crate::model::{BoardModel, Target};
 use crate::render::paint::PathCache;
 use crate::render::scene::{self, ChipDraw, Frame, GAP, Lane, Layout};
-use crate::settings::Settings;
+use crate::render::comb;
+use crate::settings::{BoardView, Settings};
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
 use crate::ui::palette::PaletteState;
@@ -64,7 +65,7 @@ pub struct Board {
     lanes_moving: bool,
     draws: Vec<ChipDraw>,
     paths: Rc<RefCell<PathCache>>,
-    scroll_y: f32,
+    pub(crate) scroll_y: f32,
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
     pressed: Option<Target>,
@@ -91,6 +92,8 @@ pub struct Board {
     content_bottom: f32,
     /// The window in pixels, for the chrome that has to fit inside it (#83).
     pub(crate) window: (f32, f32),
+    /// The hex grid, when the comb view is the one showing (#86).
+    comb: Option<comb::Comb>,
     /// The ⌘K search over everything on the board (#71).
     pub(crate) palette: PaletteState,
 }
@@ -193,6 +196,7 @@ impl Board {
             source_note: None,
             content_bottom: 0.0,
             window: (scene::DESIGN_W, scene::DESIGN_H),
+            comb: None,
             palette: PaletteState::default(),
         }
     }
@@ -273,6 +277,11 @@ impl Board {
 
     /// Hit test in design units.
     fn hit_test(&self, m: Pt) -> Option<Target> {
+        // The comb's cells live in content coordinates, so the pointer has to
+        // be pushed back down by however far the grid is scrolled (#86).
+        if let Some(c) = &self.comb {
+            return comb::hit(c, m + Pt::new(0.0, self.scroll_y)).map(Target::Session);
+        }
         let mut best: Option<(f32, Target)> = None;
         for d in &self.draws {
             if d.alpha < 0.4 {
@@ -295,6 +304,9 @@ impl Board {
     /// Index of the PR connector under the pointer. They never rotate, so the
     /// test is a plain box (#57).
     fn hit_pr(&self, m: Pt) -> Option<usize> {
+        if self.comb.is_some() {
+            return None;
+        }
         self.prs.iter().position(|p| {
             p.alpha >= 0.4
                 && (m.x - p.center.x).abs() <= p.width / 2.0 + 3.0
@@ -304,6 +316,9 @@ impl Board {
 
     /// Index of the Linear node under the pointer (#57).
     fn hit_ticket(&self, m: Pt) -> Option<usize> {
+        if self.comb.is_some() {
+            return None;
+        }
         self.tickets.iter().position(|t| {
             t.alpha >= 0.4
                 && (m.x - t.center.x).abs() <= t.width / 2.0 + 3.0
@@ -484,7 +499,14 @@ impl Render for Board {
         if let Some(i) = self.hovered_ticket {
             self.tickets[i].hover = 1.0;
         }
-        self.content_bottom = self.layout.board_bottom(&self.draws, &self.prs, &self.tickets);
+        // The comb lays the same sessions out on a hex grid and scrolls by
+        // its own height (#86).
+        self.comb = (self.settings.view == BoardView::Comb)
+            .then(|| comb::lay_out(&self.model, self.layout.width, self.layout.height));
+        self.content_bottom = match &self.comb {
+            Some(c) => c.height,
+            None => self.layout.board_bottom(&self.draws, &self.prs, &self.tickets),
+        };
         self.clamp_scroll();
         let prs = self.prs.clone();
         let tickets = self.tickets.clone();
@@ -505,6 +527,10 @@ impl Render for Board {
             palette,
         };
         let paths = self.paths.clone();
+        let comb = self.comb.clone();
+        let model = (comb.is_some()).then(|| self.model.clone());
+        let scroll_y = self.scroll_y;
+        let zoom = self.layout.zoom;
 
         let ink = theme::hsla(palette.ink);
         let summary = self.model.summary();
@@ -643,7 +669,16 @@ impl Render for Board {
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         let origin = Pt::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y));
-                        let shapes = scene::build_shapes(&frame, origin);
+                        let shapes = match (&comb, &model) {
+                            (Some(c), Some(m)) => {
+                                let mut out = comb::build_shapes(m, c, frame.palette, scroll_y, origin * (1.0 / zoom));
+                                for s in &mut out {
+                                    s.scale(zoom);
+                                }
+                                out
+                            }
+                            _ => scene::build_shapes(&frame, origin),
+                        };
                         paths.borrow_mut().paint(&shapes, window);
                     },
                 )

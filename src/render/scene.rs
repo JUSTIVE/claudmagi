@@ -259,7 +259,7 @@ pub enum Shape {
 }
 
 impl Shape {
-    fn scale(&mut self, z: f32) {
+    pub(crate) fn scale(&mut self, z: f32) {
         match self {
             Shape::Rect { x, y, w, h, .. } => {
                 *x *= z;
