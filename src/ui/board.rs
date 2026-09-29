@@ -439,6 +439,28 @@ impl Board {
         self.open_link("FULL DISK ACCESS".into(), Some(PRIVACY_ALL_FILES.into()), None, "settings pane", cx);
     }
 
+    /// A click on the board, which in the comb view can land on one of a
+    /// cell's three rows rather than on the cell as a whole (#89).
+    fn activate_at(&mut self, target: Target, m: Pt, cx: &mut Context<Self>) {
+        let Some(comb) = &self.comb else { return self.activate(target, cx) };
+        let Some((i, slot)) = comb::hit_slot(comb, m + Pt::new(0.0, self.scroll_y)) else {
+            return self.activate(target, cx);
+        };
+        let Some(info) = self.model.chips.get(i).map(|c| c.info.clone()) else { return };
+        match slot {
+            comb::Slot::Ticket => match &info.ticket {
+                Some(t) => self.open_link(t.label(), t.app_url(), t.url(), "Linear issue", cx),
+                // A row with nothing in it is still part of the cell.
+                None => self.activate(Target::Session(i), cx),
+            },
+            comb::Slot::Pr => match info.prs.last() {
+                Some(p) => self.open_link(p.label(), None, Some(p.url()), "pull request", cx),
+                None => self.activate(Target::Session(i), cx),
+            },
+            comb::Slot::Session => self.activate(Target::Session(i), cx),
+        }
+    }
+
     /// Jumps to the session's terminal (chip click / test panel). Subagent
     /// chips jump to their parent session.
     pub(crate) fn activate(&mut self, target: Target, cx: &mut Context<Self>) {
@@ -633,7 +655,7 @@ impl Render for Board {
                     let hit = this.hit_test(m);
                     if let (Some(p), Some(h)) = (this.pressed, hit) {
                         if p == h {
-                            this.activate(h, cx);
+                            this.activate_at(h, m, cx);
                         }
                     }
                     if let (Some(p), Some(h)) = (this.pressed_pr, this.hit_pr(m)) {

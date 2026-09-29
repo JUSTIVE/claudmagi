@@ -31,6 +31,8 @@ pub const BORDER: f32 = 1.4;
 pub const GAP: f32 = 7.0;
 /// The mini hexes of a subagent sub-grid sit closer, being smaller.
 const SUB_GAP: f32 = 2.4;
+/// The most of a cell one mini hex may take.
+const SUB_MAX: f32 = 0.3;
 /// Roughly how many cells span the width. Fewer means bigger cells with room
 /// for longer names; more means the whole board at a glance.
 const COLS: f32 = 7.0;
@@ -47,6 +49,10 @@ pub struct Cell {
     pub center: Pt,
     /// Index into `model.chips`, or `None` for a cell nobody sits in.
     pub chip: Option<usize>,
+    /// Set when this cell holds the subagents of a session next door, which
+    /// is where they live rather than spilling out of their parent's hex
+    /// (#88).
+    pub subs: Option<usize>,
 }
 
 /// The laid-out grid.
@@ -79,6 +85,21 @@ fn cell_at(p: Pt, r: f32) -> (i32, i32) {
         rr = -q - s;
     }
     (q as i32, rr as i32)
+}
+
+/// The six neighbours of a cell, in the order a subagent cell is looked for:
+/// under the parent first, where the eye goes next.
+const NEIGHBOURS: [(i32, i32); 6] = [(0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1)];
+
+/// Whether a point is inside a hex. The half-plane test over the hexagon's own
+/// corners, which is what a sub-grid has to satisfy to stay in its cell (#88).
+pub fn inside_hex(p: Pt, center: Pt, r: f32, gap: f32) -> bool {
+    let pts = corners(center, r, gap);
+    pts.iter().enumerate().all(|(i, a)| {
+        let b = pts[(i + 1) % pts.len()];
+        let (e, v) = (b - *a, p - *a);
+        e.x * v.y - e.y * v.x >= -1e-3
+    })
 }
 
 /// The six corners of a pointy-top hex, pulled in so two neighbours leave
@@ -211,7 +232,28 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
         x += 2.0 * half_w + gap;
         band = band.max(2.0 * half_h);
     }
-    let last_row = seats.iter().map(|((_, row), _)| *row).max().unwrap_or(0) + 2;
+    // Subagents take a cell of their own, next door to the session that
+    // spawned them (#88).
+    let mut sub_seats: Vec<((i32, i32), usize)> = Vec::new();
+    for (at, chip) in &seats {
+        let has_subs = model.chips.get(*chip).is_some_and(|c| c.subs.iter().any(|s| !s.anim.gone));
+        if !has_subs {
+            continue;
+        }
+        let free = NEIGHBOURS.iter().map(|(dq, dr)| (at.0 + dq, at.1 + dr)).find(|n| {
+            !seats.iter().any(|(s, _)| s == n) && !sub_seats.iter().any(|(s, _)| s == n)
+        });
+        if let Some(n) = free {
+            sub_seats.push((n, *chip));
+        }
+    }
+    let last_row = seats
+        .iter()
+        .chain(sub_seats.iter())
+        .map(|((_, row), _)| *row)
+        .max()
+        .unwrap_or(0)
+        + 2;
 
     // Every cell of the grid, occupied or not: the empties are half the point.
     let mut cells = Vec::new();
@@ -225,7 +267,8 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             }
             if center.x + r * sqrt3 / 2.0 >= 0.0 {
                 let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-                cells.push(Cell { center, chip });
+                let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
+                cells.push(Cell { center, chip, subs });
             }
             q += 1;
         }
@@ -248,8 +291,38 @@ pub fn hit(comb: &Comb, p: Pt) -> Option<usize> {
         .and_then(|c| c.chip)
 }
 
+/// The three things a cell holds, top to bottom. Each is its own target
+/// (#89).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Slot {
+    Ticket,
+    Session,
+    Pr,
+}
+
+/// Where in a cell each row sits, as a fraction of the cell's radius.
+const ROW_DY: [f32; 3] = [-0.42, 0.0, 0.42];
+
+/// The row of a cell under a point, and whose cell it is. The caller knows
+/// whether that row has anything in it.
+pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
+    let cell = comb
+        .cells
+        .iter()
+        .find(|c| c.chip.is_some() && inside_hex(p, c.center, comb.r, GAP))?;
+    let dy = (p.y - cell.center.y) / comb.r;
+    let slot = if dy < (ROW_DY[0] + ROW_DY[1]) / 2.0 {
+        Slot::Ticket
+    } else if dy > (ROW_DY[1] + ROW_DY[2]) / 2.0 {
+        Slot::Pr
+    } else {
+        Slot::Session
+    };
+    Some((cell.chip?, slot))
+}
+
 /// What goes on one of a cell's three lines.
-struct Slot {
+struct SlotInk {
     mark: logos::Mark,
     label: String,
     color: Rgba,
@@ -264,6 +337,29 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
     for cell in &comb.cells {
         let center = cell.center - Pt::new(0.0, scroll_y) + origin;
         if center.y < -r * 2.0 || center.y > 1.0e4 {
+            continue;
+        }
+        if let Some(parent) = cell.subs {
+            let Some(chip) = model.chips.get(parent) else { continue };
+            let running: Vec<bool> = chip.subs.iter().filter(|s| !s.anim.gone).map(|s| s.info.running).collect();
+            if running.is_empty() {
+                continue;
+            }
+            let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
+            out.push(Shape::Stroke {
+                pieces: vec![closed(corners(center, r, GAP))],
+                width: BORDER,
+                color: theme::with_alpha(pal.ink, 0.4),
+            });
+            for ((at, mr), going) in sub_grid(center, r, running.len()).into_iter().zip(&running) {
+                let color =
+                    if *going { read(pal.text_on) } else { theme::with_alpha(pal.ink, 0.45) };
+                out.push(Shape::Stroke {
+                    pieces: vec![closed(corners(at, mr, SUB_GAP))],
+                    width: BORDER,
+                    color,
+                });
+            }
             continue;
         }
         let Some(i) = cell.chip else {
@@ -282,10 +378,22 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // Everything here is drawn straight onto the board, so every colour
         // is put through the floor first (#86).
         let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
-        let (edge, accent) = match info.phase() {
-            Phase::Working => (pal.ink, read(pal.text_on)),
-            Phase::NeedsUser => (read(pal.alarm), read(pal.alarm)),
-            Phase::Idle => (theme::with_alpha(pal.ink, 0.55), read(pal.text_idle)),
+        // The border speaks for the whole cell: it goes to the alarm colour
+        // when anything in there is waiting on a person, which is the session
+        // asking outright or a pull request whose checks went red. An issue
+        // merely sitting in Todo is not an interruption and does not count.
+        // (#90)
+        let needs = info.phase() == Phase::NeedsUser
+            || info.prs.iter().any(|p| p.look() == crate::pr::Look::Failing);
+        // Opaque, because the session's row is filled with this same colour
+        // and a label has to read on top of it (#89).
+        let edge = if needs {
+            read(pal.alarm)
+        } else {
+            match info.phase() {
+                Phase::Working => pal.ink,
+                Phase::Idle | Phase::NeedsUser => theme::lerp(pal.bg, pal.ink, 0.55),
+            }
         };
         out.push(Shape::Stroke { pieces: vec![closed(corners(center, r, GAP))], width: BORDER * 1.6, color: edge });
 
@@ -294,17 +402,30 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         let ticket = info.ticket.as_ref();
         let pr = info.prs.last();
         let slots = [
-            ticket.map(|t| Slot { mark: logos::Mark::Linear, label: t.key.clone(), color: read(ticket_color(t, pal)) }),
-            Some(Slot { mark: logos::Mark::Claude, label: info.label(), color: accent }),
-            pr.map(|p| Slot { mark: logos::Mark::GitHub, label: p.label(), color: read(pr_color(p, pal)) }),
+            ticket.map(|t| SlotInk { mark: logos::Mark::Linear, label: t.key.clone(), color: read(ticket_color(t, pal)) }),
+            Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg }),
+            pr.map(|p| SlotInk { mark: logos::Mark::GitHub, label: p.label(), color: read(pr_color(p, pal)) }),
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
-            let dy = (row as f32 - 1.0) * r * 0.42;
+            let dy = ROW_DY[row] * r;
             let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
             let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
             let text_w = font::measure(&slot.label, scale);
             let left = center.x - (mark + 4.0 + text_w) / 2.0;
+            // The session wears the cell's own colour as a bed, so the middle
+            // row reads as the chip it is on the other view (#89).
+            if row == 1 {
+                out.push(Shape::RoundedRect {
+                    center: Pt::new(center.x, center.y + dy),
+                    w: mark + text_w + r * 0.26,
+                    h: r * 0.3,
+                    r: r * 0.09,
+                    angle: 0.0,
+                    color: edge,
+                    stroke: None,
+                });
+            }
             out.push(Shape::Mark {
                 mark: slot.mark,
                 size: mark,
@@ -322,21 +443,34 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             });
         }
 
-        // The subagents, as a sub-grid of small hexes along the cell's floor.
-        let subs: Vec<bool> = chip.subs.iter().filter(|s| !s.anim.gone).map(|s| s.info.running).collect();
-        if !subs.is_empty() {
-            let sr = r * 0.13;
-            let step = sr * 3.0f32.sqrt();
-            let n = subs.len().min(5);
-            let x0 = center.x - step * (n as f32 - 1.0) / 2.0;
-            for (k, running) in subs.iter().take(n).enumerate() {
-                let at = Pt::new(x0 + step * k as f32, center.y + r * 0.72);
-                let color = if *running { read(pal.text_on) } else { theme::with_alpha(pal.ink, 0.45) };
-                out.push(Shape::Stroke { pieces: vec![closed(corners(at, sr, SUB_GAP))], width: BORDER, color });
-            }
-        }
     }
     out
+}
+
+/// The sub-grid of a cell: where each of `n` mini hexes goes, and how big
+/// they are. A flower like the clusters themselves, sized so the whole of it
+/// stays inside the cell however many there are (#88).
+pub fn sub_grid(center: Pt, r: f32, n: usize) -> Vec<(Pt, f32)> {
+    let mr = sub_radius(r, rings(n));
+    flower(n).into_iter().map(|(q, row)| (center + axial(q, row, mr), mr)).collect()
+}
+
+/// Radius of the mini hexes of a `k`-ring sub-grid that has to fit inside a
+/// cell of radius `r`.
+///
+/// A flower of `k` rings reaches `(k + 0.5) * mr * sqrt(3)` sideways and
+/// `(1.5k + 1) * mr` up, and the cell it sits in only offers its inradius
+/// sideways. Taking the tighter of the two, with a little room left over for
+/// the hairline itself.
+fn sub_radius(r: f32, k: i32) -> f32 {
+    let inner = r - GAP;
+    let k = k as f32;
+    let across = inner / (2.0 * k + 1.0);
+    let down = inner / (1.5 * k + 1.0);
+    // Capped as well as fitted: a lone subagent given all the room it can
+    // have fills the cell to its own border and stops reading as a sub-grid
+    // at all (#88).
+    (across.min(down) * 0.94).min(r * SUB_MAX)
 }
 
 fn closed(mut pts: Vec<Pt>) -> Vec<Pt> {
@@ -500,6 +634,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn with_subagents(n: usize) -> BoardModel {
+        use crate::model::SubagentInfo;
+        let mut model = BoardModel::new();
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Working);
+        s.group = "warp-tab:1-1".into();
+        s.subagents = (0..n as u32).map(|i| SubagentInfo::synthetic(i + 1, "Explore", "", true)).collect();
+        model.apply(vec![s], Instant::now());
+        model.settle();
+        model
+    }
+
+    /// Subagents moved out of their parent's hex and into the one next door
+    /// (#88), and the sub-grid has to stay inside that one.
+    #[test]
+    fn subagents_take_the_cell_next_door_and_stay_inside_it() {
+        for n in [1usize, 3, 7, 12, 19] {
+            let model = with_subagents(n);
+            let comb = lay_out(&model, 980.0, 620.0);
+            let parent = comb.cells.iter().find(|c| c.chip == Some(0)).expect("the session").center;
+            let home = comb.cells.iter().find(|c| c.subs == Some(0)).expect("a cell for the subagents");
+            assert!(home.chip.is_none(), "{n}: the subagents took a cell somebody was sitting in");
+
+            let d = ((home.center.x - parent.x).powi(2) + (home.center.y - parent.y).powi(2)).sqrt();
+            let step = comb.r * 3.0f32.sqrt();
+            assert!((d - step).abs() < 1.0, "{n}: the cell is not next door ({d} against {step})");
+
+            for (at, mr) in sub_grid(home.center, comb.r, n) {
+                assert!(mr <= comb.r * SUB_MAX + 0.01, "{n}: a mini hex this big stops reading as a sub-grid");
+                for corner in corners(at, mr, SUB_GAP) {
+                    assert!(
+                        inside_hex(corner, home.center, comb.r, GAP),
+                        "{n}: a mini hex reaches outside its cell"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each row of a cell is its own target (#89).
+    #[test]
+    fn a_cell_answers_for_the_row_that_was_clicked() {
+        let model = board(&[("warp-tab:1-1", 1)]);
+        let comb = lay_out(&model, 980.0, 620.0);
+        let at = comb.cells.iter().find(|c| c.chip == Some(0)).unwrap().center;
+        assert_eq!(hit_slot(&comb, at + Pt::new(0.0, -comb.r * 0.42)), Some((0, Slot::Ticket)));
+        assert_eq!(hit_slot(&comb, at), Some((0, Slot::Session)));
+        assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 0.42)), Some((0, Slot::Pr)));
+        assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 3.0)), None, "outside the cell is nothing");
     }
 
     #[test]
