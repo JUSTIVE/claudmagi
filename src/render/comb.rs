@@ -53,6 +53,10 @@ pub struct Cell {
     /// is where they live rather than spilling out of their parent's hex
     /// (#88).
     pub subs: Option<usize>,
+    /// How far this cell is from the nearest cluster, in cells. The view
+    /// opens by spreading out from the clusters, and this is each cell's
+    /// place in that wave (#92).
+    pub wave: f32,
 }
 
 /// The laid-out grid.
@@ -268,11 +272,25 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             if center.x + r * sqrt3 / 2.0 >= 0.0 {
                 let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
                 let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-                cells.push(Cell { center, chip, subs });
+                cells.push(Cell { center, chip, subs, wave: 0.0 });
             }
             q += 1;
         }
     }
+    // How far each cell is from the nearest session, in cells. The clusters
+    // are where the view starts and everything else follows outwards (#92).
+    let hubs: Vec<Pt> = cells.iter().filter(|c| c.chip.is_some()).map(|c| c.center).collect();
+    let pitch = r * sqrt3;
+    for cell in &mut cells {
+        cell.wave = hubs
+            .iter()
+            .map(|h| ((cell.center.x - h.x).powi(2) + (cell.center.y - h.y).powi(2)).sqrt() / pitch)
+            .fold(f32::MAX, f32::min);
+        if !cell.wave.is_finite() {
+            cell.wave = 0.0;
+        }
+    }
+
     let height = cells.iter().map(|c| c.center.y).fold(0.0f32, f32::max) + r;
     Comb { cells, r, height }
 }
@@ -299,6 +317,22 @@ pub enum Slot {
     Session,
     Pr,
 }
+
+/// The band the session's row is bedded on: the full width of the cell's
+/// interior at that height (#91).
+///
+/// The middle row sits at the hexagon's widest point, where its sides run
+/// straight up and down, so a band no taller than the cell's radius can span
+/// the whole interior and still touch nothing but those two sides.
+pub fn session_bed(center: Pt, r: f32) -> (Pt, f32, f32) {
+    let sqrt3 = 3.0f32.sqrt();
+    let inner = r - GAP / sqrt3;
+    (center, sqrt3 * inner - BORDER * 2.0, r * BED_H)
+}
+
+/// How tall that band is, against the cell's radius. Kept under a half, which
+/// is where the hexagon starts tapering towards its points.
+const BED_H: f32 = 0.3;
 
 /// Where in a cell each row sits, as a fraction of the cell's radius.
 const ROW_DY: [f32; 3] = [-0.42, 0.0, 0.42];
@@ -328,8 +362,20 @@ struct SlotInk {
     color: Rgba,
 }
 
-/// Every shape of the honeycomb view, in design units.
-pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32, origin: Pt) -> Vec<Shape> {
+/// How long each ring of cells waits before it starts appearing, and how long
+/// one takes to arrive once it does (#92).
+const WAVE_STEP: f32 = 0.05;
+const WAVE_FADE: f32 = 0.3;
+
+/// How far into its arrival a cell is at `t` seconds: 0 before its turn, 1
+/// once it is all the way in.
+pub fn reveal(cell: &Cell, t: f32) -> f32 {
+    ((t - cell.wave * WAVE_STEP) / WAVE_FADE).clamp(0.0, 1.0)
+}
+
+/// Every shape of the honeycomb view, in design units. `t` is seconds since
+/// the view opened, which is what the cells arrive on.
+pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32, origin: Pt, t: f32) -> Vec<Shape> {
     let mut out = Vec::new();
     let r = comb.r;
     out.push(Shape::Rect { x: 0.0, y: 0.0, w: 1.0e5, h: 1.0e5, color: pal.bg });
@@ -339,6 +385,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         if center.y < -r * 2.0 || center.y > 1.0e4 {
             continue;
         }
+        let arrived = reveal(cell, t);
+        if arrived <= 0.001 {
+            continue;
+        }
+        let fade = |c: Rgba| theme::with_alpha(c, arrived);
         if let Some(parent) = cell.subs {
             let Some(chip) = model.chips.get(parent) else { continue };
             let running: Vec<bool> = chip.subs.iter().filter(|s| !s.anim.gone).map(|s| s.info.running).collect();
@@ -349,7 +400,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             out.push(Shape::Stroke {
                 pieces: vec![closed(corners(center, r, GAP))],
                 width: BORDER,
-                color: theme::with_alpha(pal.ink, 0.4),
+                color: fade(theme::with_alpha(pal.ink, 0.4)),
             });
             for ((at, mr), going) in sub_grid(center, r, running.len()).into_iter().zip(&running) {
                 let color =
@@ -357,7 +408,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 out.push(Shape::Stroke {
                     pieces: vec![closed(corners(at, mr, SUB_GAP))],
                     width: BORDER,
-                    color,
+                    color: fade(color),
                 });
             }
             continue;
@@ -368,7 +419,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             out.push(Shape::Stroke {
                 pieces: vec![closed(corners(center, r, GAP))],
                 width: BORDER,
-                color: theme::with_alpha(pal.ink, 0.18),
+                color: fade(theme::with_alpha(pal.ink, 0.18)),
             });
             continue;
         };
@@ -395,7 +446,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 Phase::Idle | Phase::NeedsUser => theme::lerp(pal.bg, pal.ink, 0.55),
             }
         };
-        out.push(Shape::Stroke { pieces: vec![closed(corners(center, r, GAP))], width: BORDER * 1.6, color: edge });
+        out.push(Shape::Stroke {
+            pieces: vec![closed(corners(center, r, GAP))],
+            width: BORDER * 1.6,
+            color: fade(edge),
+        });
 
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
@@ -416,13 +471,14 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
+                let (at, w, h) = session_bed(center, r);
                 out.push(Shape::RoundedRect {
-                    center: Pt::new(center.x, center.y + dy),
-                    w: mark + text_w + r * 0.26,
-                    h: r * 0.3,
-                    r: r * 0.09,
+                    center: at,
+                    w,
+                    h,
+                    r: 1.0,
                     angle: 0.0,
-                    color: edge,
+                    color: fade(edge),
                     stroke: None,
                 });
             }
@@ -431,7 +487,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 size: mark,
                 angle: 0.0,
                 center: Pt::new(left + mark / 2.0, center.y + dy),
-                color: slot.color,
+                color: fade(slot.color),
             });
             out.push(Shape::Text {
                 text: slot.label.clone(),
@@ -439,7 +495,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 stroke: 1.0,
                 angle: 0.0,
                 center: Pt::new(left + mark + 4.0 + text_w / 2.0, center.y + dy),
-                color: slot.color,
+                color: fade(slot.color),
             });
         }
 
@@ -684,6 +740,45 @@ mod tests {
         assert_eq!(hit_slot(&comb, at), Some((0, Slot::Session)));
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 0.42)), Some((0, Slot::Pr)));
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 3.0)), None, "outside the cell is nothing");
+    }
+
+    /// The session's bed runs wall to wall inside the cell and touches
+    /// nothing else (#91).
+    #[test]
+    fn the_session_bed_fills_the_cell_from_side_to_side() {
+        for r in [46.0f32, 70.0, 104.0] {
+            let center = Pt::new(300.0, 300.0);
+            let (at, w, h) = session_bed(center, r);
+            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                let corner = Pt::new(at.x + sx * w / 2.0, at.y + sy * h / 2.0);
+                assert!(inside_hex(corner, center, r, GAP), "r={r}: the bed pokes out of its cell");
+            }
+            // Wall to wall: anything wider would be outside.
+            let wider = Pt::new(at.x + w / 2.0 + BORDER * 2.5, at.y);
+            assert!(!inside_hex(wider, center, r, GAP), "r={r}: the bed is leaving room at the sides");
+        }
+    }
+
+    /// The view opens out of its clusters: a session is there from the first
+    /// frame, and the empty field arrives in rings behind it (#92).
+    #[test]
+    fn the_cells_arrive_spreading_out_of_the_clusters() {
+        let model = board(&[("warp-tab:1-1", 3)]);
+        let comb = lay_out(&model, 980.0, 620.0);
+        let seated = comb.cells.iter().find(|c| c.chip.is_some()).unwrap();
+        assert_eq!(seated.wave, 0.0, "a session is where the wave starts");
+
+        let far = comb.cells.iter().max_by(|a, b| a.wave.total_cmp(&b.wave)).unwrap();
+        assert!(far.wave > 2.0, "the far corner of the grid is several cells out");
+
+        assert_eq!(reveal(seated, 0.0), 0.0, "nothing is on screen before the clock starts");
+        assert!(reveal(seated, WAVE_FADE) >= 1.0, "a session is fully in after one fade");
+        assert_eq!(reveal(far, WAVE_FADE), 0.0, "and the far cells have not begun");
+        let mid = far.wave * WAVE_STEP + WAVE_FADE / 2.0;
+        assert!((0.0..1.0).contains(&reveal(far, mid)), "they come in partway through");
+        for cell in &comb.cells {
+            assert_eq!(reveal(cell, 1.0e3), 1.0, "everything settles");
+        }
     }
 
     #[test]

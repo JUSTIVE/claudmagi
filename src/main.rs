@@ -244,6 +244,11 @@ fn main() {
 }
 
 /// Headless still frame with every animation settled.
+fn args_wave() -> Option<f32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    args.iter().position(|a| a == "--wave").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok())
+}
+
 /// The honeycomb view as a one-shot SVG, for looking at it without a window
 /// (#86).
 fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
@@ -251,7 +256,10 @@ fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme
     model.apply(list.to_vec(), Instant::now());
     model.settle();
     let comb = render::comb::lay_out(&model, width, height);
-    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0));
+    // A one-shot render wants the view as it settles, not mid-arrival; pass
+    // `--wave <seconds>` to catch it partway (#92).
+    let t = args_wave().unwrap_or(1.0e3);
+    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0), t);
     render::svg::to_svg(&shapes, width, comb.height.max(height))
 }
 

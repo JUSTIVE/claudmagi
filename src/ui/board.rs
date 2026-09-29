@@ -94,6 +94,9 @@ pub struct Board {
     pub(crate) window: (f32, f32),
     /// The hex grid, when the comb view is the one showing (#86).
     comb: Option<comb::Comb>,
+    /// When the comb was last opened, which is what its cells arrive on
+    /// (#92).
+    pub(crate) comb_since: Instant,
     /// The ⌘K search over everything on the board (#71).
     pub(crate) palette: PaletteState,
 }
@@ -197,6 +200,7 @@ impl Board {
             content_bottom: 0.0,
             window: (scene::DESIGN_W, scene::DESIGN_H),
             comb: None,
+            comb_since: now,
             palette: PaletteState::default(),
         }
     }
@@ -550,6 +554,9 @@ impl Render for Board {
         };
         let paths = self.paths.clone();
         let comb = self.comb.clone();
+        // Seconds since the view opened: the cells spread out from the
+        // clusters on this (#92).
+        let comb_t = now.duration_since(self.comb_since).as_secs_f32();
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
@@ -693,7 +700,7 @@ impl Render for Board {
                         let origin = Pt::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y));
                         let shapes = match (&comb, &model) {
                             (Some(c), Some(m)) => {
-                                let mut out = comb::build_shapes(m, c, frame.palette, scroll_y, origin * (1.0 / zoom));
+                                let mut out = comb::build_shapes(m, c, frame.palette, scroll_y, origin * (1.0 / zoom), comb_t);
                                 for s in &mut out {
                                     s.scale(zoom);
                                 }
