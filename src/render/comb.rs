@@ -334,6 +334,63 @@ pub fn session_bed(center: Pt, r: f32) -> (Pt, f32, f32) {
 /// is where the hexagon starts tapering towards its points.
 const BED_H: f32 = 0.3;
 
+/// Between a row's mark and its label.
+const MARK_GAP: f32 = 4.0;
+/// Kept clear inside the cell wall, so a label never touches its own border.
+const ROW_PAD: f32 = 5.0;
+
+/// A row of a cell, worked out: where it sits, how big it is drawn, and how
+/// much of its label fits without leaving the hexagon (#94).
+pub struct RowBox {
+    pub dy: f32,
+    pub scale: f32,
+    pub mark: f32,
+    pub label: String,
+    /// What the row had to play with, mark and label together.
+    pub room: f32,
+}
+
+pub fn row_box(r: f32, row: usize, label: &str) -> RowBox {
+    let dy = ROW_DY[row] * r;
+    let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
+    let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
+    let room = row_room(r, dy, font::height(scale).max(mark)) - ROW_PAD * 2.0;
+    RowBox { dy, scale, mark, label: fit(label, scale, room - mark - MARK_GAP), room }
+}
+
+/// How wide the cell's interior is at a row, taking the row's own height into
+/// account: a hexagon narrows towards its points, so what matters is the
+/// width at the row's far edge rather than at its middle.
+fn row_room(r: f32, dy: f32, height: f32) -> f32 {
+    let sqrt3 = 3.0f32.sqrt();
+    let inner = r - GAP / sqrt3;
+    let y = dy.abs() + height / 2.0;
+    let half = if y <= inner / 2.0 { sqrt3 / 2.0 * inner } else { sqrt3 * (inner - y).max(0.0) };
+    2.0 * half
+}
+
+/// `label` cut to `room`, with an ellipsis where it was cut. Nothing that
+/// cannot show at least one letter shows at all.
+fn fit(label: &str, scale: f32, room: f32) -> String {
+    if room <= 0.0 {
+        return String::new();
+    }
+    if font::measure(label, scale) <= room {
+        return label.to_string();
+    }
+    let mut kept = String::new();
+    for ch in label.chars() {
+        let mut next = kept.clone();
+        next.push(ch);
+        next.push('…');
+        if font::measure(&next, scale) > room {
+            break;
+        }
+        kept.push(ch);
+    }
+    if kept.is_empty() { String::new() } else { kept + "…" }
+}
+
 /// Where in a cell each row sits, as a fraction of the cell's radius.
 const ROW_DY: [f32; 3] = [-0.42, 0.0, 0.42];
 
@@ -463,11 +520,9 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
-            let dy = ROW_DY[row] * r;
-            let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
-            let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
-            let text_w = font::measure(&slot.label, scale);
-            let left = center.x - (mark + 4.0 + text_w) / 2.0;
+            let RowBox { dy, scale, mark, label, .. } = row_box(r, row, &slot.label);
+            let text_w = font::measure(&label, scale);
+            let left = center.x - (mark + MARK_GAP + text_w) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
@@ -490,11 +545,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 color: fade(slot.color),
             });
             out.push(Shape::Text {
-                text: slot.label.clone(),
+                text: label.clone(),
                 scale,
                 stroke: 1.0,
                 angle: 0.0,
-                center: Pt::new(left + mark + 4.0 + text_w / 2.0, center.y + dy),
+                center: Pt::new(left + mark + MARK_GAP + text_w / 2.0, center.y + dy),
                 color: fade(slot.color),
             });
         }
@@ -791,6 +846,52 @@ mod tests {
         for cell in &comb.cells {
             assert_eq!(reveal(cell, 1.0e3), 1.0, "everything settles");
         }
+    }
+
+    /// Nothing a cell says may leave it (#94). The corners of what is drawn
+    /// are checked, mark and label together, on the narrowest cells.
+    #[test]
+    fn a_cell_never_lets_its_text_out() {
+        let labels = [
+            "S-1",
+            "FEATURE-REPORT",
+            "PJM-2033",
+            "#8792",
+            "a-very-long-session-name-nobody-would-ever-type",
+            "서비스-긴-이름의-한글-라벨",
+        ];
+        for r in [R_MIN, 70.0, R_MAX] {
+            let center = Pt::new(500.0, 500.0);
+            for row in 0..3 {
+                for label in labels {
+                    let b = row_box(r, row, label);
+                    if b.label.is_empty() {
+                        continue;
+                    }
+                    let text_w = font::measure(&b.label, b.scale);
+                    let w = b.mark + MARK_GAP + text_w;
+                    let h = font::height(b.scale).max(b.mark);
+                    for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                        let corner =
+                            Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
+                        assert!(
+                            inside_hex(corner, center, r, GAP),
+                            "r={r} row={row} {label:?}: {:?} reaches outside its cell",
+                            b.label
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_label_that_had_to_be_cut_says_so() {
+        let b = row_box(70.0, 1, "a-very-long-session-name-nobody-would-ever-type");
+        assert!(b.label.ends_with('…'), "a cut label wears an ellipsis, got {:?}", b.label);
+        assert!(b.label.chars().count() > 2, "and keeps enough to be worth reading");
+        let short = row_box(70.0, 1, "S-1");
+        assert_eq!(short.label, "S-1", "a label that fits is left alone");
     }
 
     #[test]
