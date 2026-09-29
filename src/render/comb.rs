@@ -528,8 +528,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             || info.prs.iter().any(|p| p.look() == crate::pr::Look::Failing);
         // Opaque, because the session's row is filled with this same colour
         // and a label has to read on top of it (#89).
+        // The same blink the board's chips take, on the border that speaks
+        // for the whole cell (#99).
+        let beat = if needs { theme::pulse_at(pal, t) } else { 1.0 };
         let edge = if needs {
-            read(pal.alarm)
+            theme::with_alpha(read(pal.alarm), beat)
         } else {
             match info.phase() {
                 Phase::Working => pal.ink,
@@ -554,6 +557,8 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
             let RowBox { dy, scale, mark, label, .. } = row_box(r, row, &slot.label);
+            // The session's label lies on the bed, so it blinks with it.
+            let slot_beat = if row == 1 { beat } else { 1.0 };
             let text_w = font::measure(&label, scale);
             let left = center.x - (mark + MARK_GAP + text_w) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
@@ -575,7 +580,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 size: mark,
                 angle: 0.0,
                 center: Pt::new(left + mark / 2.0, center.y + dy),
-                color: fade(slot.color),
+                color: fade(theme::with_alpha(slot.color, slot_beat)),
             });
             out.push(Shape::Text {
                 text: label.clone(),
@@ -583,7 +588,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 stroke: 1.0,
                 angle: 0.0,
                 center: Pt::new(left + mark + MARK_GAP + text_w / 2.0, center.y + dy),
-                color: fade(slot.color),
+                color: fade(theme::with_alpha(slot.color, slot_beat)),
             });
         }
 

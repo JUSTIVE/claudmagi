@@ -1045,8 +1045,10 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
             Phase::Idle => (pal.chip_idle, pal.text_idle),
         };
         let off = c.p.max(c.settled);
-        let fill_c = theme::with_alpha(theme::lerp(pal.chip, fill_off, off), c.alpha);
-        let text_c = theme::with_alpha(theme::lerp(pal.text_on, text_off, off), c.alpha);
+        // A board that cannot shout in colour blinks instead (#99).
+        let beat = if c.phase == Phase::NeedsUser { theme::pulse_at(pal, f.t) } else { 1.0 };
+        let fill_c = theme::with_alpha(theme::lerp(pal.chip, fill_off, off), c.alpha * beat);
+        let text_c = theme::with_alpha(theme::lerp(pal.text_on, text_off, off), c.alpha * beat);
         let h = st.h * (1.0 - SETTLE_SHRINK * c.settled);
 
         if c.hover > 0.01 {

@@ -36,6 +36,11 @@ pub struct Palette {
     /// A lane whose work finished end to end (#84). The chip greens are made
     /// to sit on a chip; this one has to read as a hairline on the board.
     pub done: Rgba,
+    /// Whether a board has to blink what is waiting on a person rather than
+    /// shout it in colour (#99). The orange board gave up the loud orange for
+    /// its waiting chips because orange on orange is invisible (#50), and a
+    /// pulse is what gives that back.
+    pub pulse: bool,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -56,6 +61,7 @@ pub const PALETTE: Palette = Palette {
     merged: Rgba { r: 0.510, g: 0.314, b: 0.875, a: 1.0 },   // #8250DF — the purple a merged PR wears on GitHub
     on_merged: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
     done: Rgba { r: 0.078, g: 0.545, b: 0.318, a: 1.0 },     // #148B51 — deep enough to read as a line on white
+    pulse: false,
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -81,6 +87,7 @@ pub const ORANGE: Palette = Palette {
     merged: Rgba { r: 0.294, g: 0.161, b: 0.549, a: 1.0 }, // #4B298C
     on_merged: Rgba { r: 0.937, g: 0.902, b: 1.0, a: 1.0 }, // #EFE6FF
     done: Rgba { r: 0.055, g: 0.318, b: 0.196, a: 1.0 }, // #0E5132 — a lighter green disappears into orange
+    pulse: true,
     ..PALETTE
 };
 
@@ -112,6 +119,20 @@ impl Palette {
             BoardTheme::Dark => DARK,
         }
     }
+}
+
+/// How long one blink takes, and how far down it dips.
+const PULSE_PERIOD: f32 = 1.1;
+const PULSE_LOW: f32 = 0.35;
+
+/// The blink at `t` seconds: 1 at the top, `PULSE_LOW` at the bottom. A
+/// board that does not blink is always at the top (#99).
+pub fn pulse_at(pal: Palette, t: f32) -> f32 {
+    if !pal.pulse {
+        return 1.0;
+    }
+    let phase = (t / PULSE_PERIOD) * std::f32::consts::TAU;
+    PULSE_LOW + (1.0 - PULSE_LOW) * (0.5 + 0.5 * phase.cos())
 }
 
 pub fn lerp(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -174,4 +195,31 @@ pub fn hsla(c: Rgba) -> Hsla {
 #[allow(dead_code)]
 pub fn hex(v: u32) -> Rgba {
     rgb(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Only the orange board blinks, and what it does is a blink: it starts
+    /// at full, dips, comes back, and never goes out (#99).
+    #[test]
+    fn the_orange_board_is_the_one_that_blinks() {
+        for pal in [PALETTE, DARK] {
+            for t in [0.0f32, 0.3, 0.55, 1.0, 7.3] {
+                assert_eq!(pulse_at(pal, t), 1.0, "a board that shouts in colour has no need to blink");
+            }
+        }
+        assert!(ORANGE.pulse);
+        assert_eq!(pulse_at(ORANGE, 0.0), 1.0, "it starts at full");
+        assert!((pulse_at(ORANGE, PULSE_PERIOD / 2.0) - PULSE_LOW).abs() < 1e-5, "and dips to the floor");
+        assert!((pulse_at(ORANGE, PULSE_PERIOD) - 1.0).abs() < 1e-5, "one period later it is back");
+        let mut lo = f32::MAX;
+        for step in 0..120 {
+            let v = pulse_at(ORANGE, step as f32 * PULSE_PERIOD / 60.0);
+            assert!((PULSE_LOW - 1e-5..=1.0 + 1e-5).contains(&v), "the blink stays between its bounds");
+            lo = lo.min(v);
+        }
+        assert!(lo > 0.0, "it never goes out entirely, which would read as a chip that vanished");
+    }
 }
