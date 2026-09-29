@@ -256,6 +256,9 @@ pub enum Shape {
     /// A service's mark inside a node, drawn from the same kind of outline a
     /// label is (#80).
     Mark { mark: logos::Mark, size: f32, angle: f32, center: Pt, color: Rgba },
+    /// A filled polygon. The comb's subagents are solid hexes (#96), and a
+    /// stroke cannot say that.
+    Poly { points: Vec<Pt>, color: Rgba },
 }
 
 impl Shape {
@@ -289,6 +292,11 @@ impl Shape {
             Shape::Mark { center, size, .. } => {
                 *center = *center * z;
                 *size *= z;
+            }
+            Shape::Poly { points, .. } => {
+                for p in points {
+                    *p = *p * z;
+                }
             }
         }
     }

@@ -31,8 +31,20 @@ pub const BORDER: f32 = 1.4;
 pub const GAP: f32 = 7.0;
 /// The mini hexes of a subagent sub-grid sit closer, being smaller.
 const SUB_GAP: f32 = 2.4;
-/// The most of a cell one mini hex may take.
-const SUB_MAX: f32 = 0.3;
+/// The most of a cell one mini hex may take. Enough that a name fits inside
+/// it (#95), still plainly smaller than the cell around it.
+const SUB_MAX: f32 = 0.42;
+/// A mini hex's label against its own radius, and the room kept clear of its
+/// wall.
+const SUB_TEXT: f32 = 0.058;
+const SUB_PAD: f32 = 4.0;
+
+/// What one mini hex says, cut to what it can hold.
+pub fn sub_box(mr: f32, label: &str) -> (String, f32) {
+    let scale = mr * SUB_TEXT;
+    let room = room_at(mr, 0.0, font::height(scale), SUB_GAP) - SUB_PAD * 2.0;
+    (fit(label, scale, room), scale)
+}
 /// Roughly how many cells span the width. Fewer means bigger cells with room
 /// for longer names; more means the whole board at a glance.
 const COLS: f32 = 7.0;
@@ -362,8 +374,15 @@ pub fn row_box(r: f32, row: usize, label: &str) -> RowBox {
 /// account: a hexagon narrows towards its points, so what matters is the
 /// width at the row's far edge rather than at its middle.
 fn row_room(r: f32, dy: f32, height: f32) -> f32 {
+    room_at(r, dy, height, GAP)
+}
+
+/// Width available inside a hex of radius `r` at height `dy`, for something
+/// `height` tall. Shared with the mini hexes of a sub-grid, which are drawn to
+/// a gap of their own (#94, #95).
+fn room_at(r: f32, dy: f32, height: f32, gap: f32) -> f32 {
     let sqrt3 = 3.0f32.sqrt();
-    let inner = r - GAP / sqrt3;
+    let inner = r - gap / sqrt3;
     let y = dy.abs() + height / 2.0;
     let half = if y <= inner / 2.0 { sqrt3 / 2.0 * inner } else { sqrt3 * (inner - y).max(0.0) };
     2.0 * half
@@ -449,24 +468,36 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         let fade = |c: Rgba| theme::with_alpha(c, arrived);
         if let Some(parent) = cell.subs {
             let Some(chip) = model.chips.get(parent) else { continue };
-            let running: Vec<bool> = chip.subs.iter().filter(|s| !s.anim.gone).map(|s| s.info.running).collect();
-            if running.is_empty() {
+            let agents: Vec<(String, bool)> = chip
+                .subs
+                .iter()
+                .filter(|s| !s.anim.gone)
+                .map(|s| (s.info.label(), s.info.running))
+                .collect();
+            if agents.is_empty() {
                 continue;
             }
             let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
-            out.push(Shape::Stroke {
-                pieces: vec![closed(corners(center, r, GAP))],
-                width: BORDER,
-                color: fade(theme::with_alpha(pal.ink, 0.4)),
-            });
-            for ((at, mr), going) in sub_grid(center, r, running.len()).into_iter().zip(&running) {
-                let color =
-                    if *going { read(pal.text_on) } else { theme::with_alpha(pal.ink, 0.45) };
-                out.push(Shape::Stroke {
-                    pieces: vec![closed(corners(at, mr, SUB_GAP))],
-                    width: BORDER,
-                    color: fade(color),
-                });
+            // No cell drawn around them: the subagents are the only thing
+            // there, and a hex around a hex reads as a container nobody asked
+            // for (#97). The cell still governs where they may go.
+
+            for ((at, mr), (label, going)) in sub_grid(center, r, agents.len()).into_iter().zip(&agents) {
+                // Solid, not an outline: a subagent is a thing doing work,
+                // and the cell around it is the empty part (#96).
+                let color = if *going { read(pal.text_on) } else { theme::lerp(pal.bg, pal.ink, 0.45) };
+                out.push(Shape::Poly { points: corners(at, mr, SUB_GAP), color: fade(color) });
+                let (text, scale) = sub_box(mr, label);
+                if !text.is_empty() {
+                    out.push(Shape::Text {
+                        text,
+                        scale,
+                        stroke: 1.0,
+                        angle: 0.0,
+                        center: at,
+                        color: fade(pal.bg),
+                    });
+                }
             }
             continue;
         }
@@ -562,26 +593,41 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
 /// they are. A flower like the clusters themselves, sized so the whole of it
 /// stays inside the cell however many there are (#88).
 pub fn sub_grid(center: Pt, r: f32, n: usize) -> Vec<(Pt, f32)> {
-    let mr = sub_radius(r, rings(n));
-    flower(n).into_iter().map(|(q, row)| (center + axial(q, row, mr), mr)).collect()
+    let sqrt3 = 3.0f32.sqrt();
+    let seats = flower(n);
+    // Sized to the seats actually taken, not to the ring they came from: two
+    // subagents sit on a ring of six, and paying for the four empty ones
+    // shrinks them until their names are three dots (#95).
+    let pts: Vec<Pt> = seats.iter().map(|(q, row)| axial(*q, *row, 1.0)).collect();
+    let (x0, x1) = bounds(pts.iter().map(|p| p.x));
+    let (y0, y1) = bounds(pts.iter().map(|p| p.y));
+    let (ex, ey) = ((x1 - x0) / 2.0 + sqrt3 / 2.0, (y1 - y0) / 2.0 + 1.0);
+    let inner = r - GAP / sqrt3;
+    // Centred on what they take up, so the group sits in the middle.
+    let mid = Pt::new((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    let place = |mr: f32| -> Vec<(Pt, f32)> {
+        pts.iter().map(|p| (center + (*p - mid) * mr, mr)).collect()
+    };
+    // The estimate treats both shapes as boxes, which they are not: a hexagon
+    // narrows towards its points, so a flower that fits the box can still
+    // poke through a wall. Shrink until it genuinely fits rather than trusting
+    // the arithmetic.
+    let mut mr = (sqrt3 / 2.0 * inner / ex).min(inner / ey).min(r * SUB_MAX);
+    for _ in 0..24 {
+        let out = place(mr);
+        let fits = out
+            .iter()
+            .all(|(at, mr)| corners(*at, *mr, SUB_GAP).into_iter().all(|c| inside_hex(c, center, r, GAP)));
+        if fits {
+            return out;
+        }
+        mr *= 0.95;
+    }
+    place(mr)
 }
 
-/// Radius of the mini hexes of a `k`-ring sub-grid that has to fit inside a
-/// cell of radius `r`.
-///
-/// A flower of `k` rings reaches `(k + 0.5) * mr * sqrt(3)` sideways and
-/// `(1.5k + 1) * mr` up, and the cell it sits in only offers its inradius
-/// sideways. Taking the tighter of the two, with a little room left over for
-/// the hairline itself.
-fn sub_radius(r: f32, k: i32) -> f32 {
-    let inner = r - GAP;
-    let k = k as f32;
-    let across = inner / (2.0 * k + 1.0);
-    let down = inner / (1.5 * k + 1.0);
-    // Capped as well as fitted: a lone subagent given all the room it can
-    // have fills the cell to its own border and stops reading as a sub-grid
-    // at all (#88).
-    (across.min(down) * 0.94).min(r * SUB_MAX)
+fn bounds(vs: impl Iterator<Item = f32>) -> (f32, f32) {
+    vs.fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v), hi.max(v)))
 }
 
 fn closed(mut pts: Vec<Pt>) -> Vec<Pt> {

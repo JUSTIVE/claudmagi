@@ -57,6 +57,10 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                     center.y
                 );
             }
+            Shape::Poly { points, color } => {
+                let pts: Vec<String> = points.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect();
+                let _ = writeln!(s, r#"<polygon points="{}" fill="{}"/>"#, pts.join(" "), svg_color(*color));
+            }
             Shape::Mark { mark, size, angle, center, color } => {
                 let d = path_data(&logos::outline(*mark, *size), *center);
                 if !d.is_empty() {

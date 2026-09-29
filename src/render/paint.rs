@@ -128,8 +128,28 @@ fn key_of(shape: &Shape) -> Option<u64> {
                 q(v).hash(&mut h);
             }
         }
+        Shape::Poly { points, .. } => {
+            5u8.hash(&mut h);
+            for p in points {
+                q(p.x).hash(&mut h);
+                q(p.y).hash(&mut h);
+            }
+        }
     }
     Some(h.finish())
+}
+
+/// A filled path around `points`.
+fn fill_path(points: &[Pt]) -> Option<Path<Pixels>> {
+    let mut it = points.iter();
+    let first = it.next()?;
+    let mut b = PathBuilder::fill();
+    b.move_to(point(px(first.x), px(first.y)));
+    for p in it {
+        b.line_to(point(px(p.x), px(p.y)));
+    }
+    b.close();
+    b.build().ok()
 }
 
 fn build(shape: &Shape) -> Option<Path<Pixels>> {
@@ -141,6 +161,7 @@ fn build(shape: &Shape) -> Option<Path<Pixels>> {
         Shape::Mark { mark, size, angle, center, .. } => {
             font::path_of(logos::outline(*mark, *size), *angle, (center.x, center.y))
         }
+        Shape::Poly { points, .. } => fill_path(points),
     }
 }
 
@@ -153,6 +174,7 @@ fn cost_of(shape: &Shape) -> usize {
         Shape::Text { text, .. } => text.len() * 160,
         // A mark is a couple of glyphs' worth of curves.
         Shape::Mark { .. } => 400,
+        Shape::Poly { points, .. } => points.len() * 6,
     }
 }
 
@@ -197,7 +219,8 @@ impl PathCache {
                 Shape::Stroke { color, .. }
                 | Shape::RoundedRect { color, .. }
                 | Shape::Text { color, .. }
-                | Shape::Mark { color, .. } => *color,
+                | Shape::Mark { color, .. }
+                | Shape::Poly { color, .. } => *color,
             };
             let path = match key_of(shape) {
                 Some(key) => {
