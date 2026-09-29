@@ -531,8 +531,13 @@ impl Render for Board {
         // The comb lays the same sessions out on a hex grid and scrolls by
         // its own height (#86).
         if self.settings.view == BoardView::Comb {
-            // The clock starts on the frame the grid first exists on.
-            if self.comb.is_none() {
+            // The clock starts on the first frame with something to spread
+            // out from. At launch the first session poll has not answered
+            // yet, and a wave out of an empty grid is every cell at once:
+            // by the time the sessions land it has already run (#93, #101).
+            if self.model.chips.iter().all(|c| c.anim.gone) {
+                self.comb_since = None;
+            } else if self.comb_since.is_none() {
                 self.comb_since = Some(now);
             }
             self.comb = Some(comb::lay_out(&self.model, self.layout.width, self.layout.height));

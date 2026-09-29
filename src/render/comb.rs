@@ -445,10 +445,17 @@ struct SlotInk {
 const WAVE_STEP: f32 = 0.07;
 const WAVE_FADE: f32 = 0.5;
 
+/// How faint an empty cell is before the wave reaches it. Not nothing: the
+/// grid is the furniture of this view and is there whether anything is
+/// running or not (#102). What the wave does is bring it up.
+const GRID_FLOOR: f32 = 0.55;
+
 /// How far into its arrival a cell is at `t` seconds: 0 before its turn, 1
-/// once it is all the way in.
+/// once it is all the way in. An empty cell never goes below the floor, so
+/// the grid stands even on a board with nothing on it.
 pub fn reveal(cell: &Cell, t: f32) -> f32 {
-    ((t - cell.wave * WAVE_STEP) / WAVE_FADE).clamp(0.0, 1.0)
+    let arrived = ((t - cell.wave * WAVE_STEP) / WAVE_FADE).clamp(0.0, 1.0);
+    if cell.chip.is_none() && cell.subs.is_none() { arrived.max(GRID_FLOOR) } else { arrived }
 }
 
 /// Every shape of the honeycomb view, in design units. `t` is seconds since
@@ -464,6 +471,16 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             continue;
         }
         let arrived = reveal(cell, t);
+        // The grid is complete from the first frame: a cell whose contents
+        // have not arrived still stands as an empty one, so the wave fills
+        // holes in rather than punching them (#102).
+        if arrived < 1.0 {
+            out.push(Shape::Stroke {
+                pieces: vec![closed(corners(center, r, GAP))],
+                width: BORDER,
+                color: theme::with_alpha(pal.ink, 0.18 * GRID_FLOOR),
+            });
+        }
         if arrived <= 0.001 {
             continue;
         }
@@ -906,15 +923,22 @@ mod tests {
         let far = comb.cells.iter().max_by(|a, b| a.wave.total_cmp(&b.wave)).unwrap();
         assert!(far.wave > 2.0, "the far corner of the grid is several cells out");
 
-        assert_eq!(reveal(seated, 0.0), 0.0, "nothing is on screen before the clock starts");
+        assert_eq!(reveal(seated, 0.0), 0.0, "a session is not on screen before its turn");
+        let empty = comb.cells.iter().find(|c| c.chip.is_none() && c.subs.is_none()).unwrap();
+        assert!(reveal(empty, 0.0) >= GRID_FLOOR, "the grid itself is there from the first frame (#102)");
         assert!(reveal(seated, WAVE_FADE) >= 1.0, "a session is fully in after one fade");
-        assert_eq!(reveal(far, far.wave * WAVE_STEP * 0.5), 0.0, "a far cell waits its turn");
-        let mid = far.wave * WAVE_STEP + WAVE_FADE / 2.0;
-        assert!((0.0..1.0).contains(&reveal(far, mid)), "they come in partway through");
+        // A far cell waits its turn; being empty it waits at the floor
+        // rather than at nothing, since the grid stands throughout (#102).
+        assert_eq!(reveal(far, far.wave * WAVE_STEP * 0.5), GRID_FLOOR);
+        let mid = far.wave * WAVE_STEP + WAVE_FADE * 0.95;
+        assert!((GRID_FLOOR..1.0).contains(&reveal(far, mid)), "and comes up from it");
         // The shape of the thing, whatever the timings are set to: nothing
         // ever arrives ahead of a cell nearer the clusters.
         for t in [0.05f32, 0.2, 0.4, 0.8] {
             for cell in &comb.cells {
+                if cell.chip.is_none() && cell.subs.is_none() {
+                    continue;
+                }
                 if cell.wave > far.wave / 2.0 {
                     assert!(
                         reveal(cell, t) <= reveal(seated, t),
