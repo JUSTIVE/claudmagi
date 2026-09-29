@@ -22,8 +22,15 @@ use crate::model::{BoardModel, Phase};
 use crate::render::scene::Shape;
 use crate::theme::{self, Palette, Rgba};
 
-/// Every hex is a hairline, and the gap between two of them is another one.
+/// Every hex is a hairline.
 pub const BORDER: f32 = 1.4;
+/// Edge to edge between two neighbours. A gap the width of the border, which
+/// is what this started as, is invisible at the size a cell is actually drawn:
+/// the grid read as one continuous lattice rather than as cells standing
+/// apart (#87).
+pub const GAP: f32 = 7.0;
+/// The mini hexes of a subagent sub-grid sit closer, being smaller.
+const SUB_GAP: f32 = 2.4;
 /// Roughly how many cells span the width. Fewer means bigger cells with room
 /// for longer names; more means the whole board at a glance.
 const COLS: f32 = 7.0;
@@ -74,12 +81,12 @@ fn cell_at(p: Pt, r: f32) -> (i32, i32) {
     (q as i32, rr as i32)
 }
 
-/// The six corners of a pointy-top hex, inset so that two neighbours leave a
-/// one-border gap between them.
-pub fn corners(center: Pt, r: f32) -> Vec<Pt> {
-    // Insetting a regular hexagon's edges by `d` pulls its circumradius in by
-    // `2d / sqrt(3)`.
-    let r = (r - BORDER / 3.0f32.sqrt()).max(1.0);
+/// The six corners of a pointy-top hex, pulled in so two neighbours leave
+/// `gap` between their edges.
+pub fn corners(center: Pt, r: f32, gap: f32) -> Vec<Pt> {
+    // Each of the two gives up half the gap, and insetting a regular
+    // hexagon's edges by `d` pulls its circumradius in by `2d / sqrt(3)`.
+    let r = (r - gap / 3.0f32.sqrt()).max(1.0);
     (0..6)
         .map(|i| {
             let a = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 90.0);
@@ -263,7 +270,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // An empty cell says so quietly: the grid stays visible, the eye
             // goes to the ones with something in them.
             out.push(Shape::Stroke {
-                pieces: vec![closed(corners(center, r))],
+                pieces: vec![closed(corners(center, r, GAP))],
                 width: BORDER,
                 color: theme::with_alpha(pal.ink, 0.18),
             });
@@ -280,7 +287,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             Phase::NeedsUser => (read(pal.alarm), read(pal.alarm)),
             Phase::Idle => (theme::with_alpha(pal.ink, 0.55), read(pal.text_idle)),
         };
-        out.push(Shape::Stroke { pieces: vec![closed(corners(center, r))], width: BORDER * 1.6, color: edge });
+        out.push(Shape::Stroke { pieces: vec![closed(corners(center, r, GAP))], width: BORDER * 1.6, color: edge });
 
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
@@ -325,7 +332,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             for (k, running) in subs.iter().take(n).enumerate() {
                 let at = Pt::new(x0 + step * k as f32, center.y + r * 0.72);
                 let color = if *running { read(pal.text_on) } else { theme::with_alpha(pal.ink, 0.45) };
-                out.push(Shape::Stroke { pieces: vec![closed(corners(at, sr))], width: BORDER, color });
+                out.push(Shape::Stroke { pieces: vec![closed(corners(at, sr, SUB_GAP))], width: BORDER, color });
             }
         }
     }
@@ -458,7 +465,7 @@ mod tests {
                 let model = board(&[("warp-tab:1-1", n)]);
                 let comb = lay_out(&model, width, 620.0);
                 for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
-                    let xs: Vec<f32> = corners(cell.center, comb.r).iter().map(|p| p.x).collect();
+                    let xs: Vec<f32> = corners(cell.center, comb.r, GAP).iter().map(|p| p.x).collect();
                     let (lo, hi) = (xs.iter().cloned().fold(f32::MAX, f32::min), xs.iter().cloned().fold(f32::MIN, f32::max));
                     assert!(lo >= -0.5, "{width}px, {n} sessions: a cell starts at {lo}");
                     assert!(hi <= width + 0.5, "{width}px, {n} sessions: a cell reaches {hi} of {width}");
@@ -473,7 +480,7 @@ mod tests {
             let model = board(&[("warp-tab:1-1", n)]);
             let comb = lay_out(&model, 980.0, 620.0);
             for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
-                let top = corners(cell.center, comb.r).iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                let top = corners(cell.center, comb.r, GAP).iter().map(|p| p.y).fold(f32::MAX, f32::min);
                 assert!(top >= -0.5, "{n} sessions: a cell starts at {top}, above the grid");
             }
         }
@@ -496,11 +503,12 @@ mod tests {
     }
 
     #[test]
-    fn a_cell_is_inset_so_two_neighbours_leave_one_border_between_them() {
+    fn two_neighbours_leave_a_gap_between_them() {
         let r = 60.0;
         let (a, b) = (Pt::new(0.0, 0.0), axial(1, 0, r));
-        let right = corners(a, r).into_iter().map(|p| p.x).fold(f32::MIN, f32::max);
-        let left = corners(b, r).into_iter().map(|p| p.x).fold(f32::MAX, f32::min);
-        assert!((left - right - BORDER).abs() < 0.01, "the gap is one border wide, got {}", left - right);
+        let right = corners(a, r, GAP).into_iter().map(|p| p.x).fold(f32::MIN, f32::max);
+        let left = corners(b, r, GAP).into_iter().map(|p| p.x).fold(f32::MAX, f32::min);
+        assert!((left - right - GAP).abs() < 0.01, "the gap should be {GAP}, got {}", left - right);
+        assert!(GAP > BORDER * 3.0, "a gap the width of a hairline is no gap at all");
     }
 }
