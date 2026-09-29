@@ -364,8 +364,8 @@ struct SlotInk {
 
 /// How long each ring of cells waits before it starts appearing, and how long
 /// one takes to arrive once it does (#92).
-const WAVE_STEP: f32 = 0.05;
-const WAVE_FADE: f32 = 0.3;
+const WAVE_STEP: f32 = 0.07;
+const WAVE_FADE: f32 = 0.5;
 
 /// How far into its arrival a cell is at `t` seconds: 0 before its turn, 1
 /// once it is all the way in.
@@ -773,9 +773,21 @@ mod tests {
 
         assert_eq!(reveal(seated, 0.0), 0.0, "nothing is on screen before the clock starts");
         assert!(reveal(seated, WAVE_FADE) >= 1.0, "a session is fully in after one fade");
-        assert_eq!(reveal(far, WAVE_FADE), 0.0, "and the far cells have not begun");
+        assert_eq!(reveal(far, far.wave * WAVE_STEP * 0.5), 0.0, "a far cell waits its turn");
         let mid = far.wave * WAVE_STEP + WAVE_FADE / 2.0;
         assert!((0.0..1.0).contains(&reveal(far, mid)), "they come in partway through");
+        // The shape of the thing, whatever the timings are set to: nothing
+        // ever arrives ahead of a cell nearer the clusters.
+        for t in [0.05f32, 0.2, 0.4, 0.8] {
+            for cell in &comb.cells {
+                if cell.wave > far.wave / 2.0 {
+                    assert!(
+                        reveal(cell, t) <= reveal(seated, t),
+                        "an outer cell overtook the cluster it should be following"
+                    );
+                }
+            }
+        }
         for cell in &comb.cells {
             assert_eq!(reveal(cell, 1.0e3), 1.0, "everything settles");
         }

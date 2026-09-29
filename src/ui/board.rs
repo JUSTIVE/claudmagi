@@ -94,9 +94,12 @@ pub struct Board {
     pub(crate) window: (f32, f32),
     /// The hex grid, when the comb view is the one showing (#86).
     comb: Option<comb::Comb>,
-    /// When the comb was last opened, which is what its cells arrive on
-    /// (#92).
-    pub(crate) comb_since: Instant,
+    /// When the comb's first frame was painted, which is what its cells
+    /// arrive on. Started there rather than when the view was chosen: a
+    /// window that opens straight into the comb spends its first moments on
+    /// fonts and the first session poll, and the whole arrival would be over
+    /// before anything reached the screen (#92, #93).
+    pub(crate) comb_since: Option<Instant>,
     /// The ⌘K search over everything on the board (#71).
     pub(crate) palette: PaletteState,
 }
@@ -200,7 +203,7 @@ impl Board {
             content_bottom: 0.0,
             window: (scene::DESIGN_W, scene::DESIGN_H),
             comb: None,
-            comb_since: now,
+            comb_since: None,
             palette: PaletteState::default(),
         }
     }
@@ -527,8 +530,16 @@ impl Render for Board {
         }
         // The comb lays the same sessions out on a hex grid and scrolls by
         // its own height (#86).
-        self.comb = (self.settings.view == BoardView::Comb)
-            .then(|| comb::lay_out(&self.model, self.layout.width, self.layout.height));
+        if self.settings.view == BoardView::Comb {
+            // The clock starts on the frame the grid first exists on.
+            if self.comb.is_none() {
+                self.comb_since = Some(now);
+            }
+            self.comb = Some(comb::lay_out(&self.model, self.layout.width, self.layout.height));
+        } else {
+            self.comb = None;
+            self.comb_since = None;
+        }
         self.content_bottom = match &self.comb {
             Some(c) => c.height,
             None => self.layout.board_bottom(&self.draws, &self.prs, &self.tickets),
@@ -556,7 +567,7 @@ impl Render for Board {
         let comb = self.comb.clone();
         // Seconds since the view opened: the cells spread out from the
         // clusters on this (#92).
-        let comb_t = now.duration_since(self.comb_since).as_secs_f32();
+        let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
