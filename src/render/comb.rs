@@ -524,13 +524,26 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // asking outright or a pull request whose checks went red. An issue
         // merely sitting in Todo is not an interruption and does not count.
         // (#90)
-        let needs = info.phase() == Phase::NeedsUser
-            || info.prs.iter().any(|p| p.look() == crate::pr::Look::Failing);
+        let ticket = info.ticket.as_ref();
+        let pr = info.prs.last();
+        // A row blinks when that row is the one waiting.
+        let row_beat = |row: usize| {
+            let waiting = match row {
+                0 => ticket.is_some_and(ticket_needs_action),
+                2 => pr.is_some_and(pr_needs_action),
+                _ => false,
+            };
+            if waiting { theme::pulse_at(pal, t) } else { 1.0 }
+        };
+        let needs = info.phase() == Phase::NeedsUser || pr.is_some_and(pr_needs_action);
+        // Colour and blink answer different questions (#100). The border's
+        // colour speaks for the whole cell: anything in here wants a person.
+        // The blink says who is waiting, and only the session's own asking
+        // moves the cell itself — a red check or an unstarted issue blinks on
+        // its own row, where the thing that needs doing actually is.
+        let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(pal, t) } else { 1.0 };
         // Opaque, because the session's row is filled with this same colour
         // and a label has to read on top of it (#89).
-        // The same blink the board's chips take, on the border that speaks
-        // for the whole cell (#99).
-        let beat = if needs { theme::pulse_at(pal, t) } else { 1.0 };
         let edge = if needs {
             theme::with_alpha(read(pal.alarm), beat)
         } else {
@@ -547,8 +560,6 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
 
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
-        let ticket = info.ticket.as_ref();
-        let pr = info.prs.last();
         let slots = [
             ticket.map(|t| SlotInk { mark: logos::Mark::Linear, label: t.key.clone(), color: read(ticket_color(t, pal)) }),
             Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg }),
@@ -557,8 +568,9 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
             let RowBox { dy, scale, mark, label, .. } = row_box(r, row, &slot.label);
-            // The session's label lies on the bed, so it blinks with it.
-            let slot_beat = if row == 1 { beat } else { 1.0 };
+            // The session's label lies on the bed, so it blinks with it;
+            // the other two answer for themselves.
+            let slot_beat = if row == 1 { beat } else { row_beat(row) };
             let text_w = font::measure(&label, scale);
             let left = center.x - (mark + MARK_GAP + text_w) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
@@ -642,6 +654,21 @@ fn closed(mut pts: Vec<Pt>) -> Vec<Pt> {
         pts.push(first);
     }
     pts
+}
+
+/// Whether a pull request is waiting on somebody: its checks went red, and
+/// nothing else on a PR is an interruption (#100).
+fn pr_needs_action(p: &crate::pr::Pr) -> bool {
+    p.look() == crate::pr::Look::Failing
+}
+
+/// Whether an issue is waiting on somebody. A session is running against it
+/// and the issue has not been moved out of the queue, which is a thing to go
+/// and do. A status nobody has answered for (Orca closed) is not: that is the
+/// board not knowing rather than the issue asking. (#100)
+fn ticket_needs_action(t: &crate::ticket::Ticket) -> bool {
+    use crate::ticket::Status;
+    matches!(t.status, Some(Status::Backlog) | Some(Status::Todo))
 }
 
 fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
@@ -945,6 +972,29 @@ mod tests {
         assert!(b.label.chars().count() > 2, "and keeps enough to be worth reading");
         let short = row_box(70.0, 1, "S-1");
         assert_eq!(short.label, "S-1", "a label that fits is left alone");
+    }
+
+    /// Colour and blink answer different questions: the border's colour is
+    /// the cell's whole state, the blink is who is waiting (#100).
+    #[test]
+    fn only_the_part_that_is_waiting_blinks() {
+        use crate::pr::{Look, Pr};
+        use crate::ticket::{Status, Ticket};
+
+        assert!(pr_needs_action(&Pr::synthetic(1, Look::Failing)));
+        for calm in [Look::Draft, Look::Open, Look::Approved, Look::Merged, Look::Closed] {
+            assert!(!pr_needs_action(&Pr::synthetic(1, calm)), "{calm:?} is not an interruption");
+        }
+
+        assert!(ticket_needs_action(&Ticket::synthetic(1, Some(Status::Todo))));
+        assert!(ticket_needs_action(&Ticket::synthetic(1, Some(Status::Backlog))));
+        for calm in [Status::Started, Status::Done, Status::Cancelled] {
+            assert!(!ticket_needs_action(&Ticket::synthetic(1, Some(calm))), "{calm:?} wants nothing");
+        }
+        assert!(
+            !ticket_needs_action(&Ticket::synthetic(1, None)),
+            "a status nobody answered for is the board not knowing, not the issue asking"
+        );
     }
 
     #[test]
