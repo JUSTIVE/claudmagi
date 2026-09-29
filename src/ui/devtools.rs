@@ -12,7 +12,7 @@ use crate::ui::panel::{Which, button, c, dim, section};
 
 pub const PANEL_W: f32 = 330.0;
 
-fn phase_color(phase: Phase) -> Rgba {
+pub(crate) fn phase_color(phase: Phase) -> Rgba {
     match phase {
         Phase::Working => PALETTE.text_on,
         Phase::NeedsUser => PALETTE.packet, // the needs-input chip's orange (#50)
@@ -286,11 +286,16 @@ impl Board {
             Mode::Live => "SESSIONS",
         };
         let count = if mode == Mode::Sandbox { sandbox.len() } else { self.model.live().count() };
-        panel = panel.child(
+        // In live mode this was only ever a list, and the list has a panel of
+        // its own now (Cmd-L, #103). In the sandbox these rows are the
+        // controls themselves, so they stay.
+        if mode == Mode::Sandbox {
+            panel = panel.child(
             section(title)
                 .child(div().text_color(dim(0.45)).text_size(px(10.)).child(format!("{count} total")))
                 .child(list),
-        );
+            );
+        }
 
         panel.child(
             div()
@@ -300,7 +305,7 @@ impl Board {
                 .border_color(dim(0.12))
                 .text_size(px(10.))
                 .text_color(dim(0.45))
-                .child("T toggles this panel · Esc closes"),
+                .child("T toggles this panel · ⌘L lists the sessions · Esc closes"),
         )
     }
 }

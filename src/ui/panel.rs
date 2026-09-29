@@ -50,6 +50,8 @@ pub fn section(title: impl Into<SharedString>) -> gpui::Div {
 pub enum Which {
     Dev,
     Settings,
+    /// The list down the right-hand side (#103).
+    List,
 }
 
 impl Board {
@@ -57,6 +59,7 @@ impl Board {
         match which {
             Which::Dev => &mut self.dev,
             Which::Settings => &mut self.settings_panel,
+            Which::List => &mut self.list_panel,
         }
     }
 
@@ -74,6 +77,7 @@ impl Board {
         let close_id: &'static str = match which {
             Which::Dev => "dev-close",
             Which::Settings => "settings-close",
+            Which::List => "list-close",
         };
         div()
             // A panel wider than the window would push its own close button

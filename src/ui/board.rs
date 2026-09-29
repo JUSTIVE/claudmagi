@@ -59,6 +59,8 @@ pub struct Board {
     pub(crate) settings: Settings,
     pub(crate) dev: PanelState,
     pub(crate) settings_panel: PanelState,
+    /// The list down the right-hand side (#103).
+    pub(crate) list_panel: PanelState,
     layout: Layout,
     lanes: Rc<Vec<Lane>>,
     /// True while the last built lanes were mid-slide (#49).
@@ -179,6 +181,7 @@ impl Board {
             settings,
             dev: PanelState::default(),
             settings_panel: PanelState::default(),
+            list_panel: PanelState::default(),
             lanes: Rc::new(Vec::new()),
             lanes_moving: false,
             draws: Vec::new(),
@@ -588,6 +591,7 @@ impl Render for Board {
         let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
         let palette_open = self.palette.open;
+        let list_open = self.list_panel.open;
         let pr_tip = self.pr_tooltip(w, h);
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
@@ -612,6 +616,8 @@ impl Render for Board {
                     return;
                 }
                 match ev.keystroke.key.as_str() {
+                    "l" if cmd => this.toggle_list(),
+                    "escape" if this.list_panel.open => this.list_panel.open = false,
                     "escape" if this.settings_panel.open => this.settings_panel.open = false,
                     "escape" if this.dev.open => this.dev.open = false,
                     "escape" => cx.quit(),
@@ -850,6 +856,7 @@ impl Render for Board {
             })
             // The search sits over the board, near the top, where a palette
             // is looked for (#71).
+            .when(list_open, |d| d.child(self.render_list(cx)))
             .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
             .when_some(pr_tip, |d, tip| d.child(tip))
     }

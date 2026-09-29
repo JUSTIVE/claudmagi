@@ -2,6 +2,7 @@
 
 pub mod board;
 pub mod devtools;
+pub mod list;
 pub mod palette;
 pub mod panel;
 pub mod settings;
