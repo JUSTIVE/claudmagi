@@ -38,7 +38,7 @@ const SUB_MAX: f32 = 0.42;
 /// wall. Smaller than a cell's own rows: these are names nobody reads across
 /// the room, and the smaller they are set the more of each one survives the
 /// cut (#98).
-const SUB_TEXT: f32 = 0.042;
+const SUB_TEXT: f32 = 0.032;
 const SUB_PAD: f32 = 4.0;
 
 /// What one mini hex says, cut to what it can hold.
