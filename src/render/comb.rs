@@ -550,15 +550,18 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             if agents.is_empty() {
                 continue;
             }
-            let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
             // No cell drawn around them: the subagents are the only thing
             // there, and a hex around a hex reads as a container nobody asked
             // for (#97). The cell still governs where they may go.
 
             for ((at, mr), (label, going)) in sub_grid(center, r, agents.len()).into_iter().zip(&agents) {
                 // Solid, not an outline: a subagent is a thing doing work,
-                // and the cell around it is the empty part (#96).
-                let color = if *going { read(pal.text_on) } else { theme::lerp(pal.bg, pal.ink, 0.45) };
+                // and the cell around it is the empty part (#96). It wears
+                // the board's chip colour, which is what a working chip
+                // wears out there — black on the white board, white on the
+                // dark one — and a finished one is the same colour given
+                // back to the board (#110).
+                let color = if *going { pal.chip } else { theme::lerp(pal.bg, pal.chip, 0.45) };
                 out.push(Shape::Poly { points: corners(at, mr, SUB_GAP), color: fade(color) });
                 let (text, scale) = sub_box(mr, label);
                 if !text.is_empty() {
