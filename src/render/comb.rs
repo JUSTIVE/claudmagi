@@ -31,9 +31,11 @@ pub const BORDER: f32 = 1.4;
 pub const GAP: f32 = 7.0;
 /// The mini hexes of a subagent sub-grid sit closer, being smaller.
 const SUB_GAP: f32 = 2.4;
-/// The most of a cell one mini hex may take. Enough that a name fits inside
-/// it (#95), still plainly smaller than the cell around it.
-const SUB_MAX: f32 = 0.42;
+/// A mini hex against a cell of the grid. Half, exactly, so the sub-grid is
+/// the same honeycomb at half the pitch rather than a shape squeezed to fit
+/// whatever room one cell had left: the flower comes out even, and a name
+/// fits in it (#104).
+const SUB_SCALE: f32 = 0.5;
 /// A mini hex's label against its own radius, and the room kept clear of its
 /// wall. Smaller than a cell's own rows: these are names nobody reads across
 /// the room, and the smaller they are set the more of each one survives the
@@ -629,37 +631,15 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
 /// they are. A flower like the clusters themselves, sized so the whole of it
 /// stays inside the cell however many there are (#88).
 pub fn sub_grid(center: Pt, r: f32, n: usize) -> Vec<(Pt, f32)> {
-    let sqrt3 = 3.0f32.sqrt();
+    let mr = r * SUB_SCALE;
     let seats = flower(n);
-    // Sized to the seats actually taken, not to the ring they came from: two
-    // subagents sit on a ring of six, and paying for the four empty ones
-    // shrinks them until their names are three dots (#95).
-    let pts: Vec<Pt> = seats.iter().map(|(q, row)| axial(*q, *row, 1.0)).collect();
+    let pts: Vec<Pt> = seats.iter().map(|(q, row)| axial(*q, *row, mr)).collect();
     let (x0, x1) = bounds(pts.iter().map(|p| p.x));
     let (y0, y1) = bounds(pts.iter().map(|p| p.y));
-    let (ex, ey) = ((x1 - x0) / 2.0 + sqrt3 / 2.0, (y1 - y0) / 2.0 + 1.0);
-    let inner = r - GAP / sqrt3;
-    // Centred on what they take up, so the group sits in the middle.
+    // Centred on what the flower actually takes up, so a pair sits in the
+    // middle of its cell rather than hanging off one side of it.
     let mid = Pt::new((x0 + x1) / 2.0, (y0 + y1) / 2.0);
-    let place = |mr: f32| -> Vec<(Pt, f32)> {
-        pts.iter().map(|p| (center + (*p - mid) * mr, mr)).collect()
-    };
-    // The estimate treats both shapes as boxes, which they are not: a hexagon
-    // narrows towards its points, so a flower that fits the box can still
-    // poke through a wall. Shrink until it genuinely fits rather than trusting
-    // the arithmetic.
-    let mut mr = (sqrt3 / 2.0 * inner / ex).min(inner / ey).min(r * SUB_MAX);
-    for _ in 0..24 {
-        let out = place(mr);
-        let fits = out
-            .iter()
-            .all(|(at, mr)| corners(*at, *mr, SUB_GAP).into_iter().all(|c| inside_hex(c, center, r, GAP)));
-        if fits {
-            return out;
-        }
-        mr *= 0.95;
-    }
-    place(mr)
+    pts.into_iter().map(|p| (center + p - mid, mr)).collect()
 }
 
 fn bounds(vs: impl Iterator<Item = f32>) -> (f32, f32) {
@@ -858,7 +838,7 @@ mod tests {
     /// Subagents moved out of their parent's hex and into the one next door
     /// (#88), and the sub-grid has to stay inside that one.
     #[test]
-    fn subagents_take_the_cell_next_door_and_stay_inside_it() {
+    fn subagents_take_the_cell_next_door_on_a_half_pitch_grid() {
         for n in [1usize, 3, 7, 12, 19] {
             let model = with_subagents(n);
             let comb = lay_out(&model, 980.0, 620.0);
@@ -870,15 +850,25 @@ mod tests {
             let step = comb.r * 3.0f32.sqrt();
             assert!((d - step).abs() < 1.0, "{n}: the cell is not next door ({d} against {step})");
 
-            for (at, mr) in sub_grid(home.center, comb.r, n) {
-                assert!(mr <= comb.r * SUB_MAX + 0.01, "{n}: a mini hex this big stops reading as a sub-grid");
-                for corner in corners(at, mr, SUB_GAP) {
-                    assert!(
-                        inside_hex(corner, home.center, comb.r, GAP),
-                        "{n}: a mini hex reaches outside its cell"
-                    );
-                }
+            // The sub-grid is the same honeycomb at half the pitch, and is
+            // centred on the cell it belongs to (#104). A big flower spills
+            // into the empty cells around it, which the grid keeps free
+            // anyway.
+            let grid = sub_grid(home.center, comb.r, n);
+            assert_eq!(grid.len(), n);
+            for (_, mr) in &grid {
+                assert!((mr - comb.r * SUB_SCALE).abs() < 1e-3, "{n}: a mini hex is off the sub-pitch");
             }
+            let xs: Vec<f32> = grid.iter().map(|(p, _)| p.x).collect();
+            let ys: Vec<f32> = grid.iter().map(|(p, _)| p.y).collect();
+            let mid = Pt::new(
+                (xs.iter().cloned().fold(f32::MAX, f32::min) + xs.iter().cloned().fold(f32::MIN, f32::max)) / 2.0,
+                (ys.iter().cloned().fold(f32::MAX, f32::min) + ys.iter().cloned().fold(f32::MIN, f32::max)) / 2.0,
+            );
+            assert!(
+                (mid.x - home.center.x).abs() < 0.01 && (mid.y - home.center.y).abs() < 0.01,
+                "{n}: the flower is not centred on its cell"
+            );
         }
     }
 
