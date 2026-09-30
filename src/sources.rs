@@ -908,12 +908,19 @@ const AGENT_TYPES: [(&str, &str); 5] = [
 ];
 
 pub const CHURN_INTERVAL: Duration = Duration::from_millis(1400);
+/// How much faster or slower than that the sandbox is running (#106). The
+/// churn is how the board's animations get exercised, and what wants
+/// watching decides the pace: a lane sliding into place wants it slow, a
+/// crowd of chips arriving wants it fast.
+pub const CHURN_RATES: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 
 struct FakeState {
     sessions: Vec<SessionInfo>,
     seq: u32,
     agent_seq: u32,
     auto: bool,
+    /// Multiplier on the churn's pace; 1.0 is `CHURN_INTERVAL` (#106).
+    rate: f32,
     last_churn: Option<Instant>,
     rng: u64,
 }
@@ -929,11 +936,14 @@ impl FakeState {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 8
     }
 
-    fn push_session(&mut self, phase: Phase) -> String {
+    fn push_session(&mut self, phase: Phase, group: Option<&str>) -> String {
         self.seq += 1;
         let seq = self.seq;
         let name = format!("{}-{:02}", NAMES[(seq as usize - 1) % NAMES.len()], seq);
-        let info = SessionInfo::synthetic(seq, &name, phase);
+        let mut info = SessionInfo::synthetic(seq, &name, phase);
+        if let Some(g) = group {
+            info.group = g.to_string();
+        }
         let label = info.label();
         self.sessions.push(info);
         label
@@ -976,6 +986,7 @@ impl FakeSource {
                 seq: 0,
                 agent_seq: 0,
                 auto: false,
+                rate: 1.0,
                 last_churn: None,
                 rng: 0x9E37_79B9_7F4A_7C15,
             }),
@@ -988,7 +999,28 @@ impl FakeSource {
 
     /// Adds a session in `phase`; returns its label.
     pub fn add(&self, phase: Phase) -> String {
-        self.lock().push_session(phase)
+        self.lock().push_session(phase, None)
+    }
+
+    /// Adds a session to a group that is already on the board, so a cluster
+    /// can be grown a pane at a time (#107). The sandbox otherwise starts a
+    /// new group every third session, which never exercises what a tab full
+    /// of panes looks like.
+    pub fn add_to_group(&self, group: &str, phase: Phase) -> String {
+        self.lock().push_session(phase, Some(group))
+    }
+
+    /// The groups on the board with how many sessions each holds, in the
+    /// order they first appeared.
+    pub fn groups(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for s in &self.lock().sessions {
+            match out.iter_mut().find(|(g, _)| *g == s.group) {
+                Some((_, n)) => *n += 1,
+                None => out.push((s.group.clone(), 1)),
+            }
+        }
+        out
     }
 
     pub fn fill(&self, n: usize) {
@@ -1094,6 +1126,17 @@ impl FakeSource {
         st.last_churn = None;
     }
 
+    pub fn rate(&self) -> f32 {
+        self.lock().rate
+    }
+
+    /// Sets the pace. The wait already running is measured against the new
+    /// interval rather than restarted, so turning the dial up shortens what
+    /// is left instead of firing a tick on the spot.
+    pub fn set_rate(&self, rate: f32) {
+        self.lock().rate = rate.clamp(0.05, 20.0);
+    }
+
     pub fn len(&self) -> usize {
         self.lock().sessions.len()
     }
@@ -1103,7 +1146,8 @@ impl FakeSource {
         self.len() == 0
     }
 
-    /// When auto mode is on, every `CHURN_INTERVAL` one random thing happens:
+    /// When auto mode is on, every `CHURN_INTERVAL` divided by the rate one
+    /// random thing happens:
     /// a subagent is spawned, finished or removed, a session is added or
     /// removed, or a session changes phase. Returns true if something changed.
     pub fn churn(&self, now: Instant) -> bool {
@@ -1111,7 +1155,8 @@ impl FakeSource {
         if !st.auto {
             return false;
         }
-        if st.last_churn.is_some_and(|t| now.duration_since(t) < CHURN_INTERVAL) {
+        let wait = CHURN_INTERVAL.div_f32(st.rate.max(0.05));
+        if st.last_churn.is_some_and(|t| now.duration_since(t) < wait) {
             return false;
         }
         st.last_churn = Some(now);
@@ -1154,7 +1199,7 @@ impl FakeSource {
             // 8%: a new session arrives.
             65..=72 if n < 14 => {
                 let phase = Phase::ALL[(st.next_rand() % 3) as usize];
-                st.push_session(phase);
+                st.push_session(phase, None);
             }
             // 7%: a session goes away.
             73..=79 if n > 2 => {
@@ -1168,7 +1213,7 @@ impl FakeSource {
                 st.sessions[idx].set_phase(next);
             }
             _ => {
-                st.push_session(Phase::Working);
+                st.push_session(Phase::Working, None);
             }
         }
         true
@@ -1240,6 +1285,28 @@ mod tests {
         assert!(list.iter().all(|s| s.subagents.is_empty()));
     }
 
+    /// A cluster can be grown a pane at a time, which is the only way a tab
+    /// full of panes turns up in the sandbox (#107).
+    #[test]
+    fn a_cluster_grows_a_pane_at_a_time() {
+        let src = FakeSource::new();
+        src.fill(4);
+        let groups = src.groups();
+        assert!(groups.len() > 1, "the sandbox starts a new group every third session");
+        let (first, n) = groups[0].clone();
+
+        src.add_to_group(&first, Phase::Working);
+        src.add_to_group(&first, Phase::Idle);
+        let after = src.groups();
+        assert_eq!(after[0].1, n + 2, "both landed in the group they were sent to");
+        assert_eq!(after.len(), groups.len(), "and no new group appeared");
+        assert_eq!(
+            src.snapshot().iter().filter(|s| s.group == first).count(),
+            n + 2,
+            "the board sees them in that group"
+        );
+    }
+
     #[test]
     fn fake_subagents_attach_to_their_session() {
         let src = FakeSource::new();
@@ -1253,6 +1320,30 @@ mod tests {
         src.remove_sub(&b);
         assert_eq!(src.snapshot()[0].subagents.len(), 1);
         assert!(src.add_sub("nope", true).is_none());
+    }
+
+    /// The pace is a dial, and turning it is felt on the next tick rather
+    /// than after the wait that was already running (#106).
+    #[test]
+    fn the_churn_runs_at_whatever_pace_it_is_set_to() {
+        let src = FakeSource::new();
+        src.fill(3);
+        src.set_auto(true);
+        let tick = Duration::from_millis(1);
+        let mut last = Instant::now();
+        assert!(src.churn(last));
+
+        src.set_rate(4.0);
+        let quick = CHURN_INTERVAL.div_f32(4.0);
+        assert!(!src.churn(last + quick / 2), "not yet, even at four times");
+        assert!(src.churn(last + quick + tick), "a quarter of the wait is enough");
+        last += quick + tick;
+
+        src.set_rate(0.25);
+        let slow = CHURN_INTERVAL.mul_f32(4.0);
+        assert!(!src.churn(last + CHURN_INTERVAL + tick), "the slow dial waits four times as long");
+        assert!(src.churn(last + slow + tick));
+        assert_eq!(src.rate(), 0.25, "and says what it is set to");
     }
 
     #[test]

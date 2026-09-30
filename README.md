@@ -127,10 +127,15 @@ Press `T` (or click `TEST` in the status bar) to open the test panel. Panels doc
 - **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at
   once, clears them, or turns on *auto churn*: every 1.4 s a subagent is
   spawned, finishes or disappears, a session arrives, leaves or changes phase.
-- **SESSIONS** lists what the board shows; sandbox rows have `W/N/I` phase
+  **RATE** runs that between a quarter speed and four times, since watching a
+  lane slide into place wants one end of it and a crowd arriving wants the
+  other. **GROW** adds a session to a group already on the board, one pane at
+  a time: the sandbox otherwise starts a new group every third session and a
+  tab full of panes never turns up.
+- **SESSIONS** (sandbox only; the live list is `⌘L`) has `W/N/I` phase
   buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
-  `RUN/DONE` and `×`; live rows have `→ WARP`. Clicking a sandbox name cycles
-  its phase. `Esc` closes it.
+  `RUN/DONE` and `×`. Clicking a sandbox name cycles its phase. `Esc` closes
+  it.
 
 ## Fonts
 

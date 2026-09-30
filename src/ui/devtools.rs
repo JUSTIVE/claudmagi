@@ -7,6 +7,7 @@ use crate::model::Phase;
 use crate::pr;
 use crate::ticket;
 use crate::theme::{self, PALETTE, Rgba};
+use crate::sources;
 use crate::ui::board::{Board, Mode};
 use crate::ui::panel::{Which, button, c, dim, section};
 
@@ -83,7 +84,46 @@ impl Board {
                             .child(button("auto-churn", "AUTO CHURN", auto).on_click(move |_, _, _| {
                                 sb_auto.set_auto(!sb_auto.auto());
                             })),
-                    ),
+                    )
+                    // How fast the churn runs. Watching a lane slide into
+                    // place wants one end of this and a crowd arriving wants
+                    // the other (#106).
+                    .child({
+                        let rate = sandbox.rate();
+                        let mut row = div().flex().items_center().flex_wrap().gap_1().child(
+                            div().w(px(40.)).flex_none().text_size(px(10.)).text_color(dim(0.55)).child("RATE"),
+                        );
+                        for r in sources::CHURN_RATES {
+                            let sb = sandbox.clone();
+                            row = row.child(
+                                button(
+                                    SharedString::from(format!("churn-rate-{}", (r * 100.0) as u32)),
+                                    format!("{r}\u{00d7}"),
+                                    (rate - r).abs() < 0.01,
+                                )
+                                .on_click(move |_, _, _| sb.set_rate(r)),
+                            );
+                        }
+                        row
+                    })
+                    // Growing a cluster a pane at a time: the sandbox starts
+                    // a new group every third session otherwise, and a tab
+                    // full of panes never turns up (#107).
+                    .child({
+                        let groups = sandbox.groups();
+                        let mut row = div().flex().items_center().flex_wrap().gap_1().child(
+                            div().w(px(40.)).flex_none().text_size(px(10.)).text_color(dim(0.55)).child("GROW"),
+                        );
+                        for (group, n) in groups {
+                            let sb = sandbox.clone();
+                            let label = format!("{}+{n}", group.rsplit(':').next().unwrap_or(&group));
+                            let id = SharedString::from(format!("grow-{group}"));
+                            row = row.child(button(id, label, false).on_click(move |_, _, _| {
+                                sb.add_to_group(&group, Phase::Working);
+                            }));
+                        }
+                        row
+                    }),
             );
         }
 
