@@ -454,6 +454,14 @@ impl Tracker {
         self.shared.seen.lock().ok()?.get(id).and_then(|(pr, _)| pr.clone())
     }
 
+    /// Whether a pull request the board knows about has gone unanswered:
+    /// asked for and `gh` came back with nothing. A PR that has not been
+    /// asked about yet is not this — that is the board still working — and
+    /// neither is one that answered (#112).
+    pub fn unanswered(&self, id: &PrRef) -> bool {
+        self.shared.seen.lock().is_ok_and(|seen| matches!(seen.get(id), Some((None, _))))
+    }
+
     /// Declares the refs the board is showing. In eager mode every missing or
     /// stale one is fetched before returning; otherwise the worker picks them
     /// up and the board sees them on a later poll.
@@ -536,6 +544,23 @@ mod tests {
         assert!(!in_context(line, at + 1), "written before the tab turned to new work");
         assert_eq!(line_millis(r#"{"type":"mode","mode":"normal"}"#), None);
         assert!(in_context(r#"{"type":"mode"}"#, at), "a line that cannot be dated is kept");
+    }
+
+    /// Asked and told nothing is not the same as never asked, nor as
+    /// answered: it is GitHub being the problem, and the board says so by
+    /// blinking (#112).
+    #[test]
+    fn a_pull_request_github_would_not_answer_for_is_known_to_be_unanswered() {
+        let tracker = Tracker::default();
+        let id = PrRef { repo: "o/r".into(), number: 7 };
+        assert!(!tracker.unanswered(&id), "nobody has asked yet");
+
+        tracker.shared.store(id.clone(), None);
+        assert!(tracker.unanswered(&id), "asked, and gh came back with nothing");
+        assert!(tracker.cached(&id).is_none());
+
+        tracker.shared.store(id.clone(), Some(Pr::synthetic(7, Look::Open)));
+        assert!(!tracker.unanswered(&id), "and once it answers it is answered");
     }
 
     #[test]

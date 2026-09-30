@@ -627,6 +627,7 @@ pub fn read_sessions() -> Vec<SessionInfo> {
                 },
                 prs: Vec::new(),
                 ticket: None,
+                prs_unanswered: Vec::new(),
                 job: if parked { r.job_id } else { None },
                 parked_job: r.parked_job_id,
             }
@@ -782,6 +783,7 @@ impl ClaudeSource {
         for (s, transcript) in list.iter_mut().zip(&paths) {
             let refs = self.prs.resolve(&s.session_id, &s.cwd, transcript.as_deref(), s.context_since);
             s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
+            s.prs_unanswered = refs.iter().filter(|id| self.prs.unanswered(id)).cloned().collect();
         }
 
         let titles: Vec<Vec<String>> = list.iter().map(|s| s.prs.iter().map(|p| p.title.clone()).collect()).collect();

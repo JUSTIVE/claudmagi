@@ -612,11 +612,15 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // (#90)
         let ticket = info.ticket.as_ref();
         let pr = info.prs.last();
+        // GitHub is the problem when it will not answer for a pull request
+        // the transcript named: the board knows the number and nothing else
+        // (#112).
+        let unanswered = info.prs_unanswered.last();
         // A row blinks when that row is the one waiting.
         let row_beat = |row: usize| {
             let waiting = match row {
                 0 => ticket.is_some_and(ticket_needs_action),
-                2 => pr.is_some_and(pr_needs_action),
+                2 => pr.is_some_and(pr_needs_action) || unanswered.is_some(),
                 _ => false,
             };
             if waiting { theme::pulse_at(pal, t) } else { 1.0 }
@@ -649,7 +653,17 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         let slots = [
             ticket.map(|t| SlotInk { mark: logos::Mark::Linear, label: t.key.clone(), color: read(ticket_color(t, pal)) }),
             Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg }),
-            pr.map(|p| SlotInk { mark: logos::Mark::GitHub, label: p.label(), color: read(pr_color(p, pal)) }),
+            // The answered one if there is one, otherwise the number GitHub
+            // would not speak for, drawn quietly and blinking.
+            pr.map(|p| SlotInk { mark: logos::Mark::GitHub, label: p.label(), color: read(pr_color(p, pal)) }).or_else(
+                || {
+                    unanswered.map(|id| SlotInk {
+                        mark: logos::Mark::GitHub,
+                        label: format!("#{}", id.number),
+                        color: theme::with_alpha(pal.ink, 0.5),
+                    })
+                },
+            ),
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };

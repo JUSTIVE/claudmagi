@@ -110,6 +110,10 @@ pub struct SessionInfo {
     pub prs: Vec<crate::pr::Pr>,
     /// The Linear issue behind the work, drawn at the head of the lane (#57).
     pub ticket: Option<crate::ticket::Ticket>,
+    /// Pull requests the transcript named that GitHub would not answer for.
+    /// Knowing the number without knowing the state is worth saying: it is
+    /// GitHub that is the problem, not the absence of a PR (#112).
+    pub prs_unanswered: Vec<crate::pr::PrRef>,
     /// When the work in this session last turned over: the moment it was
     /// renamed, which is how a tab announces that it is on something new.
     /// Zero when it still carries the name it started with, so a session that
@@ -146,6 +150,7 @@ impl SessionInfo {
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
             prs: Vec::new(),
             ticket: None,
+            prs_unanswered: Vec::new(),
             context_since: 0,
             job: None,
             parked_job: None,
