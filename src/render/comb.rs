@@ -105,7 +105,7 @@ fn cell_at(p: Pt, r: f32) -> (i32, i32) {
 
 /// How far out a subagent cell may be looked for. One ring is what it should
 /// be; more is for a cell hemmed in by its own cluster (#108).
-const SUB_SEARCH: i32 = 3;
+const SUB_SEARCH: i32 = 4;
 
 /// Whether a point is inside a hex. The half-plane test over the hexagon's own
 /// corners, which is what a sub-grid has to satisfy to stay in its cell (#88).
@@ -215,6 +215,14 @@ fn seat_cluster(cq: i32, crow: i32, members: &[usize]) -> Vec<((i32, i32), usize
     out
 }
 
+/// Whether a cell is somewhere the grid will actually draw it: inside the
+/// width, and not above the first row (#111).
+fn on_screen((q, row): (i32, i32), r: f32, width: f32) -> bool {
+    let sqrt3 = 3.0f32.sqrt();
+    let at = axial(q, row, r);
+    at.x - r * sqrt3 / 2.0 >= -0.5 && at.x + r * sqrt3 / 2.0 <= width + 0.5 && at.y - r >= -0.5
+}
+
 fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
     ring(1).into_iter().any(|(dq, dr)| !taken.contains(&(at.0 + dq, at.1 + dr)))
 }
@@ -314,7 +322,11 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
                 out
             })
             .map(|(dq, dr)| (at.0 + dq, at.1 + dr))
-            .find(|n| !taken(n));
+            // And on screen: a cell off the side or above the first row is
+            // not drawn at all, which loses the subagents as surely as
+            // finding nowhere did (#111). Downwards is unbounded, the view
+            // scrolling that way.
+            .find(|n| !taken(n) && on_screen(*n, r, width));
         if let Some(n) = free {
             sub_seats.push((n, *chip));
         }
@@ -986,6 +998,44 @@ mod tests {
             assert_eq!(sorted.len(), n, "{n}: two sessions were seated in one cell");
             for at in &taken {
                 assert!(has_free_neighbour(*at, &taken), "{n}: a session was walled in by its own cluster");
+            }
+        }
+    }
+
+    /// A cell off the side is never drawn, so subagents sent to one are lost
+    /// exactly as if nowhere had been found (#111).
+    #[test]
+    fn a_subagent_cell_is_always_somewhere_the_grid_draws() {
+        use crate::model::SubagentInfo;
+        for width in [420.0f32, 620.0, 980.0, 1600.0] {
+            for n in [1usize, 3, 7, 9] {
+                let mut model = BoardModel::new();
+                let list: Vec<SessionInfo> = (0..n as u32)
+                    .map(|i| {
+                        let mut s = SessionInfo::synthetic(i + 1, &format!("S-{i}"), Phase::Working);
+                        s.group = "warp-tab:1-1".into();
+                        s.subagents = vec![SubagentInfo::synthetic(i + 1, "Explore", "", true)];
+                        s
+                    })
+                    .collect();
+                model.apply(list, Instant::now());
+                model.settle();
+                let comb = lay_out(&model, width, 620.0);
+                let where_ = format!("{width}px, {n} sessions");
+
+                for i in 0..n {
+                    let home = comb.cells.iter().find(|c| c.subs == Some(i));
+                    assert!(home.is_some(), "{where_}: session {i} lost its subagents");
+                    let home = home.unwrap();
+                    let xs: Vec<f32> = corners(home.center, comb.r, GAP).iter().map(|p| p.x).collect();
+                    let top = corners(home.center, comb.r, GAP).iter().map(|p| p.y).fold(f32::MAX, f32::min);
+                    assert!(xs.iter().cloned().fold(f32::MAX, f32::min) >= -1.0, "{where_}: off the left");
+                    assert!(
+                        xs.iter().cloned().fold(f32::MIN, f32::max) <= width + 1.0,
+                        "{where_}: off the right"
+                    );
+                    assert!(top >= -1.0, "{where_}: above the first row");
+                }
             }
         }
     }
