@@ -103,9 +103,9 @@ fn cell_at(p: Pt, r: f32) -> (i32, i32) {
     (q as i32, rr as i32)
 }
 
-/// The six neighbours of a cell, in the order a subagent cell is looked for:
-/// under the parent first, where the eye goes next.
-const NEIGHBOURS: [(i32, i32); 6] = [(0, 1), (-1, 1), (1, 0), (-1, 0), (1, -1), (0, -1)];
+/// How far out a subagent cell may be looked for. One ring is what it should
+/// be; more is for a cell hemmed in by its own cluster (#108).
+const SUB_SEARCH: i32 = 3;
 
 /// Whether a point is inside a hex. The half-plane test over the hexagon's own
 /// corners, which is what a sub-grid has to satisfy to stay in its cell (#88).
@@ -174,6 +174,51 @@ fn rings(n: usize) -> i32 {
     k
 }
 
+/// Where a cluster's sessions sit around `(cq, crow)`.
+///
+/// The flower, walked outwards, but a seat is passed over when taking it
+/// would leave somebody with nowhere to put their subagents: every session
+/// keeps a neighbouring cell free for them (#109). Six around one fills the
+/// ring and walls the middle in, so the seventh goes a step further out
+/// rather than closing the last door.
+fn seat_cluster(cq: i32, crow: i32, members: &[usize]) -> Vec<((i32, i32), usize)> {
+    let mut out: Vec<((i32, i32), usize)> = Vec::new();
+    let mut seats: Vec<(i32, i32)> = Vec::new();
+    let mut k = 0;
+    let mut pool: Vec<(i32, i32)> = ring(0);
+    for member in members {
+        loop {
+            if pool.is_empty() {
+                k += 1;
+                pool = ring(k);
+                pool.sort_by_key(|(q, row)| (-row, *q));
+            }
+            let seat = (cq + pool[0].0, crow + pool[0].1);
+            pool.remove(0);
+            let mut with = seats.clone();
+            with.push(seat);
+            // Everyone, the newcomer included, must still have somewhere to
+            // put a subagent.
+            if with.iter().all(|s| has_free_neighbour(*s, &with)) {
+                seats.push(seat);
+                out.push((seat, *member));
+                break;
+            }
+            // Nowhere left to try: seat it anyway rather than lose it.
+            if k > 4 {
+                seats.push(seat);
+                out.push((seat, *member));
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
+    ring(1).into_iter().any(|(dq, dr)| !taken.contains(&(at.0 + dq, at.1 + dr)))
+}
+
 /// Lays the sessions out as clusters on a grid that fills `width`.
 ///
 /// Sessions are grouped the way the board groups them (#41): panes of one Warp
@@ -215,8 +260,7 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             band = 0.0;
         }
         let (cq, crow) = cell_at(Pt::new(x + half_w, y + half_h), r);
-        let mut placed: Vec<((i32, i32), usize)> =
-            flower(members.len()).into_iter().zip(members).map(|(s, m)| ((cq + s.0, crow + s.1), *m)).collect();
+        let mut placed: Vec<((i32, i32), usize)> = seat_cluster(cq, crow, members);
         // Snapping the centre to the grid can round the whole flower half a
         // cell off, so measure what actually landed and shove it back inside
         // by whole columns.
@@ -256,9 +300,21 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
         if !has_subs {
             continue;
         }
-        let free = NEIGHBOURS.iter().map(|(dq, dr)| (at.0 + dq, at.1 + dr)).find(|n| {
-            !seats.iter().any(|(s, _)| s == n) && !sub_seats.iter().any(|(s, _)| s == n)
-        });
+        let taken = |n: &(i32, i32)| {
+            seats.iter().any(|(s, _)| s == n) || sub_seats.iter().any(|(s, _)| s == n)
+        };
+        // The nearest free cell, not merely an adjacent one: the middle of a
+        // full flower has six neighbours and a session in every one of them,
+        // and its subagents were being dropped on the floor (#108).
+        let free = (1..=SUB_SEARCH)
+            .flat_map(|k| {
+                let mut out = ring(k);
+                // Downwards first, where the eye goes after the cell itself.
+                out.sort_by_key(|(q, row)| (-row, *q));
+                out
+            })
+            .map(|(dq, dr)| (at.0 + dq, at.1 + dr))
+            .find(|n| !taken(n));
         if let Some(n) = free {
             sub_seats.push((n, *chip));
         }
@@ -880,6 +936,57 @@ mod tests {
     }
 
     /// Each row of a cell is its own target (#89).
+    /// Seating leaves everyone a neighbour to put subagents in, so no
+    /// session is ever walled in by its own cluster (#108, #109).
+    #[test]
+    fn a_session_hemmed_in_by_its_own_cluster_still_gets_its_subagents() {
+        use crate::model::SubagentInfo;
+        let mut model = BoardModel::new();
+        let list: Vec<SessionInfo> = (0..7u32)
+            .map(|i| {
+                let mut s = SessionInfo::synthetic(i + 1, &format!("S-{i}"), Phase::Working);
+                s.group = "warp-tab:1-1".into();
+                // Everyone has one, the middle included.
+                s.subagents = vec![SubagentInfo::synthetic(i + 1, "Explore", "", true)];
+                s
+            })
+            .collect();
+        model.apply(list, Instant::now());
+        model.settle();
+        let comb = lay_out(&model, 980.0, 620.0);
+
+        for i in 0..7 {
+            let home = comb.cells.iter().find(|c| c.subs == Some(i));
+            assert!(home.is_some(), "session {i} lost its subagents");
+            assert!(home.unwrap().chip.is_none(), "session {i}: they took a seat somebody is in");
+        }
+        let seats: Vec<(f32, f32)> =
+            comb.cells.iter().filter(|c| c.subs.is_some()).map(|c| (c.center.x, c.center.y)).collect();
+        for (i, a) in seats.iter().enumerate() {
+            for b in &seats[i + 1..] {
+                assert_ne!(a, b, "two sessions were given the same cell");
+            }
+        }
+    }
+
+    /// The rule the seating follows, on clusters of every size (#109).
+    #[test]
+    fn every_session_in_a_cluster_keeps_a_free_neighbour() {
+        for n in 1..=12usize {
+            let members: Vec<usize> = (0..n).collect();
+            let seats = seat_cluster(0, 0, &members);
+            assert_eq!(seats.len(), n);
+            let taken: Vec<(i32, i32)> = seats.iter().map(|(at, _)| *at).collect();
+            let mut sorted = taken.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), n, "{n}: two sessions were seated in one cell");
+            for at in &taken {
+                assert!(has_free_neighbour(*at, &taken), "{n}: a session was walled in by its own cluster");
+            }
+        }
+    }
+
     #[test]
     fn a_cell_answers_for_the_row_that_was_clicked() {
         let model = board(&[("warp-tab:1-1", 1)]);
