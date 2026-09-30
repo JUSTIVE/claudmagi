@@ -623,7 +623,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 2 => pr.is_some_and(pr_needs_action) || unanswered.is_some(),
                 _ => false,
             };
-            if waiting { theme::pulse_at(pal, t) } else { 1.0 }
+            if waiting { theme::pulse_at(t) } else { 1.0 }
         };
         let needs = info.phase() == Phase::NeedsUser || pr.is_some_and(pr_needs_action);
         // Colour and blink answer different questions (#100). The border's
@@ -631,7 +631,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // The blink says who is waiting, and only the session's own asking
         // moves the cell itself — a red check or an unstarted issue blinks on
         // its own row, where the thing that needs doing actually is.
-        let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(pal, t) } else { 1.0 };
+        let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
         // Opaque, because the session's row is filled with this same colour
         // and a label has to read on top of it (#89).
         let edge = if needs {
