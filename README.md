@@ -1,6 +1,7 @@
 # claudmagi
 
-A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/).
+A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
+and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts.
 
 Every running `claude` process becomes a chip riding on a trace, with Claude's mark inside it ahead of the name, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
@@ -97,7 +98,7 @@ is the whole signal — hollow draft, green outline open, filled green approved,
 orange failing, purple merged, faint closed — with a yellow border laid over
 any of them while CI is still running. Hovering a connector puts the pull
 request's own title beside it, above where there is room and below where there
-is not, and never off the edge of the window (#77).
+is not, and never off the edge of the window (#77, #115).
 
 The Linear issue docks at the left edge, where the lane begins: the work comes
 from a ticket and leaves through a PR. Both ends share a grammar — outlined

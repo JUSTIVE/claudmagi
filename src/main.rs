@@ -205,13 +205,17 @@ fn main() {
     }
 
     // The search's chips draw their marks through this (#79).
-    Application::new().with_assets(logos::Logos).run(|cx: &mut App| {
+    Application::with_platform(gpui_platform::current_platform(false))
+        .with_assets(logos::Logos)
+        .run(|cx: &mut App| {
+        base_gpui::init(cx);
         ui::register_fonts(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![Menu {
             name: "claudmagi".into(),
             items: vec![MenuItem::action("Quit claudmagi", Quit)],
+            disabled: false,
         }]);
 
         // CLAUDMAGI_WINDOW=WxH opens at a given size (memory / layout checks).
@@ -233,7 +237,7 @@ fn main() {
         .expect("open window");
         mac::style_frameless();
 
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }

@@ -10,6 +10,11 @@ gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 # Flattens the chip marks into paths the board can draw, on screen and in an
 # `--svg` export alike (#79, #80). Already in the tree underneath gpui.
 usvg = "0.45"
+# The platform backends left the gpui crate at this revision; `current_platform`
+# lives here now and is what opens a real window (#115).
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "59b2ebf10351b5c0b5cd4403f01ed0460eeec06d" }
+# Headless components for gpui (#115). Tracks the same gpui revision.
+base-gpui = { git = "https://github.com/LukeTandjung/base-gpui" }
 lyon = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -34,3 +39,9 @@ codegen-units = 1
 
 [lints.rust]
 unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+# base-gpui tracks gpui at a Zed revision rather than the release, and cargo
+# treats the two as different crates: its `Window` would not be ours. The
+# patch points everyone at the same one (#115).
+[patch.crates-io]
+gpui = { version = "=0.2.2", git = "https://github.com/zed-industries/zed", rev = "59b2ebf10351b5c0b5cd4403f01ed0460eeec06d" }
