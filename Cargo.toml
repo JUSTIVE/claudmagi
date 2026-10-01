@@ -12,7 +12,9 @@ gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 usvg = "0.45"
 # The platform backends left the gpui crate at this revision; `current_platform`
 # lives here now and is what opens a real window (#115).
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "59b2ebf10351b5c0b5cd4403f01ed0460eeec06d" }
+# `font-kit` moved from gpui to here, and this crate defaults to no
+# features: without it macOS renders no text at all (#115).
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "59b2ebf10351b5c0b5cd4403f01ed0460eeec06d", features = ["font-kit"] }
 # Headless components for gpui (#115). Tracks the same gpui revision.
 base-gpui = { git = "https://github.com/LukeTandjung/base-gpui" }
 lyon = "1.0"
