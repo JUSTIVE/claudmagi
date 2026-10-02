@@ -94,9 +94,11 @@ edge with the newest outermost and the oldest folded into a `+n` badge when the
 chain runs long. State comes from `gh pr view` on a small pool of worker threads — never
 inside the session poll — and the trace runs into the leftmost connector of
 that chain, where the body's colour
-is the whole signal — hollow draft, green outline open, filled green approved,
-orange failing, purple merged, faint closed — with a yellow border laid over
-any of them while CI is still running. Hovering a connector puts the pull
+is the whole signal — hollow draft, green outline open, orange failing, purple
+merged, faint closed — with a yellow border laid over any of them while CI is
+still running, and a tick beside the number where review has signed off. The
+tick rather than a colour of its own: an approved pull request is an open one,
+and GitHub's own state is what the body is for (#116). Hovering a connector puts the pull
 request's own title beside it, above where there is room and below where there
 is not, and never off the edge of the window (#77, #115).
 

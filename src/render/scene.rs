@@ -204,6 +204,9 @@ pub struct PrDraw {
     pub look: pr::Look,
     /// CI is still working: a yellow border on top of whatever look it has (#62).
     pub running: bool,
+    /// Review signed off: a tick beside the number, on top of whatever look
+    /// it has (#116).
+    pub signed_off: bool,
     pub alpha: f32,
     pub hover: f32,
     /// Where a click goes; `None` for sandbox connectors (#57).
@@ -246,6 +249,33 @@ pub struct Frame {
     pub pan_x: f32,
     pub palette: Palette,
 }
+
+/// The tick an approved pull request wears beside its number (#116): how wide
+/// it is drawn on the board, how thick, and how far it keeps from the number.
+///
+/// Drawn rather than typed. The board's labels come out of D-DIN's own
+/// outlines and that face has no check mark, so a `\u{2713}` would arrive as
+/// the `?` the lookup falls back to.
+pub const CHECK_W: f32 = 5.2;
+pub const CHECK_GAP: f32 = 3.0;
+const CHECK_STROKE: f32 = 1.3;
+
+/// The tick as a polyline, `w` across and centred on `at`. Down to the elbow,
+/// then up and out: the long arm runs past the short one, which is what makes
+/// it read as a tick at four pixels rather than as a bent line.
+pub fn check_mark(at: Pt, w: f32) -> Vec<Vec<Pt>> {
+    vec![vec![
+        Pt::new(at.x - w * 0.46, at.y + w * 0.02),
+        Pt::new(at.x - w * 0.14, at.y + w * 0.34),
+        Pt::new(at.x + w * 0.46, at.y - w * 0.36),
+    ]]
+}
+
+/// How much room a connector sets aside for its tick.
+pub fn tick_room(signed_off: bool) -> f32 {
+    if signed_off { CHECK_W + CHECK_GAP } else { 0.0 }
+}
+
 
 #[derive(Clone, Debug)]
 pub enum Shape {
@@ -713,7 +743,8 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
         let mut right = layout.width - PR_EDGE;
         let mut dropped = 0;
         for pr in session.info.prs.iter().rev() {
-            let w = (font::measure(&pr.label(), PR_TEXT) + 2.0 * PR_PAD).max(30.0);
+            let w =
+                (font::measure(&pr.label(), PR_TEXT) + tick_room(pr.signed_off()) + 2.0 * PR_PAD).max(30.0);
             if !placed.is_empty() && layout.width - PR_EDGE - (right - w) > PR_CHAIN_SPAN {
                 dropped += 1;
                 continue;
@@ -736,6 +767,7 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
                 title: String::new(),
                 look: pr::Look::Closed,
                 running: false,
+                signed_off: false,
                 alpha: c.alpha,
                 hover: 0.0,
                 url: None,
@@ -769,6 +801,7 @@ pub fn pr_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], chips: &[Ch
                 title: pr.title.clone(),
                 look: pr.look(),
                 running: pr.running(),
+                signed_off: pr.signed_off(),
                 alpha: c.alpha,
                 hover: 0.0,
                 url: (!session.info.synthetic).then(|| pr.url()),
@@ -1147,8 +1180,9 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         // another; green good, orange broken, black landed. (#58)
         let (fill, stroke, label) = match c.look {
             pr::Look::Draft => (None, Some(ink(0.8)), ink(0.85)),
-            pr::Look::Open => (None, Some(at(pal.text_on)), ink(0.85)),
-            pr::Look::Approved => (Some(at(pal.text_on)), None, at(pal.ink)),
+            // Approved is open: GitHub says so, and the tick says the rest
+            // (#116). It used to be filled green, which read as landed.
+            pr::Look::Open | pr::Look::Approved => (None, Some(at(pal.text_on)), ink(0.85)),
             pr::Look::Failing => (Some(at(pal.alarm)), None, at(pal.on_alarm)),
             pr::Look::Merged => (Some(at(pal.merged)), None, at(pal.on_merged)),
             pr::Look::Closed => (None, Some(ink(0.3)), ink(0.42)),
@@ -1175,7 +1209,26 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         if let Some((color, w)) = border {
             out.push(Shape::RoundedRect { center, w: c.width, h: PR_H, r: 2.5, angle: 0.0, color, stroke: Some(w) });
         }
-        out.push(Shape::Text { text: c.label.clone(), scale: PR_TEXT, stroke: 1.1, angle: 0.0, center, color: label });
+        // The tick takes the left of the body and the number shifts over to
+        // keep the pair centred, so a chain of connectors still lines up.
+        let tick = tick_room(c.signed_off);
+        let text_at = Pt::new(center.x + tick / 2.0, center.y);
+        out.push(Shape::Text {
+            text: c.label.clone(),
+            scale: PR_TEXT,
+            stroke: 1.1,
+            angle: 0.0,
+            center: text_at,
+            color: label,
+        });
+        if c.signed_off {
+            let at_x = center.x - c.width / 2.0 + PR_PAD + CHECK_W / 2.0;
+            out.push(Shape::Stroke {
+                pieces: check_mark(Pt::new(at_x, center.y), CHECK_W),
+                width: CHECK_STROKE,
+                color: label,
+            });
+        }
     }
 
     // Title badge, on a patch of background so the lead lanes stay clear of it.
@@ -1218,6 +1271,33 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
 
 #[cfg(test)]
 mod tests {
+    /// The body of an approved connector grows to hold its tick, and both the
+    /// tick and the number it belongs to stay inside it (#116). The floor on
+    /// a connector's width is what makes this worth a test: a short number
+    /// already sits at the minimum, so the tick has to be paid for there too.
+    #[test]
+    fn an_approved_connector_holds_its_tick_and_its_number() {
+        use super::*;
+        for label in ["#1", "#42", "#1234", "#987654"] {
+            let w = (font::measure(label, PR_TEXT) + tick_room(true) + 2.0 * PR_PAD).max(30.0);
+            let (left, right) = (-w / 2.0, w / 2.0);
+            let at_x = left + PR_PAD + CHECK_W / 2.0;
+            for p in check_mark(Pt::new(at_x, 0.0), CHECK_W).concat() {
+                assert!(p.x >= left, "{label}: the tick pokes out of the left edge");
+                assert!(p.y.abs() <= PR_H / 2.0, "{label}: the tick is taller than the connector");
+            }
+            // The number shifts right by half the tick's room, which is what
+            // keeps the pair centred.
+            let text_at = tick_room(true) / 2.0;
+            let half = font::measure(label, PR_TEXT) / 2.0;
+            assert!(
+                text_at - half >= at_x + CHECK_W / 2.0 - 0.01,
+                "{label}: the number runs into the tick"
+            );
+            assert!(text_at + half <= right - PR_PAD + 0.01, "{label}: the number runs off the end");
+        }
+    }
+
     use super::*;
     use crate::model::{SessionInfo, SubagentInfo};
 

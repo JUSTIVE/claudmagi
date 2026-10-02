@@ -83,7 +83,12 @@ fn main() {
                 fake.set_pr_running(id, true);
             }
             // One session with a chain of PRs, as a ticket often has (#63).
-            if let Some(id) = ids.get(2) {
+            // Parked on a session the loop above left bare: the comb only
+            // ever draws a cell's newest pull request, so a chain laid on a
+            // session that is carrying one of the looks buries it, and the
+            // look never shows up in a comb render at all (#116).
+            if let Some(id) = ids.get(pr::Look::ALL.len()) {
+                fake.set_pr(id, Some(pr::Look::Open));
                 fake.add_pr(id, pr::Look::Merged);
                 fake.add_pr(id, pr::Look::Closed);
             }

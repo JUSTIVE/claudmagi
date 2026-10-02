@@ -19,7 +19,7 @@ use crate::font;
 use crate::geom::Pt;
 use crate::logos;
 use crate::model::{BoardModel, Phase};
-use crate::render::scene::Shape;
+use crate::render::scene::{self, Shape};
 use crate::theme::{self, Palette, Rgba};
 
 /// Every hex is a hairline.
@@ -426,17 +426,27 @@ pub struct RowBox {
     pub scale: f32,
     pub mark: f32,
     pub label: String,
+    /// How wide the approval tick is drawn, or zero where there is none
+    /// (#116). It comes out of the label's room like the mark does.
+    pub check: f32,
     /// What the row had to play with, mark and label together.
     pub room: f32,
 }
 
-pub fn row_box(r: f32, row: usize, label: &str) -> RowBox {
+pub fn row_box(r: f32, row: usize, label: &str, check: bool) -> RowBox {
     let dy = ROW_DY[row] * r;
     let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
     let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
     let room = row_room(r, dy, font::height(scale).max(mark)) - ROW_PAD * 2.0;
-    RowBox { dy, scale, mark, label: fit(label, scale, room - mark - MARK_GAP), room }
+    let check = if check { font::height(scale) * CHECK_H } else { 0.0 };
+    let taken = mark + MARK_GAP + if check > 0.0 { check + MARK_GAP } else { 0.0 };
+    RowBox { dy, scale, mark, label: fit(label, scale, room - taken), check, room }
 }
+
+/// The approval tick, against the cap height of the row it sits in. A hair
+/// under, so it reads as a mark beside the number rather than as a letter of
+/// it. (#116)
+const CHECK_H: f32 = 0.95;
 
 /// How wide the cell's interior is at a row, taking the row's own height into
 /// account: a hexagon narrows towards its points, so what matters is the
@@ -504,6 +514,9 @@ struct SlotInk {
     mark: logos::Mark,
     label: String,
     color: Rgba,
+    /// Review has signed off on this pull request (#116). Only the GitHub
+    /// row ever sets it.
+    check: bool,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -651,28 +664,39 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
         let slots = [
-            ticket.map(|t| SlotInk { mark: logos::Mark::Linear, label: t.key.clone(), color: read(ticket_color(t, pal)) }),
-            Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg }),
+            ticket.map(|t| SlotInk {
+                mark: logos::Mark::Linear,
+                label: t.key.clone(),
+                color: read(ticket_color(t, pal)),
+                check: false,
+            }),
+            Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg, check: false }),
             // The answered one if there is one, otherwise the number GitHub
             // would not speak for, drawn quietly and blinking.
-            pr.map(|p| SlotInk { mark: logos::Mark::GitHub, label: p.label(), color: read(pr_color(p, pal)) }).or_else(
-                || {
-                    unanswered.map(|id| SlotInk {
-                        mark: logos::Mark::GitHub,
-                        label: format!("#{}", id.number),
-                        color: theme::with_alpha(pal.ink, 0.5),
-                    })
-                },
-            ),
+            pr.map(|p| SlotInk {
+                mark: logos::Mark::GitHub,
+                label: p.label(),
+                color: read(pr_color(p, pal)),
+                check: p.signed_off(),
+            })
+            .or_else(|| {
+                unanswered.map(|id| SlotInk {
+                    mark: logos::Mark::GitHub,
+                    label: format!("#{}", id.number),
+                    color: theme::with_alpha(pal.ink, 0.5),
+                    check: false,
+                })
+            }),
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
-            let RowBox { dy, scale, mark, label, .. } = row_box(r, row, &slot.label);
+            let RowBox { dy, scale, mark, label, check, .. } = row_box(r, row, &slot.label, slot.check);
             // The session's label lies on the bed, so it blinks with it;
             // the other two answer for themselves.
             let slot_beat = if row == 1 { beat } else { row_beat(row) };
             let text_w = font::measure(&label, scale);
-            let left = center.x - (mark + MARK_GAP + text_w) / 2.0;
+            let tick = if check > 0.0 { check + MARK_GAP } else { 0.0 };
+            let left = center.x - (mark + MARK_GAP + text_w + tick) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
@@ -702,6 +726,16 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 center: Pt::new(left + mark + MARK_GAP + text_w / 2.0, center.y + dy),
                 color: fade(theme::with_alpha(slot.color, slot_beat)),
             });
+            // Review's tick, after the number it signed off on (#116). The
+            // row has no fill to say it with, so it is said in a mark.
+            if check > 0.0 {
+                let at = Pt::new(left + mark + MARK_GAP + text_w + MARK_GAP + check / 2.0, center.y + dy);
+                out.push(Shape::Stroke {
+                    pieces: scene::check_mark(at, check),
+                    width: (check * 0.2).max(0.7),
+                    color: fade(theme::with_alpha(slot.color, slot_beat)),
+                });
+            }
         }
 
     }
@@ -1124,7 +1158,8 @@ mod tests {
     }
 
     /// Nothing a cell says may leave it (#94). The corners of what is drawn
-    /// are checked, mark and label together, on the narrowest cells.
+    /// are checked, mark, label and approval tick together, on the narrowest
+    /// cells (#116).
     #[test]
     fn a_cell_never_lets_its_text_out() {
         let labels = [
@@ -1139,21 +1174,25 @@ mod tests {
             let center = Pt::new(500.0, 500.0);
             for row in 0..3 {
                 for label in labels {
-                    let b = row_box(r, row, label);
-                    if b.label.is_empty() {
-                        continue;
-                    }
-                    let text_w = font::measure(&b.label, b.scale);
-                    let w = b.mark + MARK_GAP + text_w;
-                    let h = font::height(b.scale).max(b.mark);
-                    for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                        let corner =
-                            Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
-                        assert!(
-                            inside_hex(corner, center, r, GAP),
-                            "r={r} row={row} {label:?}: {:?} reaches outside its cell",
-                            b.label
-                        );
+                    for check in [false, true] {
+                        let b = row_box(r, row, label, check);
+                        if b.label.is_empty() {
+                            continue;
+                        }
+                        let text_w = font::measure(&b.label, b.scale);
+                        let tick = if b.check > 0.0 { b.check + MARK_GAP } else { 0.0 };
+                        let w = b.mark + MARK_GAP + text_w + tick;
+                        let h = font::height(b.scale).max(b.mark).max(b.check);
+                        for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                            let corner =
+                                Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
+                            assert!(
+                                inside_hex(corner, center, r, GAP),
+                                "r={r} row={row} check={check} {label:?}: {:?} reaches outside its cell",
+                                b.label
+                            );
+                        }
+                        assert_eq!(b.check > 0.0, check, "the tick is there when it was asked for");
                     }
                 }
             }
@@ -1162,11 +1201,22 @@ mod tests {
 
     #[test]
     fn a_label_that_had_to_be_cut_says_so() {
-        let b = row_box(70.0, 1, "a-very-long-session-name-nobody-would-ever-type");
+        let b = row_box(70.0, 1, "a-very-long-session-name-nobody-would-ever-type", false);
         assert!(b.label.ends_with('…'), "a cut label wears an ellipsis, got {:?}", b.label);
         assert!(b.label.chars().count() > 2, "and keeps enough to be worth reading");
-        let short = row_box(70.0, 1, "S-1");
+        let short = row_box(70.0, 1, "S-1", false);
         assert_eq!(short.label, "S-1", "a label that fits is left alone");
+        // The tick comes out of the label's room, the way the mark does, so
+        // a row that gains one gives up letters rather than the cell's edge
+        // (#94, #116).
+        let ticked = row_box(70.0, 2, "a-very-long-session-name-nobody-would-ever-type", true);
+        let plain = row_box(70.0, 2, "a-very-long-session-name-nobody-would-ever-type", false);
+        assert!(
+            ticked.label.chars().count() < plain.label.chars().count(),
+            "the tick costs the label letters: {:?} against {:?}",
+            ticked.label,
+            plain.label
+        );
     }
 
     /// Colour and blink answer different questions: the border's colour is
@@ -1190,6 +1240,35 @@ mod tests {
             !ticket_needs_action(&Ticket::synthetic(1, None)),
             "a status nobody answered for is the board not knowing, not the issue asking"
         );
+    }
+
+    /// A cell has no fill to say approval with, so it says it in a tick after
+    /// the number — and only where review actually signed off (#116).
+    #[test]
+    fn the_comb_ticks_a_pull_request_review_signed_off_on() {
+        use crate::pr::{Look, Pr};
+        // The tick is the only three-point stroke in the scene: a cell wall
+        // is a closed hexagon and a subagent is a filled polygon.
+        let ticks = |pr: Pr| {
+            let mut model = board(&[("warp-tab:1-1", 1)]);
+            model.chips[0].info.prs = vec![pr];
+            let comb = lay_out(&model, 980.0, 620.0);
+            // Well past the arrival wave, so the cell is fully drawn (#92).
+                build_shapes(&model, &comb, theme::PALETTE, 0.0, Pt::new(0.0, 0.0), 3.0)
+                .into_iter()
+                .filter(|s| matches!(s, Shape::Stroke { pieces, .. } if pieces.len() == 1 && pieces[0].len() == 3))
+                .count()
+        };
+        assert_eq!(ticks(Pr::synthetic(1, Look::Approved)), 1, "an approved pull request wears a tick");
+        for bare in [Look::Draft, Look::Open, Look::Failing, Look::Merged, Look::Closed] {
+            assert_eq!(ticks(Pr::synthetic(1, bare)), 0, "{bare:?} has nothing to tick");
+        }
+        // Approval outlives a red check, which is the whole point of taking
+        // it out of the colour: the colour says the failure, the tick says
+        // review is done with it.
+        let failing = Pr { approved: true, failed: 1, ..Pr::synthetic(1, Look::Open) };
+        assert_eq!(failing.look(), Look::Failing);
+        assert_eq!(ticks(failing), 1, "a failing pull request that was approved keeps its tick");
     }
 
     #[test]

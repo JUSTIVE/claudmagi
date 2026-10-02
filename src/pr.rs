@@ -77,7 +77,8 @@ pub enum Look {
     Draft,
     /// Green outline: open, waiting on review.
     Open,
-    /// Filled green: review signed off.
+    /// Open, with review signed off. Wears the same green outline the state
+    /// it is in wears, and says the approval with a tick instead (#116).
     Approved,
     /// Filled orange: at least one check failed.
     Failing,
@@ -97,6 +98,20 @@ impl Pr {
             State::Open if self.approved => Look::Approved,
             State::Open => Look::Open,
         }
+    }
+
+    /// Review has signed off, and the pull request can still use it.
+    ///
+    /// Drawn as a tick beside the number rather than as a colour, the way a
+    /// running check is a border rather than a look (#62): the colour is left
+    /// to say what GitHub says the pull request is, and the tick says what
+    /// review made of it. That keeps the two readable together, which the old
+    /// filled-green could not do — an approved pull request whose checks were
+    /// failing had to pick one of them, and picked the failure. Merged and
+    /// closed drop it: there the approval is history, not a thing to act on.
+    /// (#116)
+    pub fn signed_off(&self) -> bool {
+        self.approved && matches!(self.state, State::Open | State::Draft)
     }
 
     /// CI is still working. Drawn as a border rather than a look of its own,

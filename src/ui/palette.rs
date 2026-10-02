@@ -156,8 +156,9 @@ pub(crate) fn card_bg(theme: Palette) -> Rgba {
 pub enum Style {
     /// A session chip in one of its phases.
     Chip(Phase),
-    /// A pull request connector, and whether CI is still going (#57, #62).
-    Pr(pr::Look, bool),
+    /// A pull request connector, whether CI is still going (#57, #62), and
+    /// whether review has signed off (#116).
+    Pr { look: pr::Look, running: bool, signed_off: bool },
     /// The Linear node at the head of a lane; `None` before Orca answers.
     Ticket(Option<ticket::Status>),
 }
@@ -182,11 +183,12 @@ impl Style {
             Style::Chip(Phase::Working) => body(Some(at(theme.chip)), None, at(theme.text_on)),
             Style::Chip(Phase::NeedsUser) => body(Some(at(theme.chip_needs)), None, at(theme.text_needs)),
             Style::Chip(Phase::Idle) => body(Some(at(theme.chip_idle)), None, at(theme.text_idle)),
-            Style::Pr(look, running) => {
+            Style::Pr { look, running, .. } => {
                 let mut out = match look {
                     pr::Look::Draft => body(None, Some(ink(0.8)), ink(0.85)),
-                    pr::Look::Open => body(None, Some(at(theme.text_on)), ink(0.85)),
-                    pr::Look::Approved => body(Some(at(theme.text_on)), None, at(theme.ink)),
+                    // Approved is open: GitHub says so, and the tick says the
+                    // rest (#116).
+                    pr::Look::Open | pr::Look::Approved => body(None, Some(at(theme.text_on)), ink(0.85)),
                     pr::Look::Failing => body(Some(at(theme.alarm)), None, at(theme.on_alarm)),
                     pr::Look::Merged => body(Some(at(theme.merged)), None, at(theme.on_merged)),
                     pr::Look::Closed => body(None, Some(ink(0.3)), ink(0.42)),
@@ -266,6 +268,11 @@ pub struct Entry {
 const SECONDARY: i32 = 65;
 
 impl Entry {
+    /// Review has signed off on this row's pull request (#116).
+    fn signed_off(&self) -> bool {
+        matches!(self.style, Style::Pr { signed_off: true, .. })
+    }
+
     fn score(&self, query: &str) -> Option<i32> {
         let mut best: Option<i32> = None;
         for (i, field) in self.fields.iter().enumerate() {
@@ -399,7 +406,7 @@ impl Board {
                 seen.push(key);
                 out.push(Entry {
                     kind: Kind::Pr,
-                    style: Style::Pr(pr.look(), pr.running()),
+                    style: Style::Pr { look: pr.look(), running: pr.running(), signed_off: pr.signed_off() },
                     owner: i,
                     related: false,
                     detail: format!("{} · {}", pr.id.repo, pr.title),
@@ -536,6 +543,11 @@ impl Board {
                             .overflow_hidden()
                             .child(svg().path(entry.kind.logo()).size(px(LOGO)).flex_none().text_color(body.text))
                             .child(entry.label.clone())
+                            // Review's tick, beside the number it signed off
+                            // on, exactly as the board draws it (#116).
+                            .when(entry.signed_off(), |d| {
+                                d.child(div().flex_none().text_color(body.text).child("\u{2713}"))
+                            })
                     })
                     .child(
                         div()
@@ -614,6 +626,10 @@ mod tests {
 
     const THEMES: [Palette; 3] = [theme::PALETTE, theme::ORANGE, theme::DARK];
 
+    fn pr_style(look: pr::Look, running: bool) -> Style {
+        Style::Pr { look, running, signed_off: look == pr::Look::Approved }
+    }
+
     fn luma(c: Rgba) -> f32 {
         0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
     }
@@ -657,11 +673,14 @@ mod tests {
     #[test]
     fn a_filled_body_always_means_further_along() {
         let filled = |s: Style| s.body(theme::PALETTE).fill.is_some();
-        for done in [pr::Look::Approved, pr::Look::Failing, pr::Look::Merged] {
-            assert!(filled(Style::Pr(done, false)), "{done:?} is filled on the board");
+        for done in [pr::Look::Failing, pr::Look::Merged] {
+            assert!(filled(pr_style(done, false)), "{done:?} is filled on the board");
         }
-        for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Closed] {
-            assert!(!filled(Style::Pr(pending, false)), "{pending:?} is an outline on the board");
+        // Approved sits with the pending ones now. It has not landed, and
+        // filling it said that it had; the tick says the approval instead
+        // and the law is left to mean what it says (#116).
+        for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Approved, pr::Look::Closed] {
+            assert!(!filled(pr_style(pending, false)), "{pending:?} is an outline on the board");
         }
         assert!(filled(Style::Ticket(Some(ticket::Status::Started))));
         assert!(filled(Style::Ticket(Some(ticket::Status::Done))));
@@ -671,12 +690,32 @@ mod tests {
         }
     }
 
+    /// Approval is a tick laid over the state GitHub reports, not a colour of
+    /// its own (#116). An approved pull request is an open one, and the board
+    /// used to paint it the way it paints a landed one.
+    #[test]
+    fn approval_rides_on_top_of_the_state_rather_than_replacing_it() {
+        for t in THEMES {
+            let open = Style::Pr { look: pr::Look::Open, running: false, signed_off: false };
+            let ok = Style::Pr { look: pr::Look::Approved, running: false, signed_off: true };
+            let (a, b) = (open.body(t), ok.body(t));
+            assert_eq!((a.fill, a.border, a.text), (b.fill, b.border, b.text), "approved wears open's colours");
+        }
+        // And a pull request whose checks are failing keeps the failure's
+        // colour while still showing it was signed off, which the old filled
+        // green could not do at all.
+        let failing = crate::pr::Pr { approved: true, failed: 1, ..crate::pr::Pr::synthetic(7, pr::Look::Open) };
+        assert_eq!(failing.look(), pr::Look::Failing, "the failure is what the colour says");
+        assert!(failing.signed_off(), "and the tick still says review signed off");
+    }
+
     /// Running CI is a border over whatever the pull request already is, not
     /// a look of its own (#62).
     #[test]
     fn ci_in_flight_borders_a_body_without_replacing_it() {
         for look in pr::Look::ALL {
-            let (calm, busy) = (Style::Pr(look, false).body(theme::PALETTE), Style::Pr(look, true).body(theme::PALETTE));
+            let (calm, busy) =
+                (pr_style(look, false).body(theme::PALETTE), pr_style(look, true).body(theme::PALETTE));
             assert_eq!(calm.fill, busy.fill, "{look:?} keeps its body while CI runs");
             assert_eq!(busy.border, Some(theme::hsla(theme::PALETTE.busy)), "{look:?} takes the border");
         }
@@ -707,9 +746,9 @@ mod tests {
                 Style::Chip(Phase::Working),
                 Style::Chip(Phase::NeedsUser),
                 Style::Chip(Phase::Idle),
-                Style::Pr(pr::Look::Merged, false),
-                Style::Pr(pr::Look::Approved, false),
-                Style::Pr(pr::Look::Failing, false),
+                pr_style(pr::Look::Merged, false),
+                pr_style(pr::Look::Approved, false),
+                pr_style(pr::Look::Failing, false),
                 Style::Ticket(Some(ticket::Status::Started)),
                 Style::Ticket(Some(ticket::Status::Done)),
             ];
