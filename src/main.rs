@@ -1,17 +1,17 @@
 mod font;
 mod geom;
+mod host;
 mod logos;
 mod mac;
 mod model;
+mod pr;
 mod render;
 mod settings;
 mod sources;
 mod theme;
-mod ui;
-mod pr;
 mod ticket;
+mod ui;
 mod usage;
-mod warp;
 
 use std::rc::Rc;
 use std::time::Instant;
@@ -153,7 +153,7 @@ fn main() {
         let key = args.get(i + 1).cloned().unwrap_or_default().to_ascii_uppercase();
         let list = ClaudeSource::default().snapshot();
         match list.iter().find(|s| s.label() == key || s.pid.to_string() == key) {
-            Some(s) => println!("{:?}", warp::focus(s)),
+            Some(s) => println!("{:?}", host::focus(s)),
             None => eprintln!("no session matching {key:?}; try --list"),
         }
         return;
@@ -215,7 +215,13 @@ fn main() {
                 s.short_cwd(),
                 s.tty,
                 s.group_label(),
-                s.warp_focus_url.as_deref().unwrap_or("-")
+                // What the host gave us to get back there, which is the one
+                // thing `--list` can show about a seat that the group key
+                // does not already say (#118).
+                s.seat
+                    .as_ref()
+                    .and_then(|seat| seat.focus_url.clone().or_else(|| (!seat.handle.is_empty()).then(|| seat.handle.clone())))
+                    .unwrap_or_else(|| "-".into())
             );
         }
         return;

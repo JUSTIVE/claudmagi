@@ -26,7 +26,7 @@ use crate::theme::{self, Palette};
 use crate::ui::palette::PaletteState;
 use crate::ui::panel::PanelState;
 use crate::usage::{self, Usage};
-use crate::{mac, warp};
+use crate::{host, mac};
 
 pub const STATUS_H: f32 = 30.0;
 /// The hover tooltip on a pull request connector (#77, #115): its padding,
@@ -496,10 +496,10 @@ impl Board {
             return;
         }
         cx.spawn(async move |this, cx| {
-            let result = cx.background_executor().spawn(async move { warp::focus(&info) }).await;
+            let result = cx.background_executor().spawn(async move { host::focus(&info) }).await;
             let msg = match result {
-                Ok(warp::Outcome::Focused(url)) => format!("→ {label} ({url})"),
-                Ok(warp::Outcome::ActivatedApp(app)) => {
+                Ok(host::Outcome::Focused(url)) => format!("→ {label} ({url})"),
+                Ok(host::Outcome::ActivatedApp(app)) => {
                     format!("{label}: no Warp session URL, activated {app}")
                 }
                 Err(e) => format!("{label}: {e}"),

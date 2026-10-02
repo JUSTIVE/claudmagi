@@ -7,7 +7,7 @@
 //! one is inset by half a border so the gap between two neighbours comes out
 //! exactly one border wide.
 //!
-//! Panes of one Warp tab are a cluster: a flower of cells around a centre,
+//! Panes of one tab are a cluster: a flower of cells around a centre,
 //! placed far enough from the next flower that a ring of empty cells always
 //! separates them. Inside a cell the three things a session has are stacked in
 //! a fixed order — the Linear issue on top, the session itself in the middle,
@@ -229,7 +229,7 @@ fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
 
 /// Lays the sessions out as clusters on a grid that fills `width`.
 ///
-/// Sessions are grouped the way the board groups them (#41): panes of one Warp
+/// Sessions are grouped the way the board groups them (#41): panes of one
 /// tab land in one flower. Flowers are placed left to right and then down,
 /// each leaving a ring of empty cells around it.
 pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {

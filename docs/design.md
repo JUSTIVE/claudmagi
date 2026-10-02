@@ -26,6 +26,14 @@
 | 등장 | 아래→위 순으로 칩이 주황빛 반투명에서 검정으로 페이드인 |
 | 스크롤 | 세로 스크롤로 더 많은 레인을 볼 수 있음 |
 
+
+## 호스트 레이어 (#118)
+
+- **레지스트리는 터미널 것이 아니다**: `~/.claude/sessions/<pid>.json` 은 Claude Code 가 쓴다 — 어디서 돌든 쓴다. 데스크톱 앱(`/Applications/Claude.app`)도 **같은 디렉터리를 읽는** 쪽이다(번들 안에 `sessionsDirPath()` → `/^\d+\.json$/` 스캔, 실패 메시지가 "Claude Code's session registry"). 레코드를 쓰는 건 `claude` 프로세스 자신이다. 그래서 **데스크톱 앱 세션은 이미 보드에 뜬다** — 터미널이 없을 뿐이다.
+- **터미널이 더하는 건 자리(seat)다**: 어느 앱의 어느 창에 앉아 있는가(같은 창이면 한 클러스터, #41)와 클릭했을 때 거기로 돌아가는 법. 그게 `host/` 의 `Host` 트레이트다 — `seat(env)` 가 환경변수로 세션을 **주워가고**(먼저 주운 호스트가 임자), `windows(handles)` 가 환경이 안 알려준 창을 스냅샷당 한 번에 묻고, `focus(seat)` 가 데려간다.
+- **호스트마다 성격이 전혀 다르다**: Warp 는 탭을 제 DB 에 들고 있어 Full Disk Access 가 필요하다(#67, #69) — `windows()` 가 그 sqlite/`warpctrl` 왕복을 맡는다. Orca 는 **환경변수에 탭을 그대로 넣는다**(`ORCA_TERMINAL_HANDLE`·`ORCA_TAB_ID`·`ORCA_PANE_KEY`·`ORCA_WORKTREE_ID`) — Orca 소스의 주석대로 "per-PTY 라 프로세스 수명 동안 안정" 이다. 우리가 이미 읽는 `proc_env(pid)` 에 다 있으므로 **권한도 왕복도 0** 이고, 돌아가기는 `orca terminal switch --terminal <handle>`(티켓 조회가 쓰는 그 CLI). 데스크톱 앱은 아무 표시도 안 남겨 한 그룹에 모이고, 돌아가기는 앱을 띄우는 것뿐이다.
+- **그룹 키는 모양으로 읽는다**: `{host}-tab:{window}` / `{host}:{handle}` / `term:{prog}` / `desktop`. `group_label()` 은 호스트 이름 목록이 아니라 이 **모양**에 대고 쓰여 있어, 호스트를 더해도 손댈 곳이 없다. 창을 모르면 **seat 단위로 쪼갠다** — 탭이 아직 안 왔다고 같은 Warp 의 네 pane 을 한 덩어리로 묶으면 레이아웃이 틀린 채 떴다가 답이 올 때 전부 밀린다(#59).
+- **안 한 것**: Claude.app 에 `claude://code/continue?session=` · `claude://resume?session=<uuid>` 딥링크가 있지만 resume 은 CLI 세션을 앱으로 **import** 하는 것이지 돌아가기가 아니다. 앱이 호스팅하는 세션을 실제로 보기 전까지는 앱을 띄우는 게 정직하다.
 ## claudmagi 매핑
 - 세션 1개 = 칩 1개. 라벨은 `~/.claude/sessions/<pid>.json`의 `name` 대문자.
 - 파킹된 백그라운드 잡(`kind: "bg"`)은 자기 칩을 갖지 않고 부모 세션의 트레이스에 서브에이전트처럼 매달린다 — 부모가 띄운 프로세스라 Warp 환경변수를 그대로 물려받아, 그냥 두면 같은 pane을 가리키는 칩이 둘이 된다. 잡의 `jobId`와 부모의 `parkedJobId`로 짝을 찾고(`fold_parked_jobs`), 잡의 PR·티켓은 부모 레인으로 합친다. 라벨은 `/jobs` 핸들, 연결 여부는 세션과 같은 기준(`status == busy`). 부모가 사라진 잡은 자기 칩을 유지한다 — 그 pane을 가리키는 게 더는 없다. (#68)

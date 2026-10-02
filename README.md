@@ -74,17 +74,29 @@ cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 
 Data and rendering are separate layers; only `ui/` touches gpui.
 
+The session registry at `~/.claude/sessions/<pid>.json` is Claude Code's own
+and says nothing about terminals: a session writes one wherever it runs, the
+desktop app included — that app is a reader of the same registry, as this
+board is. What a terminal adds is a *seat*: which window of which app the
+session sits in, so sessions sharing one can be drawn together, and a way back
+to it when a chip is clicked. That is the `host/` layer, and the hosts work
+nothing alike. Warp keeps its tabs in a database behind Full Disk Access;
+Orca puts the tab straight into the environment of everything it spawns, so it
+needs no permission at all; the desktop app leaves no mark and gets one group
+and the app itself as the way back.
+
 | Layer | Module | Role |
 |-------|--------|------|
 | Data | `model.rs` | `SessionInfo` (facts), `Phase`, `BoardModel` (animated chip state: `apply` a snapshot, `tick` time). Pure Rust, unit-tested. |
 | Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json`, the process env, and each session's `projects/<slug>/<session>/subagents/` transcripts; `FakeSource` is the in-memory sandbox the test tools edit. |
+| Data | `host/` | `Host` trait: which app a session is seated in, which window of it, and how to bring that window to the front. `warp.rs`, `orca.rs`, `desktop.rs`. |
 | Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths (tessellations cached by geometry), or serialised to SVG for headless checks. |
-| UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `warp.rs`. |
+| UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `host/`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
 | Data | `pr.rs`, `ticket.rs` | What a session links out to: the GitHub PR (transcript → `gh`) and the Linear issue (name, PR title tag, or transcript links). |
-| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs`, `warp.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims + the launch `PATH` fix, Warp focus. |
+| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims + the launch `PATH` fix. |
 
 Pull requests: a session's PR is read out of its own transcript — the last
 `github.com/<owner>/<repo>/pull/<n>` inside a message body whose repo matches

@@ -5,8 +5,8 @@
 //! is; neither says it in words you can scan. This does, in board order, one
 //! session per block with its issue, its pull requests and its subagents
 //! underneath. Every line is the same click its node on the board is: the
-//! session jumps to its Warp tab, the issue opens in Linear, a pull request
-//! opens on GitHub.
+//! session jumps to wherever its host seats it, the issue opens in Linear, a
+//! pull request opens on GitHub.
 
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 

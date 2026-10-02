@@ -96,13 +96,17 @@ pub struct SessionInfo {
     pub tempo: Option<String>,
     pub started_at: u64,
     pub tty: Option<String>,
-    pub warp_focus_url: Option<String>,
-    pub warp_session_uuid: Option<String>,
+    /// Where the session is running and how to get back to it: which host
+    /// claimed it, what that host calls it, and whatever the host put in the
+    /// environment (#118). `None` for sandbox sessions, which have no seat.
+    pub seat: Option<crate::host::Seat>,
     /// True for sessions invented by the test tools; never focused for real.
     pub synthetic: bool,
     pub subagents: Vec<SubagentInfo>,
-    /// Where the session runs: `warp:<pane uuid>`, `term:<program>` or
-    /// `desktop`. Sessions sharing a group sit together on the board (#41).
+    /// Where the session runs, as a group key: `warp-tab:<window>-<tab>`,
+    /// `orca-tab:<id>`, `warp:<pane uuid>`, `term:<program>`, `desktop`.
+    /// Sessions sharing a group sit together on the board (#41). Built from
+    /// the seat by `host::group_key` (#118).
     pub group: String,
     /// The pull requests this session is working on, oldest first, resolved
     /// from its transcript (#56). One ticket often has several (#63). Drawn
@@ -143,8 +147,7 @@ impl SessionInfo {
             tempo: None,
             started_at: seq as u64,
             tty: Some(format!("ttys{:03}", 900 + seq % 100)),
-            warp_focus_url: None,
-            warp_session_uuid: None,
+            seat: None,
             synthetic: true,
             subagents: Vec::new(),
             group: format!("sandbox:{}", (seq.max(1) - 1) / 3),
@@ -159,14 +162,18 @@ impl SessionInfo {
         s
     }
 
-    /// Human label for the group.
+    /// Human label for the group. Written against the key's shape rather
+    /// than against a list of hosts, so a new one reads right without being
+    /// added here (#118).
     pub fn group_label(&self) -> String {
-        match self.group.split_once(':') {
-            Some(("warp-tab", tab)) => format!("warp tab {tab}"),
-            Some(("warp", uuid)) => format!("warp pane {}", &uuid[..uuid.len().min(8)]),
-            Some(("term", prog)) => prog.to_string(),
-            Some(("sandbox", n)) => format!("sandbox group {n}"),
-            _ => self.group.clone(),
+        let Some((kind, value)) = self.group.split_once(':') else { return self.group.clone() };
+        if let Some(host) = kind.strip_suffix("-tab") {
+            return format!("{host} tab {value}");
+        }
+        match kind {
+            "term" => value.to_string(),
+            "sandbox" => format!("sandbox group {value}"),
+            host => format!("{host} pane {}", &value[..value.len().min(8)]),
         }
     }
 

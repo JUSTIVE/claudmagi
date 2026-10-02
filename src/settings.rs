@@ -32,7 +32,8 @@ pub enum BoardView {
     /// Chips riding traces: the circuit board this started as.
     #[default]
     Circuit,
-    /// A honeycomb of cells, one per session, clustered by Warp tab.
+    /// A honeycomb of cells, one per session, clustered by the window
+    /// their host seats them in — a Warp tab, an Orca tab (#118).
     Comb,
 }
 
