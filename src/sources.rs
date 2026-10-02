@@ -1074,6 +1074,17 @@ impl FakeSource {
         }
     }
 
+    /// Signs off on a sandbox session's pull requests, or takes it back
+    /// (#116). Its own switch, beside the CI one, because that is what
+    /// approval is: a thing laid on top of whatever state the PR is in.
+    pub fn set_pr_approved(&self, session_id: &str, on: bool) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            for p in s.prs.iter_mut() {
+                p.approved = on;
+            }
+        }
+    }
+
     /// Puts a sandbox PR's CI in flight, or stops it (#62).
     pub fn set_pr_running(&self, session_id: &str, on: bool) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {

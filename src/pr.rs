@@ -71,15 +71,18 @@ pub struct Pr {
 
 /// How the board draws a connector. Colour is the whole signal (#57), and
 /// filled always means "further along" than outlined (#58).
+///
+/// What GitHub says the pull request is, and what its checks say about it.
+/// Review is deliberately not in here (#116): approval is orthogonal to all
+/// of this — a pull request can be approved and failing, approved and still
+/// a draft, approved and landed — and an enum forces a choice where there is
+/// none to make. It rides along as `Pr::signed_off()` instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Look {
     /// Ink outline: not asking for review yet.
     Draft,
-    /// Green outline: open, waiting on review.
+    /// Green outline: open.
     Open,
-    /// Open, with review signed off. Wears the same green outline the state
-    /// it is in wears, and says the approval with a tick instead (#116).
-    Approved,
     /// Filled orange: at least one check failed.
     Failing,
     /// Filled black: landed.
@@ -95,23 +98,25 @@ impl Pr {
             State::Closed => Look::Closed,
             _ if self.failed > 0 => Look::Failing,
             State::Draft => Look::Draft,
-            State::Open if self.approved => Look::Approved,
             State::Open => Look::Open,
         }
     }
 
-    /// Review has signed off, and the pull request can still use it.
+    /// Review has signed off on this pull request.
     ///
-    /// Drawn as a tick beside the number rather than as a colour, the way a
-    /// running check is a border rather than a look (#62): the colour is left
-    /// to say what GitHub says the pull request is, and the tick says what
-    /// review made of it. That keeps the two readable together, which the old
-    /// filled-green could not do — an approved pull request whose checks were
-    /// failing had to pick one of them, and picked the failure. Merged and
-    /// closed drop it: there the approval is history, not a thing to act on.
-    /// (#116)
+    /// Orthogonal to everything `look()` reports (#116). It is drawn as a tick
+    /// beside the number rather than as a colour, the way a running check is a
+    /// border rather than a look of its own (#62): the colour is left to say
+    /// what GitHub says the pull request is and what its checks say about it,
+    /// and the tick says what review made of it. Nothing has to be given up to
+    /// say the other — approved and failing, approved and still a draft,
+    /// approved and landed all read as themselves.
+    ///
+    /// Merging counts. A pull request nobody signed off on does not land, so
+    /// a merged one is an approved one whatever `reviewDecision` says about it
+    /// afterwards, and the tick stays on it.
     pub fn signed_off(&self) -> bool {
-        self.approved && matches!(self.state, State::Open | State::Draft)
+        self.approved || matches!(self.state, State::Merged)
     }
 
     /// CI is still working. Drawn as a border rather than a look of its own,
@@ -131,12 +136,12 @@ impl Pr {
         format!("https://github.com/{}/pull/{}", self.id.repo, self.id.number)
     }
 
-    /// A made-up PR for the sandbox, one per look.
+    /// A made-up PR for the sandbox, one per look. Review is set separately,
+    /// since it is not one of these (#116).
     pub fn synthetic(number: u32, look: Look) -> Self {
         let (state, approved, passed, failed) = match look {
             Look::Draft => (State::Draft, false, 3, 0),
             Look::Open => (State::Open, false, 12, 0),
-            Look::Approved => (State::Open, true, 12, 0),
             Look::Failing => (State::Open, false, 8, 2),
             Look::Merged => (State::Merged, false, 14, 0),
             Look::Closed => (State::Closed, false, 0, 0),
@@ -154,14 +159,13 @@ impl Pr {
 }
 
 impl Look {
-    pub const ALL: [Look; 6] =
-        [Look::Draft, Look::Open, Look::Approved, Look::Failing, Look::Merged, Look::Closed];
+    pub const ALL: [Look; 5] =
+        [Look::Draft, Look::Open, Look::Failing, Look::Merged, Look::Closed];
 
     pub fn short(self) -> &'static str {
         match self {
             Look::Draft => "DRAFT",
             Look::Open => "OPEN",
-            Look::Approved => "OK",
             Look::Failing => "FAIL",
             Look::Merged => "MERGED",
             Look::Closed => "CLOSED",
@@ -173,7 +177,6 @@ impl Look {
         match self {
             Look::Draft => "D",
             Look::Open => "O",
-            Look::Approved => "A",
             Look::Failing => "F",
             Look::Merged => "M",
             Look::Closed => "C",
@@ -609,16 +612,26 @@ mod tests {
         assert!(Pr { pending: 1, ..base.clone() }.running());
         assert!(!Pr { pending: 1, state: State::Merged, ..base.clone() }.running(), "a landed PR is never busy");
         assert_eq!(base.look(), Look::Open);
-        assert_eq!(Pr { approved: true, ..base.clone() }.look(), Look::Approved);
-        assert_eq!(
-            Pr { approved: true, failed: 1, ..base.clone() }.look(),
-            Look::Failing,
-            "a red check outranks a sign-off"
-        );
+        // Review is not in here at all (#116): the look answers for GitHub's
+        // state and the checks, and says nothing either way about approval.
+        assert_eq!(Pr { approved: true, ..base.clone() }.look(), Look::Open);
+        assert_eq!(Pr { approved: true, failed: 1, ..base.clone() }.look(), Look::Failing);
         assert_eq!(Pr { state: State::Draft, ..base.clone() }.look(), Look::Draft);
         assert_eq!(Pr { failed: 1, ..base.clone() }.look(), Look::Failing);
         assert_eq!(Pr { state: State::Draft, failed: 1, ..base.clone() }.look(), Look::Failing, "red beats draft");
         assert_eq!(Pr { state: State::Merged, failed: 1, ..base.clone() }.look(), Look::Merged, "landed is landed");
-        assert_eq!(Pr { state: State::Closed, ..base }.look(), Look::Closed);
+        assert_eq!(Pr { state: State::Closed, ..base.clone() }.look(), Look::Closed);
+
+        // And approval rides on top of every one of them, merging included:
+        // nothing lands without a sign-off, so a landed pull request keeps
+        // the tick whatever `reviewDecision` says about it afterwards (#116).
+        assert!(!base.signed_off(), "an open pull request nobody reviewed has nothing to tick");
+        for state in [State::Open, State::Draft, State::Closed] {
+            let pr = Pr { approved: true, state, ..base.clone() };
+            assert!(pr.signed_off(), "{state:?}: a sign-off is not undone by the state");
+            assert!(Pr { failed: 1, ..pr.clone() }.signed_off(), "{state:?}: nor by a red check");
+        }
+        let landed = Pr { state: State::Merged, approved: false, ..base };
+        assert!(landed.signed_off(), "merging is a sign-off, whatever the review field says");
     }
 }

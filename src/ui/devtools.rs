@@ -241,6 +241,15 @@ impl Board {
                     button(SharedString::from(format!("pr-ci-{i}")), "CI", ci)
                         .on_click(move |_, _, _| sb.set_pr_running(&sid, !ci)),
                 );
+                // Review is a switch of its own rather than one of the state
+                // letters, which is exactly the shape of the thing (#116).
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                let ok = info.prs.iter().any(|p| p.approved);
+                links = links.child(
+                    button(SharedString::from(format!("pr-ok-{i}")), "OK", ok)
+                        .on_click(move |_, _, _| sb.set_pr_approved(&sid, !ok)),
+                );
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
                 links = links.child(

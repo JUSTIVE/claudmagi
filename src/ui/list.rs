@@ -91,11 +91,15 @@ impl Board {
             // Its pull requests, newest last, the way the board chains them.
             for (k, pr) in info.prs.iter().enumerate() {
                 let (label, url) = (pr.label(), pr.url());
-                let state = if pr.running() {
-                    format!("{} \u{27f3}", pr.look().short())
-                } else {
-                    pr.look().short().to_string()
-                };
+                // The word is the state and the checks; review and CI ride on
+                // either side of it, the way they ride on the connector (#116).
+                let mut state = pr.look().short().to_string();
+                if pr.signed_off() {
+                    state = format!("\u{2713} {state}");
+                }
+                if pr.running() {
+                    state = format!("{state} \u{27f3}");
+                }
                 block = block.child(
                     div()
                         .id(SharedString::from(format!("list-pr-{i}-{k}")))

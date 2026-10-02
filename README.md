@@ -96,9 +96,14 @@ inside the session poll — and the trace runs into the leftmost connector of
 that chain, where the body's colour
 is the whole signal — hollow draft, green outline open, orange failing, purple
 merged, faint closed — with a yellow border laid over any of them while CI is
-still running, and a tick beside the number where review has signed off. The
-tick rather than a colour of its own: an approved pull request is an open one,
-and GitHub's own state is what the body is for (#116). Hovering a connector puts the pull
+still running, and a tick beside the number where review has signed off.
+
+Review is not one of those colours and never was one of them: it is orthogonal
+to every one, so it is drawn as a tick on top instead, the way a running check
+is a border on top. A pull request can be approved and failing, approved and
+still a draft, approved and landed, and each reads as itself. Merging counts as
+a sign-off — nothing lands without one — so a merged pull request keeps the
+tick (#116). Hovering a connector puts the pull
 request's own title beside it, above where there is room and below where there
 is not, and never off the edge of the window (#77, #115).
 

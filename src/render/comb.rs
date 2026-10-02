@@ -809,7 +809,7 @@ fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     }
     match p.look() {
         Look::Merged => pal.merged,
-        Look::Approved | Look::Open => pal.text_on,
+        Look::Open => pal.text_on,
         Look::Failing => pal.alarm,
         Look::Draft => theme::with_alpha(pal.ink, 0.7),
         Look::Closed => theme::with_alpha(pal.ink, 0.35),
@@ -1227,7 +1227,7 @@ mod tests {
         use crate::ticket::{Status, Ticket};
 
         assert!(pr_needs_action(&Pr::synthetic(1, Look::Failing)));
-        for calm in [Look::Draft, Look::Open, Look::Approved, Look::Merged, Look::Closed] {
+        for calm in [Look::Draft, Look::Open, Look::Merged, Look::Closed] {
             assert!(!pr_needs_action(&Pr::synthetic(1, calm)), "{calm:?} is not an interruption");
         }
 
@@ -1259,16 +1259,17 @@ mod tests {
                 .filter(|s| matches!(s, Shape::Stroke { pieces, .. } if pieces.len() == 1 && pieces[0].len() == 3))
                 .count()
         };
-        assert_eq!(ticks(Pr::synthetic(1, Look::Approved)), 1, "an approved pull request wears a tick");
-        for bare in [Look::Draft, Look::Open, Look::Failing, Look::Merged, Look::Closed] {
+        // Approval rides on every look, which is the whole point of taking it
+        // out of the colour (#116): the colour says the state and the checks,
+        // the tick says review is done with it.
+        for look in Look::ALL {
+            let signed = ticks(Pr { approved: true, ..Pr::synthetic(1, look) });
+            assert_eq!(signed, 1, "{look:?}: an approved pull request wears a tick");
+        }
+        for bare in [Look::Draft, Look::Open, Look::Failing, Look::Closed] {
             assert_eq!(ticks(Pr::synthetic(1, bare)), 0, "{bare:?} has nothing to tick");
         }
-        // Approval outlives a red check, which is the whole point of taking
-        // it out of the colour: the colour says the failure, the tick says
-        // review is done with it.
-        let failing = Pr { approved: true, failed: 1, ..Pr::synthetic(1, Look::Open) };
-        assert_eq!(failing.look(), Look::Failing);
-        assert_eq!(ticks(failing), 1, "a failing pull request that was approved keeps its tick");
+        assert_eq!(ticks(Pr::synthetic(1, Look::Merged)), 1, "nothing lands without a sign-off");
     }
 
     #[test]

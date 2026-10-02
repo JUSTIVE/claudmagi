@@ -1180,9 +1180,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         // another; green good, orange broken, black landed. (#58)
         let (fill, stroke, label) = match c.look {
             pr::Look::Draft => (None, Some(ink(0.8)), ink(0.85)),
-            // Approved is open: GitHub says so, and the tick says the rest
-            // (#116). It used to be filled green, which read as landed.
-            pr::Look::Open | pr::Look::Approved => (None, Some(at(pal.text_on)), ink(0.85)),
+            pr::Look::Open => (None, Some(at(pal.text_on)), ink(0.85)),
             pr::Look::Failing => (Some(at(pal.alarm)), None, at(pal.on_alarm)),
             pr::Look::Merged => (Some(at(pal.merged)), None, at(pal.on_merged)),
             pr::Look::Closed => (None, Some(ink(0.3)), ink(0.42)),

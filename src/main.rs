@@ -82,12 +82,24 @@ fn main() {
             if let Some(id) = ids.get(1) {
                 fake.set_pr_running(id, true);
             }
+            // Review rides on top of the look rather than being one of them
+            // (#116), so the demo has to say it separately: one open pull
+            // request signed off, and one signed off with its checks red, the
+            // pair the old single enum could not show at once.
+            if let Some(id) = ids.get(pr::Look::ALL.len()) {
+                fake.set_pr(id, Some(pr::Look::Open));
+                fake.set_pr_approved(id, true);
+            }
+            if let Some(id) = ids.get(pr::Look::ALL.len() + 1) {
+                fake.set_pr(id, Some(pr::Look::Failing));
+                fake.set_pr_approved(id, true);
+            }
             // One session with a chain of PRs, as a ticket often has (#63).
             // Parked on a session the loop above left bare: the comb only
             // ever draws a cell's newest pull request, so a chain laid on a
             // session that is carrying one of the looks buries it, and the
             // look never shows up in a comb render at all (#116).
-            if let Some(id) = ids.get(pr::Look::ALL.len()) {
+            if let Some(id) = ids.get(pr::Look::ALL.len() + 2) {
                 fake.set_pr(id, Some(pr::Look::Open));
                 fake.add_pr(id, pr::Look::Merged);
                 fake.add_pr(id, pr::Look::Closed);

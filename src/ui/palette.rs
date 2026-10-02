@@ -186,9 +186,7 @@ impl Style {
             Style::Pr { look, running, .. } => {
                 let mut out = match look {
                     pr::Look::Draft => body(None, Some(ink(0.8)), ink(0.85)),
-                    // Approved is open: GitHub says so, and the tick says the
-                    // rest (#116).
-                    pr::Look::Open | pr::Look::Approved => body(None, Some(at(theme.text_on)), ink(0.85)),
+                    pr::Look::Open => body(None, Some(at(theme.text_on)), ink(0.85)),
                     pr::Look::Failing => body(Some(at(theme.alarm)), None, at(theme.on_alarm)),
                     pr::Look::Merged => body(Some(at(theme.merged)), None, at(theme.on_merged)),
                     pr::Look::Closed => body(None, Some(ink(0.3)), ink(0.42)),
@@ -627,7 +625,7 @@ mod tests {
     const THEMES: [Palette; 3] = [theme::PALETTE, theme::ORANGE, theme::DARK];
 
     fn pr_style(look: pr::Look, running: bool) -> Style {
-        Style::Pr { look, running, signed_off: look == pr::Look::Approved }
+        Style::Pr { look, running, signed_off: false }
     }
 
     fn luma(c: Rgba) -> f32 {
@@ -676,10 +674,7 @@ mod tests {
         for done in [pr::Look::Failing, pr::Look::Merged] {
             assert!(filled(pr_style(done, false)), "{done:?} is filled on the board");
         }
-        // Approved sits with the pending ones now. It has not landed, and
-        // filling it said that it had; the tick says the approval instead
-        // and the law is left to mean what it says (#116).
-        for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Approved, pr::Look::Closed] {
+        for pending in [pr::Look::Draft, pr::Look::Open, pr::Look::Closed] {
             assert!(!filled(pr_style(pending, false)), "{pending:?} is an outline on the board");
         }
         assert!(filled(Style::Ticket(Some(ticket::Status::Started))));
@@ -690,23 +685,33 @@ mod tests {
         }
     }
 
-    /// Approval is a tick laid over the state GitHub reports, not a colour of
-    /// its own (#116). An approved pull request is an open one, and the board
-    /// used to paint it the way it paints a landed one.
+    /// Approval is a tick laid over whatever the pull request is, never a
+    /// body of its own (#116). The body answers to GitHub and to the checks;
+    /// approval does not touch it at any look, in any theme.
     #[test]
-    fn approval_rides_on_top_of_the_state_rather_than_replacing_it() {
+    fn approval_never_changes_the_body_it_rides_on() {
         for t in THEMES {
-            let open = Style::Pr { look: pr::Look::Open, running: false, signed_off: false };
-            let ok = Style::Pr { look: pr::Look::Approved, running: false, signed_off: true };
-            let (a, b) = (open.body(t), ok.body(t));
-            assert_eq!((a.fill, a.border, a.text), (b.fill, b.border, b.text), "approved wears open's colours");
+            for look in pr::Look::ALL {
+                let bare = Style::Pr { look, running: false, signed_off: false };
+                let ok = Style::Pr { look, running: false, signed_off: true };
+                let (a, b) = (bare.body(t), ok.body(t));
+                assert_eq!(
+                    (a.fill, a.border, a.text),
+                    (b.fill, b.border, b.text),
+                    "{look:?}: a sign-off repainted the connector"
+                );
+            }
         }
-        // And a pull request whose checks are failing keeps the failure's
-        // colour while still showing it was signed off, which the old filled
-        // green could not do at all.
-        let failing = crate::pr::Pr { approved: true, failed: 1, ..crate::pr::Pr::synthetic(7, pr::Look::Open) };
-        assert_eq!(failing.look(), pr::Look::Failing, "the failure is what the colour says");
+        // Which is what lets the two be read at once. Every one of these used
+        // to cost the other: a single enum had to pick one and picked wrong.
+        use crate::pr::{Look, Pr, State};
+        let failing = Pr { approved: true, ..Pr::synthetic(7, Look::Failing) };
+        assert_eq!(failing.look(), Look::Failing, "the checks are what the colour says");
         assert!(failing.signed_off(), "and the tick still says review signed off");
+        assert!(Pr::synthetic(7, Look::Merged).signed_off(), "nothing lands without a sign-off");
+        let draft = Pr { approved: true, ..Pr::synthetic(7, Look::Draft) };
+        assert!(draft.signed_off() && draft.look() == Look::Draft);
+        assert_eq!(Pr::synthetic(7, Look::Merged).state, State::Merged);
     }
 
     /// Running CI is a border over whatever the pull request already is, not
@@ -747,7 +752,6 @@ mod tests {
                 Style::Chip(Phase::NeedsUser),
                 Style::Chip(Phase::Idle),
                 pr_style(pr::Look::Merged, false),
-                pr_style(pr::Look::Approved, false),
                 pr_style(pr::Look::Failing, false),
                 Style::Ticket(Some(ticket::Status::Started)),
                 Style::Ticket(Some(ticket::Status::Done)),
