@@ -21,10 +21,18 @@ use crate::font;
 const GITHUB: &[u8] = include_bytes!("../assets/logos/github.svg");
 const LINEAR: &[u8] = include_bytes!("../assets/logos/linear.svg");
 const CLAUDE: &[u8] = include_bytes!("../assets/logos/claude.svg");
+const WARP: &[u8] = include_bytes!("../assets/logos/warp.svg");
+const ORCA: &[u8] = include_bytes!("../assets/logos/orca.svg");
+const ANTHROPIC: &[u8] = include_bytes!("../assets/logos/anthropic.svg");
+const CLOUD: &[u8] = include_bytes!("../assets/logos/cloud.svg");
 
 pub const GITHUB_PATH: &str = "logos/github.svg";
 pub const LINEAR_PATH: &str = "logos/linear.svg";
 pub const CLAUDE_PATH: &str = "logos/claude.svg";
+pub const WARP_PATH: &str = "logos/warp.svg";
+pub const ORCA_PATH: &str = "logos/orca.svg";
+pub const ANTHROPIC_PATH: &str = "logos/anthropic.svg";
+pub const CLOUD_PATH: &str = "logos/cloud.svg";
 
 /// Which mark a node wears (#80).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -35,16 +43,50 @@ pub enum Mark {
     GitHub,
     /// A Linear issue.
     Linear,
+    /// Where a session is running, drawn beside the Claude mark (#122). The
+    /// Claude one says what a node is; these say where it is.
+    Warp,
+    Orca,
+    /// The Claude desktop app. Anthropic's own mark rather than Claude's,
+    /// because Claude's is already in the slot next door and two of them
+    /// side by side read as a mistake.
+    ClaudeApp,
+    /// Not on this machine at all (#120).
+    Cloud,
 }
 
 impl Mark {
-    pub const ALL: [Mark; 3] = [Mark::Claude, Mark::GitHub, Mark::Linear];
+    pub const ALL: [Mark; 7] = [
+        Mark::Claude,
+        Mark::GitHub,
+        Mark::Linear,
+        Mark::Warp,
+        Mark::Orca,
+        Mark::ClaudeApp,
+        Mark::Cloud,
+    ];
+
+    /// The mark for a seat's host, or `None` where the board cannot say
+    /// where the session is beyond "a terminal" (#122).
+    pub fn host(host: &str) -> Option<Mark> {
+        match host {
+            "warp" => Some(Mark::Warp),
+            "orca" => Some(Mark::Orca),
+            "desktop" => Some(Mark::ClaudeApp),
+            "cloud" => Some(Mark::Cloud),
+            _ => None,
+        }
+    }
 
     pub fn path(self) -> &'static str {
         match self {
             Mark::Claude => CLAUDE_PATH,
             Mark::GitHub => GITHUB_PATH,
             Mark::Linear => LINEAR_PATH,
+            Mark::Warp => WARP_PATH,
+            Mark::Orca => ORCA_PATH,
+            Mark::ClaudeApp => ANTHROPIC_PATH,
+            Mark::Cloud => CLOUD_PATH,
         }
     }
 
@@ -53,6 +95,10 @@ impl Mark {
             Mark::Claude => CLAUDE,
             Mark::GitHub => GITHUB,
             Mark::Linear => LINEAR,
+            Mark::Warp => WARP,
+            Mark::Orca => ORCA,
+            Mark::ClaudeApp => ANTHROPIC,
+            Mark::Cloud => CLOUD,
         }
     }
 }
@@ -150,16 +196,11 @@ pub struct Logos;
 
 impl AssetSource for Logos {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(match path {
-            GITHUB_PATH => Some(Cow::Borrowed(GITHUB)),
-            LINEAR_PATH => Some(Cow::Borrowed(LINEAR)),
-            CLAUDE_PATH => Some(Cow::Borrowed(CLAUDE)),
-            _ => None,
-        })
+        Ok(Mark::ALL.iter().find(|m| m.path() == path).map(|m| Cow::Borrowed(m.bytes())))
     }
 
     fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(vec![GITHUB_PATH.into(), LINEAR_PATH.into(), CLAUDE_PATH.into()])
+        Ok(Mark::ALL.iter().map(|m| m.path().into()).collect())
     }
 }
 
@@ -171,7 +212,7 @@ mod tests {
     /// reads as a bug rather than a missing file, so check them here.
     #[test]
     fn every_mark_is_a_single_colour_svg_with_a_viewbox() {
-        for path in [GITHUB_PATH, LINEAR_PATH, CLAUDE_PATH] {
+        for path in Mark::ALL.map(|m| m.path()) {
             let bytes = Logos.load(path).unwrap().expect("the source serves it");
             let text = String::from_utf8(bytes.to_vec()).expect("svg is text");
             assert!(text.contains("viewBox"), "{path} needs a viewBox to scale into the chip");
@@ -189,7 +230,7 @@ mod tests {
     /// empty chip looks like a bug in the board rather than a bad file.
     #[test]
     fn every_mark_parses_and_covers_its_box() {
-        for path in [GITHUB_PATH, LINEAR_PATH, CLAUDE_PATH] {
+        for path in Mark::ALL.map(|m| m.path()) {
             let bytes = Logos.load(path).unwrap().unwrap();
             let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
                 .unwrap_or_else(|e| panic!("{path} is not something gpui can render: {e}"));

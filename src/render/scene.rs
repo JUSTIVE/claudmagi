@@ -98,19 +98,39 @@ pub struct ChipStyle {
 
 /// Space between the mark and the label it stands in front of.
 pub const LOGO_GAP: f32 = 5.0;
+/// The origin mark, against the Claude mark beside it. Smaller because
+/// it answers the smaller question: what the node is comes first, where
+/// it is running comes after (#122).
+pub const ORIGIN_SIZE: f32 = 0.8;
 
 impl ChipStyle {
-    pub fn width(&self, label: &str) -> f32 {
-        let extra = if self.logo > 0.0 { self.logo + LOGO_GAP } else { 0.0 };
+    pub fn width(&self, label: &str, origin: bool) -> f32 {
+        let extra = self.marks_w(origin);
         (self.min_w + extra).max(font::measure(label, self.text_scale) + 2.0 * self.pad + extra)
     }
 
-    /// Where the mark and the label sit along the chip's own axis, measured
-    /// from its centre: `[pad][mark][gap][label][pad]`.
-    pub fn slots(&self, label: &str, width: f32) -> (f32, f32) {
+    /// How much of a chip its marks take, the gap after them included.
+    fn marks_w(&self, origin: bool) -> f32 {
+        if self.logo <= 0.0 {
+            return 0.0;
+        }
+        let second = if origin { self.logo * ORIGIN_SIZE + LOGO_GAP } else { 0.0 };
+        self.logo + second + LOGO_GAP
+    }
+
+    /// Where the marks and the label sit along the chip's own axis, measured
+    /// from its centre: `[pad][mark][gap][origin][gap][label][pad]`.
+    ///
+    /// The origin mark is the smaller of the two on purpose: the Claude mark
+    /// says what the node is, which is the question, and this one says where
+    /// it happens to be running (#122).
+    pub fn slots(&self, label: &str, width: f32, origin: bool) -> (f32, f32, f32) {
+        let _ = origin;
         let text = font::measure(label, self.text_scale);
-        let mark = -width / 2.0 + self.pad + self.logo / 2.0;
-        (mark, width / 2.0 - self.pad - text / 2.0)
+        let left = -width / 2.0 + self.pad;
+        let mark = left + self.logo / 2.0;
+        let second = left + self.logo + LOGO_GAP + self.logo * ORIGIN_SIZE / 2.0;
+        (mark, second, width / 2.0 - self.pad - text / 2.0)
     }
 }
 
@@ -152,6 +172,10 @@ pub const SUB_STYLE: ChipStyle = ChipStyle {
 #[derive(Clone, Debug)]
 pub struct ChipDraw {
     pub target: Target,
+    /// Where this session is running, drawn beside the Claude mark (#122).
+    /// `None` for subagents, which run wherever their session does, and for
+    /// a terminal the board cannot name.
+    pub origin: Option<logos::Mark>,
     pub lane: usize,
     /// Arc length of the chip centre when plugged in.
     pub s_c: f32,
@@ -591,6 +615,7 @@ struct Placement {
     width: f32,
     label: String,
     style: ChipStyle,
+    origin: Option<logos::Mark>,
 }
 
 /// Lays every session and subagent out on its lane. Subagents alternate
@@ -603,12 +628,13 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Lane]) -> Vec<Placeme
         let Some(lane_ref) = lanes.get(lane_idx) else { continue };
         let label = c.info.label();
         let style = SESSION_STYLE;
-        let width = style.width(&label);
+        let origin = c.info.seat.as_ref().and_then(|s| logos::Mark::host(s.host));
+        let width = style.width(&label, origin.is_some());
         let (s_c, stripe) = session_anchor(lane_ref, layout, width);
         // Keys name the spot on the lane, not the lane: when blocks shift,
         // chips slide along with their lane instead of fading (#49).
         let key = stripe;
-        out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style });
+        out.push(Placement { target: Target::Session(k), lane: lane_idx, key, s_c, width, label, style, origin });
 
         // Horizontal runs either side of the parent's diagonal (stripe `key`),
         // trimmed by CURVE_MARGIN so nothing sits on a bend (#36).
@@ -632,7 +658,7 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Lane]) -> Vec<Placeme
         for (j, sub) in c.subs.iter().enumerate() {
             let style = SUB_STYLE;
             let label = sub.info.label();
-            let width = style.width(&label);
+            let width = style.width(&label, false);
             let right_s = right_cursor + width / 2.0;
             let left_s = left_cursor - width / 2.0;
             let right_ok = right_s + width / 2.0 <= right_limit && fits(right_s, width);
@@ -651,7 +677,18 @@ fn place_all(model: &BoardModel, layout: &Layout, lanes: &[Lane]) -> Vec<Placeme
             }
             // Key: side + ordinal on that side, so flipping sides animates.
             let key = 100 + j as u32 * 2 + on_right as u32;
-            out.push(Placement { target: Target::Sub(k, j), lane: lane_idx, key, s_c, width, label, style });
+            // A subagent runs wherever its session does, so saying it twice
+            // on one lane is noise (#122).
+            out.push(Placement {
+                target: Target::Sub(k, j),
+                lane: lane_idx,
+                key,
+                s_c,
+                width,
+                label,
+                style,
+                origin: None,
+            });
         }
     }
     out
@@ -705,6 +742,7 @@ pub fn chip_draws(model: &BoardModel, layout: &Layout, lanes: &[Lane], now: Inst
             s_c,
             width: pl.width,
             label: pl.label,
+            origin: pl.origin,
             p,
             settled,
             hover: anim.hover_t,
@@ -1108,7 +1146,7 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
         // The mark rides inside the chip, and the label steps aside for it.
         // Both offsets run along the chip's own axis, since the chip is
         // rotated onto its trace (#80).
-        let (mark_dx, text_dx) = st.slots(&c.label, c.width);
+        let (mark_dx, origin_dx, text_dx) = st.slots(&c.label, c.width, c.origin.is_some());
         if st.logo > 0.0 {
             out.push(Shape::Mark {
                 mark: logos::Mark::Claude,
@@ -1117,6 +1155,15 @@ fn build_design_shapes(f: &Frame, origin: Pt) -> Vec<Shape> {
                 center: center + c.tangent * mark_dx,
                 color: text_c,
             });
+            if let Some(origin) = c.origin {
+                out.push(Shape::Mark {
+                    mark: origin,
+                    size: st.logo * ORIGIN_SIZE,
+                    angle,
+                    center: center + c.tangent * origin_dx,
+                    color: text_c,
+                });
+            }
         }
         out.push(Shape::Text {
             text: c.label.clone(),

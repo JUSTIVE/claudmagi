@@ -83,6 +83,15 @@ fn main() {
             if let Some(id) = ids.get(1) {
                 fake.set_pr_running(id, true);
             }
+            // One origin per session, so a demo render shows every mark the
+            // board can draw beside the Claude one (#122). Sandbox sessions
+            // have no seat of their own; this is only the badge, the group
+            // stays the sandbox's.
+            for (i, host) in ["warp", "orca", "desktop", "cloud"].into_iter().enumerate() {
+                if let Some(id) = ids.get(i) {
+                    fake.set_host(id, Some(host));
+                }
+            }
             // Review rides on top of the look rather than being one of them
             // (#116), so the demo has to say it separately: one open pull
             // request signed off, and one signed off with its checks red, the

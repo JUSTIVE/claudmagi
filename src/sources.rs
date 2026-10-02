@@ -811,6 +811,19 @@ impl FakeSource {
         }
     }
 
+    /// Seats a sandbox session in a host, or takes the seat away (#122).
+    /// Only the origin mark reads this; the sandbox keeps its own grouping.
+    pub fn set_host(&self, session_id: &str, host: Option<&'static str>) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            s.seat = host.map(|host| crate::host::Seat {
+                host,
+                handle: format!("sandbox-{}", s.pid),
+                window: None,
+                focus_url: None,
+            });
+        }
+    }
+
     /// Signs off on a sandbox session's pull requests, or takes it back
     /// (#116). Its own switch, beside the CI one, because that is what
     /// approval is: a thing laid on top of whatever state the PR is in.

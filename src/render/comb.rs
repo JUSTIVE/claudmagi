@@ -435,6 +435,9 @@ pub struct RowBox {
     pub dy: f32,
     pub scale: f32,
     pub mark: f32,
+    /// How wide the origin mark is drawn, or zero where the row carries none
+    /// (#122). Like the tick, it comes out of the label's room.
+    pub origin: f32,
     pub label: String,
     /// How wide the approval tick is drawn, or zero where there is none
     /// (#116). It comes out of the label's room like the mark does.
@@ -443,14 +446,25 @@ pub struct RowBox {
     pub room: f32,
 }
 
-pub fn row_box(r: f32, row: usize, label: &str, check: bool) -> RowBox {
+pub fn row_box(r: f32, row: usize, label: &str, extras: Extras) -> RowBox {
     let dy = ROW_DY[row] * r;
     let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
     let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
     let room = row_room(r, dy, font::height(scale).max(mark)) - ROW_PAD * 2.0;
-    let check = if check { font::height(scale) * CHECK_H } else { 0.0 };
-    let taken = mark + MARK_GAP + if check > 0.0 { check + MARK_GAP } else { 0.0 };
-    RowBox { dy, scale, mark, label: fit(label, scale, room - taken), check, room }
+    let check = if extras.check { font::height(scale) * CHECK_H } else { 0.0 };
+    let origin = if extras.origin { mark * crate::render::scene::ORIGIN_SIZE } else { 0.0 };
+    let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+    let taken = mark + MARK_GAP + span(origin) + span(check);
+    RowBox { dy, scale, mark, origin, label: fit(label, scale, room - taken), check, room }
+}
+
+/// What a row carries besides its own mark and label.
+#[derive(Clone, Copy, Default)]
+pub struct Extras {
+    /// A second mark saying where the session is running (#122).
+    pub origin: bool,
+    /// Review has signed off on this row's pull request (#116).
+    pub check: bool,
 }
 
 /// The approval tick, against the cap height of the row it sits in. A hair
@@ -527,6 +541,9 @@ struct SlotInk {
     /// Review has signed off on this pull request (#116). Only the GitHub
     /// row ever sets it.
     check: bool,
+    /// Where the session is running (#122). Only the middle row sets it:
+    /// the issue and the pull request are not anywhere in particular.
+    origin: Option<logos::Mark>,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -679,8 +696,17 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 label: t.key.clone(),
                 color: read(ticket_color(t, pal)),
                 check: false,
+                origin: None,
             }),
-            Some(SlotInk { mark: logos::Mark::Claude, label: info.label(), color: pal.bg, check: false }),
+            Some(SlotInk {
+                mark: logos::Mark::Claude,
+                label: info.label(),
+                color: pal.bg,
+                check: false,
+                // Where this session is running, beside the mark that says
+                // what it is (#122).
+                origin: info.seat.as_ref().and_then(|s| logos::Mark::host(s.host)),
+            }),
             // The answered one if there is one, otherwise the number GitHub
             // would not speak for, drawn quietly and blinking.
             pr.map(|p| SlotInk {
@@ -688,6 +714,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 label: p.label(),
                 color: read(pr_color(p, pal)),
                 check: p.signed_off(),
+                origin: None,
             })
             .or_else(|| {
                 unanswered.map(|id| SlotInk {
@@ -695,18 +722,21 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     label: format!("#{}", id.number),
                     color: theme::with_alpha(pal.ink, 0.5),
                     check: false,
+                    origin: None,
                 })
             }),
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
-            let RowBox { dy, scale, mark, label, check, .. } = row_box(r, row, &slot.label, slot.check);
+            let extras = Extras { origin: slot.origin.is_some(), check: slot.check };
+            let RowBox { dy, scale, mark, origin, label, check, .. } = row_box(r, row, &slot.label, extras);
             // The session's label lies on the bed, so it blinks with it;
             // the other two answer for themselves.
             let slot_beat = if row == 1 { beat } else { row_beat(row) };
             let text_w = font::measure(&label, scale);
-            let tick = if check > 0.0 { check + MARK_GAP } else { 0.0 };
-            let left = center.x - (mark + MARK_GAP + text_w + tick) / 2.0;
+            let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+            let (tick, badge) = (span(check), span(origin));
+            let left = center.x - (mark + MARK_GAP + badge + text_w + tick) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
@@ -728,18 +758,29 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 center: Pt::new(left + mark / 2.0, center.y + dy),
                 color: fade(theme::with_alpha(slot.color, slot_beat)),
             });
+            // The origin rides between the mark and the label, the way it
+            // does inside a chip on the other view (#122).
+            if let (Some(badge_mark), true) = (slot.origin, origin > 0.0) {
+                out.push(Shape::Mark {
+                    mark: badge_mark,
+                    size: origin,
+                    angle: 0.0,
+                    center: Pt::new(left + mark + MARK_GAP + origin / 2.0, center.y + dy),
+                    color: fade(theme::with_alpha(slot.color, slot_beat)),
+                });
+            }
             out.push(Shape::Text {
                 text: label.clone(),
                 scale,
                 stroke: 1.0,
                 angle: 0.0,
-                center: Pt::new(left + mark + MARK_GAP + text_w / 2.0, center.y + dy),
+                center: Pt::new(left + mark + MARK_GAP + badge + text_w / 2.0, center.y + dy),
                 color: fade(theme::with_alpha(slot.color, slot_beat)),
             });
             // Review's tick, after the number it signed off on (#116). The
             // row has no fill to say it with, so it is said in a mark.
             if check > 0.0 {
-                let at = Pt::new(left + mark + MARK_GAP + text_w + MARK_GAP + check / 2.0, center.y + dy);
+                let at = Pt::new(left + mark + MARK_GAP + badge + text_w + MARK_GAP + check / 2.0, center.y + dy);
                 out.push(Shape::Stroke {
                     pieces: scene::check_mark(at, check),
                     width: (check * 0.2).max(0.7),
@@ -1185,24 +1226,29 @@ mod tests {
             for row in 0..3 {
                 for label in labels {
                     for check in [false, true] {
-                        let b = row_box(r, row, label, check);
-                        if b.label.is_empty() {
-                            continue;
+                        for origin in [false, true] {
+                            let extras = Extras { origin, check };
+                            let b = row_box(r, row, label, extras);
+                            if b.label.is_empty() {
+                                continue;
+                            }
+                            let text_w = font::measure(&b.label, b.scale);
+                            let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+                            let w = b.mark + MARK_GAP + span(b.origin) + text_w + span(b.check);
+                            let h = font::height(b.scale).max(b.mark).max(b.check).max(b.origin);
+                            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                                let corner =
+                                    Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
+                                assert!(
+                                    inside_hex(corner, center, r, GAP),
+                                    "r={r} row={row} check={check} origin={origin} {label:?}: \
+                                     {:?} reaches outside its cell",
+                                    b.label
+                                );
+                            }
+                            assert_eq!(b.check > 0.0, check, "the tick is there when it was asked for");
+                            assert_eq!(b.origin > 0.0, origin, "and so is the origin mark");
                         }
-                        let text_w = font::measure(&b.label, b.scale);
-                        let tick = if b.check > 0.0 { b.check + MARK_GAP } else { 0.0 };
-                        let w = b.mark + MARK_GAP + text_w + tick;
-                        let h = font::height(b.scale).max(b.mark).max(b.check);
-                        for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                            let corner =
-                                Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
-                            assert!(
-                                inside_hex(corner, center, r, GAP),
-                                "r={r} row={row} check={check} {label:?}: {:?} reaches outside its cell",
-                                b.label
-                            );
-                        }
-                        assert_eq!(b.check > 0.0, check, "the tick is there when it was asked for");
                     }
                 }
             }
@@ -1211,21 +1257,31 @@ mod tests {
 
     #[test]
     fn a_label_that_had_to_be_cut_says_so() {
-        let b = row_box(70.0, 1, "a-very-long-session-name-nobody-would-ever-type", false);
+        let b = row_box(70.0, 1, "a-very-long-session-name-nobody-would-ever-type", Extras::default());
         assert!(b.label.ends_with('…'), "a cut label wears an ellipsis, got {:?}", b.label);
         assert!(b.label.chars().count() > 2, "and keeps enough to be worth reading");
-        let short = row_box(70.0, 1, "S-1", false);
+        let short = row_box(70.0, 1, "S-1", Extras::default());
         assert_eq!(short.label, "S-1", "a label that fits is left alone");
         // The tick comes out of the label's room, the way the mark does, so
         // a row that gains one gives up letters rather than the cell's edge
         // (#94, #116).
-        let ticked = row_box(70.0, 2, "a-very-long-session-name-nobody-would-ever-type", true);
-        let plain = row_box(70.0, 2, "a-very-long-session-name-nobody-would-ever-type", false);
+        let long = "a-very-long-session-name-nobody-would-ever-type";
+        let ticked = row_box(70.0, 2, long, Extras { check: true, ..Extras::default() });
+        let plain = row_box(70.0, 2, long, Extras::default());
         assert!(
             ticked.label.chars().count() < plain.label.chars().count(),
             "the tick costs the label letters: {:?} against {:?}",
             ticked.label,
             plain.label
+        );
+        // And so does the origin mark, for the same reason (#122).
+        let badged = row_box(70.0, 1, long, Extras { origin: true, ..Extras::default() });
+        let bare = row_box(70.0, 1, long, Extras::default());
+        assert!(
+            badged.label.chars().count() < bare.label.chars().count(),
+            "the origin mark costs the label letters: {:?} against {:?}",
+            badged.label,
+            bare.label
         );
     }
 
