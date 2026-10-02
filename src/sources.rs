@@ -71,6 +71,9 @@ pub struct ClaudeSource {
     tickets: ticket::Tracker,
     /// Every host, asked in order for each session's seat (#118).
     hosts: Vec<Box<dyn crate::host::Host>>,
+    /// Sessions running in Anthropic's own containers, which leave nothing on
+    /// this machine to read (#120).
+    cloud: crate::cloud::Tracker,
 }
 
 impl Default for ClaudeSource {
@@ -82,6 +85,7 @@ impl Default for ClaudeSource {
             prs: pr::Tracker::default(),
             tickets: ticket::Tracker::default(),
             hosts: crate::host::all(),
+            cloud: crate::cloud::Tracker::default(),
         }
     }
 }
@@ -122,6 +126,10 @@ impl SessionSource for ClaudeSource {
         }
         self.attach_links(&mut list);
         fold_parked_jobs(&mut list);
+        // Cloud sessions come last and whole: they carry their own state and
+        // have no transcript here for `attach_links` to read, so nothing
+        // above applies to them (#120).
+        list.extend(self.resolve_cloud());
         list
     }
 
@@ -473,6 +481,28 @@ impl ClaudeSource {
     /// budget across the snapshot so a board full of PRs never stalls the poll
     /// (#56). The ticket is resolved after the PR because a PR title's tag is
     /// one of the things that corroborates it (#57).
+    /// Cloud sessions, with the pull request their summary named looked up.
+    ///
+    /// `cloud.rs` can read a number out of a sentence but cannot say what
+    /// state GitHub has it in; `gh` can, and the repository is one the person
+    /// works in. Anything the tracker still cannot answer for stays in
+    /// `prs_unanswered`, where the board says so rather than pretending the
+    /// PR is absent (#112, #120).
+    fn resolve_cloud(&self) -> Vec<SessionInfo> {
+        let mut list = self.cloud.sessions();
+        let named: Vec<pr::PrRef> = list.iter().flat_map(|s| s.prs_unanswered.clone()).collect();
+        if named.is_empty() {
+            return list;
+        }
+        self.prs.want(named);
+        for s in &mut list {
+            let refs = std::mem::take(&mut s.prs_unanswered);
+            s.prs = refs.iter().filter_map(|id| self.prs.cached(id)).collect();
+            s.prs_unanswered = refs.into_iter().filter(|id| self.prs.unanswered(id)).collect();
+        }
+        list
+    }
+
     fn attach_links(&self, list: &mut [SessionInfo]) {
         let paths: Vec<Option<PathBuf>> = list.iter().map(|s| self.transcript(s)).collect();
         let mut want_prs = Vec::new();

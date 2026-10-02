@@ -75,9 +75,16 @@ cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 Data and rendering are separate layers; only `ui/` touches gpui.
 
 The session registry at `~/.claude/sessions/<pid>.json` is Claude Code's own
-and says nothing about terminals: a session writes one wherever it runs, the
-desktop app included — that app is a reader of the same registry, as this
-board is. What a terminal adds is a *seat*: which window of which app the
+and says nothing about terminals: a session writes one wherever it runs. It is
+written by the CLI entrypoint, though, so it holds only sessions running on
+this machine. A cloud session — started from the desktop app, the phone or a
+schedule, and run in Anthropic's own container — leaves nothing here at all:
+no process, no record, not even a transcript. Those are read over the wire
+from `/v1/code/sessions`, the endpoint the desktop app lists them with, using
+the token `usage.rs` already takes out of the login keychain. What comes back
+is richer than the local registry: whether the container is still connected,
+what the last turn made of itself, which branch it is on, and whether anyone
+has looked (#120). What a terminal adds is a *seat*: which window of which app the
 session sits in, so sessions sharing one can be drawn together, and a way back
 to it when a chip is clicked. That is the `host/` layer, and the hosts work
 nothing alike. Warp keeps its tabs in a database behind Full Disk Access;
@@ -89,7 +96,8 @@ and the app itself as the way back.
 |-------|--------|------|
 | Data | `model.rs` | `SessionInfo` (facts), `Phase`, `BoardModel` (animated chip state: `apply` a snapshot, `tick` time). Pure Rust, unit-tested. |
 | Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json`, the process env, and each session's `projects/<slug>/<session>/subagents/` transcripts; `FakeSource` is the in-memory sandbox the test tools edit. |
-| Data | `host/` | `Host` trait: which app a session is seated in, which window of it, and how to bring that window to the front. `warp.rs`, `orca.rs`, `desktop.rs`. |
+| Data | `host/` | `Host` trait: which app a session is seated in, which window of it, and how to bring that window to the front. `warp.rs`, `orca.rs`, `cloud.rs`, `desktop.rs`. |
+| Data | `cloud.rs` | Sessions running in Anthropic's containers, read from `/v1/code/sessions` with the login keychain's token. |
 | Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths (tessellations cached by geometry), or serialised to SVG for headless checks. |
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `host/`. |

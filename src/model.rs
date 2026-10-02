@@ -167,6 +167,11 @@ impl SessionInfo {
     /// added here (#118).
     pub fn group_label(&self) -> String {
         let Some((kind, value)) = self.group.split_once(':') else { return self.group.clone() };
+        // A cloud session's window is a repository, which already reads as a
+        // place; calling it a tab would be inventing one (#120).
+        if kind == "cloud-tab" {
+            return format!("cloud {value}");
+        }
         if let Some(host) = kind.strip_suffix("-tab") {
             return format!("{host} tab {value}");
         }

@@ -47,8 +47,6 @@ struct Loaded {
     face: Face<'static>,
     /// Cap height in font units.
     cap: f32,
-    /// Em size in font units, which is what the faces are matched on.
-    upem: f32,
 }
 
 impl Loaded {
@@ -59,7 +57,7 @@ impl Loaded {
             return None;
         }
         let cap = face.capital_height().map(|c| c as f32).filter(|c| *c > 0.0).unwrap_or(upem * 0.72);
-        Some(Loaded { face, cap, upem })
+        Some(Loaded { face, cap })
     }
 }
 
@@ -362,7 +360,7 @@ mod tests {
             assert!(
                 (drawn - height(scale)).abs() < 0.01,
                 "face {i} ({} units) draws a cap of {drawn} where {} was promised",
-                l.upem,
+                l.face.units_per_em(),
                 height(scale)
             );
         }

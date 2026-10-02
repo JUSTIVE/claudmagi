@@ -22,6 +22,7 @@ use anyhow::Result;
 
 use crate::model::SessionInfo;
 
+pub mod cloud;
 pub mod desktop;
 pub mod orca;
 pub mod warp;
@@ -77,6 +78,9 @@ pub fn all() -> Vec<Box<dyn Host>> {
     vec![
         Box::new(warp::Warp::default()),
         Box::new(orca::Orca),
+        // Claims nothing from an environment; it is here so a cloud seat has
+        // somewhere to be focused from (#120).
+        Box::new(cloud::Cloud),
         Box::new(desktop::Desktop),
     ]
 }

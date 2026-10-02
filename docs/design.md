@@ -27,6 +27,17 @@
 | 스크롤 | 세로 스크롤로 더 많은 레인을 볼 수 있음 |
 
 
+
+## 클라우드 세션 (#120)
+
+- **이 맥에 아무것도 안 남는다**: 데스크톱 앱·iOS·스케줄에서 띄운 세션은 Anthropic 컨테이너에서 돈다 — 프로세스도, `~/.claude/sessions/<pid>.json` 레코드도, **트랜스크립트조차** 없다. 레지스트리를 쓰는 건 Claude Code 코어가 아니라 **CLI 엔트리포인트**라서, 앱이 Claude Code 를 제 Node 프로세스 안에서 돌려도 레지스트리에는 안 들어온다. 디스크로는 원리적으로 못 본다.
+- **그래서 API 로 읽는다**: `GET https://api.anthropic.com/v1/code/sessions?limit=60&include_trigger_sessions=true`, `Authorization: Bearer <토큰>` — 데스크톱 앱이 목록을 받아오는 그 엔드포인트이고, 토큰은 `usage.rs` 가 이미 로그인 키체인에서 꺼내 쓰는 바로 그것이다(#48). HTTP 클라이언트는 링크 안 하고 `curl` 로 나간다.
+- **답이 로컬 레지스트리보다 낫다**: `connection_status`(컨테이너가 살아있나) · `worker_status`(턴이 돌고 있나) · `unread`(사람이 봤나) · `external_metadata.post_turn_summary.needs_action`·`.status_detail` · `config.outcomes[].git_info.repo` · `current_branches`. **전부 보고된 값이고 추측이 아니다** — 그게 보드에 올릴 값어치의 근거다.
+- **phase 매핑**: 턴이 돌면 Working. 턴 사이에는 '누가 기다리는가' 가 질문이고 둘이 그걸 말한다 — 요약이 할 일을 지목했거나(`needs_action`), 끝났는데 **사람이 아직 안 봤거나**(`unread`). 클라우드 작업은 아무도 안 볼 때 끝나므로 두 번째가 흔하고, 그게 바로 보드가 있는 이유다. 둘 다 아니면 Idle.
+- **무엇을 보여줄까**: 보드는 지금 돌아가는 것을 보여주는 물건인데 클라우드는 몇 주치 스케줄 실행을 기억한다. `connected` 면 시계와 무관하게 현재. 아니면 `last_event_at` 이 `RECENT`(12시간) 안이어야 한다 — 점심에 끝난 일은 아직 볼 거리지만 지난주 크론은 아니다.
+- **PR 은 문장에서 뽑는다**: 트랜스크립트가 없으니 `pr.rs` 가 훑을 게 없는데, 요약문은 사람 읽으라고 쓰인 거라 번호를 소리내어 말한다 — "PR #9312 E2E passed (194/194); awaiting reviewer approval". 거기에 `git_info.repo` 를 붙이면 온전한 `PrRef` 라, 그걸 `pr::Tracker` 에 넘겨 `gh` 가 상태를 채운다. 못 채우면 `prs_unanswered` 로 남아 보드가 그렇다고 말한다(#112).
+- **자리**: `Seat { host: "cloud", window: repo }` — 같은 저장소의 세션이 한 클러스터가 된다(`cloud-tab:<repo>`, 라벨은 "cloud <repo>"). 띄울 창이 없으니 클릭은 `https://claude.ai/code/<id>` 를 연다(웹·데스크톱 앱 어느 쪽이든 받는다). 환경변수로는 아무것도 줍지 않는다 — 여기 프로세스가 없으므로.
+- **캐시**: 30초 TTL, 실패하면 5초 뒤 재시도하되 **이전 목록을 버리지 않는다** — 네트워크가 한 번 흔들렸다고 보드가 비는 건 조금 낡은 것보다 나쁘다(#59 와 같은 규칙).
 ## 호스트 레이어 (#118)
 
 - **레지스트리는 터미널 것이 아니다**: `~/.claude/sessions/<pid>.json` 은 Claude Code 가 쓴다 — 어디서 돌든 쓴다. 데스크톱 앱(`/Applications/Claude.app`)도 **같은 디렉터리를 읽는** 쪽이다(번들 안에 `sessionsDirPath()` → `/^\d+\.json$/` 스캔, 실패 메시지가 "Claude Code's session registry"). 레코드를 쓰는 건 `claude` 프로세스 자신이다. 그래서 **데스크톱 앱 세션은 이미 보드에 뜬다** — 터미널이 없을 뿐이다.
