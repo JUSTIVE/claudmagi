@@ -87,7 +87,7 @@ fn main() {
             // board can draw beside the Claude one (#122). Sandbox sessions
             // have no seat of their own; this is only the badge, the group
             // stays the sandbox's.
-            for (i, host) in ["warp", "orca", "desktop", "cloud"].into_iter().enumerate() {
+            for (i, (host, _)) in host::NAMED.into_iter().enumerate() {
                 if let Some(id) = ids.get(i) {
                     fake.set_host(id, Some(host));
                 }

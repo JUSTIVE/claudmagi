@@ -72,6 +72,12 @@ pub trait Host: Send + Sync {
     }
 }
 
+/// The hosts a board can name, with the word the test panel labels each by
+/// (#124). A plain terminal is not here: it has a seat but nothing to show
+/// for it, which is the honest answer rather than a fifth mark.
+pub const NAMED: [(&str, &str); 4] =
+    [("warp", "WARP"), ("orca", "ORCA"), ("desktop", "APP"), ("cloud", "CLOUD")];
+
 /// Every host, in the order they get asked. The desktop one claims whatever
 /// is left, so it goes last.
 pub fn all() -> Vec<Box<dyn Host>> {

@@ -290,6 +290,38 @@ impl Board {
                     );
                 }
                 list = list.child(tickets);
+
+                // And where the session is running, which is a badge rather
+                // than a state but is just as hard to reach without a row of
+                // its own (#124).
+                let seated = info.seat.as_ref().map(|s| s.host);
+                let mut hosts = div().flex().items_center().gap_1().pl_3().child(
+                    div()
+                        .w(px(56.))
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(dim(0.55))
+                        .child("HOST"),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                hosts = hosts.child(
+                    button(SharedString::from(format!("hs-none-{i}")), "−", seated.is_none())
+                        .on_click(move |_, _, _| sb.set_host(&sid, None)),
+                );
+                for (host, label) in crate::host::NAMED {
+                    let sb = sandbox.clone();
+                    let sid = info.session_id.clone();
+                    hosts = hosts.child(
+                        button(
+                            SharedString::from(format!("hs-{i}-{host}")),
+                            label,
+                            seated == Some(host),
+                        )
+                        .on_click(move |_, _, _| sb.set_host(&sid, Some(host))),
+                    );
+                }
+                list = list.child(hosts);
             }
 
             // Subagents, indented under their session.
