@@ -59,6 +59,11 @@ const READABLE: f32 = 3.0;
 #[derive(Clone, Debug)]
 pub struct Cell {
     pub center: Pt,
+    /// Its axial coordinates. The grid is built from these, so carrying them
+    /// is free, and anything that wants to ask whether two cells touch can
+    /// ask it of the grid rather than of the pixels (#121).
+    pub q: i32,
+    pub row: i32,
     /// Index into `model.chips`, or `None` for a cell nobody sits in.
     pub chip: Option<usize>,
     /// Set when this cell holds the subagents of a session next door, which
@@ -87,21 +92,6 @@ fn axial(q: i32, row: i32, r: f32) -> Pt {
     Pt::new(r * sqrt3 * (q as f32 + row as f32 / 2.0), r * 1.5 * row as f32)
 }
 
-/// The cell a point falls in. Rounding in cube space is what keeps the answer
-/// on the grid rather than between two of its rows.
-fn cell_at(p: Pt, r: f32) -> (i32, i32) {
-    let sqrt3 = 3.0f32.sqrt();
-    let (fq, fr) = ((sqrt3 / 3.0 * p.x - p.y / 3.0) / r, (2.0 / 3.0 * p.y) / r);
-    let fs = -fq - fr;
-    let (mut q, mut rr, s) = (fq.round(), fr.round(), fs.round());
-    let (dq, dr, ds) = ((q - fq).abs(), (rr - fr).abs(), (s - fs).abs());
-    if dq > dr && dq > ds {
-        q = -rr - s;
-    } else if dr > ds {
-        rr = -q - s;
-    }
-    (q as i32, rr as i32)
-}
 
 /// How far out a subagent cell may be looked for. One ring is what it should
 /// be; more is for a cell hemmed in by its own cluster (#108).
@@ -173,6 +163,56 @@ fn rings(n: usize) -> i32 {
     }
     k
 }
+
+/// A whole flower's worth of seats, somewhere it fits.
+///
+/// Scanned in reading order from the top left, so the first answer is also
+/// the tightest packing. `taken` is everything already seated; a candidate is
+/// refused when any of its seats lands on one of those or beside one, which
+/// is what keeps a rim of empty cells between clusters (#121).
+fn seat_somewhere(
+    members: &[usize],
+    taken: &std::collections::HashSet<(i32, i32)>,
+    width: f32,
+    r: f32,
+) -> Option<Vec<((i32, i32), usize)>> {
+    let sqrt3 = 3.0f32.sqrt();
+    let half = r * sqrt3 / 2.0;
+    // The flower's shape does not depend on where it is put — `seat_cluster`
+    // works in offsets from its centre — so it is worked out once and then
+    // carried across the scan. Rebuilding it at every candidate was the whole
+    // cost of this: a dozen clusters of seven took 5ms a frame.
+    let shape = seat_cluster(0, 0, members);
+    // Far enough to hold any flower the board can throw at it, plus the rows
+    // a tall board can show; the scan stops at the first fit long before.
+    let rows = (members.len() as i32 + 2) * 4 + 64;
+    let cols = (width / (r * sqrt3)).ceil() as i32 + 2;
+    for row in 0..rows {
+        // A row is offset by half a cell for every row down, so the column
+        // that sits at the left edge moves with it.
+        let first = -(row as f32 / 2.0).floor() as i32 - 1;
+        for q in first..=first + cols {
+            let fits = shape.iter().all(|((dq, drow), _)| {
+                let cell = (dq + q, drow + row);
+                let at = axial(cell.0, cell.1, r);
+                at.x - half >= 0.0
+                    && at.x + half <= width
+                    && at.y - r >= 0.0
+                    && !taken.contains(&cell)
+                    // The rim: a seat beside somebody else's is what makes
+                    // two clusters read as one (#121).
+                    && !DIRS.iter().any(|(nq, nrow)| taken.contains(&(cell.0 + nq, cell.1 + nrow)))
+            });
+            if fits {
+                return Some(shape.iter().map(|((dq, drow), m)| ((dq + q, drow + row), *m)).collect());
+            }
+        }
+    }
+    None
+}
+
+/// The six cells sharing a wall with a cell.
+const DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)];
 
 /// Where a cluster's sessions sit around `(cq, crow)`.
 ///
@@ -248,57 +288,27 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
         }
     }
 
-    // Where each session sits. Flowers are placed by where they land on
-    // screen rather than by axial arithmetic: a row's own half-cell offset
-    // would otherwise creep into the horizontal spacing and push later bands
-    // off the right edge.
+    // Where each session sits.
+    //
+    // The grid is asked directly rather than stepped through in pixels. It
+    // used to be the other way round: a flower was placed at a running `x`,
+    // snapped to the nearest cell, then shoved back by whole columns when the
+    // snap put it over an edge. Every one of those corrections moves seats
+    // after the step that was meant to space them, and `seat_cluster` moves
+    // them again on its own (#109). On a narrow board the steps are small and
+    // the corrections are not, and two groups ended up sharing a wall, which
+    // reads as one larger cluster rather than two (#121).
+    //
+    // So each flower takes the first cell, in reading order, where the whole
+    // of it fits on the board and nothing of it touches a flower already
+    // placed. Taking the first one packs them left to right and then down on
+    // its own, which is the arrangement the pixel walk was after.
     let mut seats: Vec<((i32, i32), usize)> = Vec::new();
-    // A flower is placed by its own extent, not by its centre: a cluster of
-    // three seats one member a full cell to the left of the middle, and
-    // stepping by centres alone hangs that one off the edge.
-    let gap = r * sqrt3;
-    let (mut x, mut y) = (0.0f32, 0.0f32);
-    let mut band = 0.0f32;
+    let mut taken: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
     for (_, members) in &groups {
-        let k = rings(members.len()) as f32;
-        let (half_w, half_h) = ((k + 0.5) * r * sqrt3, k * r * 1.5 + r);
-        if x + 2.0 * half_w > width && x > 0.0 {
-            x = 0.0;
-            y += band;
-            band = 0.0;
-        }
-        let (cq, crow) = cell_at(Pt::new(x + half_w, y + half_h), r);
-        let mut placed: Vec<((i32, i32), usize)> = seat_cluster(cq, crow, members);
-        // Snapping the centre to the grid can round the whole flower half a
-        // cell off, so measure what actually landed and shove it back inside
-        // by whole columns.
-        let edge = |seats: &[((i32, i32), usize)], f: fn(f32, f32) -> f32, side: f32| {
-            seats.iter().map(|((q, row), _)| axial(*q, *row, r).x + side).fold(-side / side.abs() * f32::MAX, f)
-        };
-        let left = edge(&placed, f32::min, -r * sqrt3 / 2.0);
-        let right = edge(&placed, f32::max, r * sqrt3 / 2.0);
-        let shift = if left < 0.0 {
-            (-left / (r * sqrt3)).ceil() as i32
-        } else if right > width {
-            -((right - width) / (r * sqrt3)).ceil() as i32
-        } else {
-            0
-        };
-        for ((q, _), _) in placed.iter_mut() {
-            *q += shift;
-        }
-        // Same again for the top, where a snapped flower can reach above the
-        // first row and lose its heads.
-        let top = placed.iter().map(|((q, row), _)| axial(*q, *row, r).y - r).fold(f32::MAX, f32::min);
-        if top < 0.0 {
-            let down = (-top / (r * 1.5)).ceil() as i32;
-            for ((_, row), _) in placed.iter_mut() {
-                *row += down;
-            }
-        }
+        let Some(placed) = seat_somewhere(members, &taken, width, r) else { continue };
+        taken.extend(placed.iter().map(|(at, _)| *at));
         seats.extend(placed);
-        x += 2.0 * half_w + gap;
-        band = band.max(2.0 * half_h);
     }
     // Subagents take a cell of their own, next door to the session that
     // spawned them (#88).
@@ -352,7 +362,7 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             if center.x + r * sqrt3 / 2.0 >= 0.0 {
                 let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
                 let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-                cells.push(Cell { center, chip, subs, wave: 0.0 });
+                cells.push(Cell { center, q, row, chip, subs, wave: 0.0 });
             }
             q += 1;
         }
@@ -1270,6 +1280,49 @@ mod tests {
             assert_eq!(ticks(Pr::synthetic(1, bare)), 0, "{bare:?} has nothing to tick");
         }
         assert_eq!(ticks(Pr::synthetic(1, Look::Merged)), 1, "nothing lands without a sign-off");
+    }
+
+    /// A cluster is a flower with a rim of empty cells, which is the only
+    /// thing that says where one ends and the next begins. Two sessions from
+    /// different groups touching reads as one bigger cluster (#121).
+    #[test]
+    fn clusters_never_touch_each_other() {
+        const DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)];
+        let shapes: [&[(&str, usize)]; 5] = [
+            &[("a", 1), ("b", 1), ("c", 1), ("d", 1), ("e", 1), ("f", 1), ("g", 1), ("h", 1)],
+            &[("a", 3), ("b", 3), ("c", 3), ("d", 3)],
+            &[("a", 7), ("b", 2), ("c", 7), ("d", 1)],
+            &[("a", 1), ("b", 12), ("c", 1), ("d", 5)],
+            &[("a", 2), ("b", 2), ("c", 2), ("d", 2), ("e", 2), ("f", 2)],
+        ];
+        for shape in shapes {
+            for width in [380.0f32, 420.0, 520.0, 640.0, 820.0, 980.0, 1280.0, 1600.0] {
+                let model = board(shape);
+                let comb = lay_out(&model, width, 900.0);
+                // Which group each seated cell belongs to.
+                let mut owner: Vec<((i32, i32), String)> = Vec::new();
+                for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
+                    let chip = cell.chip.unwrap();
+                    let group = model.chips[chip].info.group.clone();
+                    owner.push(((cell.q, cell.row), group));
+                }
+                for (at, group) in &owner {
+                    assert!(
+                        owner.iter().filter(|(p, _)| p == at).count() == 1,
+                        "w={width} {shape:?}: two sessions were seated in {at:?}"
+                    );
+                    for (dq, drow) in DIRS {
+                        let n = (at.0 + dq, at.1 + drow);
+                        if let Some((_, other)) = owner.iter().find(|(p, _)| *p == n) {
+                            assert_eq!(
+                                other, group,
+                                "w={width} {shape:?}: {group} at {at:?} is touching {other} at {n:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
