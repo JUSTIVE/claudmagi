@@ -908,6 +908,7 @@ dependencies = [
  "libc",
  "log",
  "lyon",
+ "memmap2",
  "objc",
  "serde",
  "serde_json",

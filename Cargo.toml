@@ -10,6 +10,10 @@ gpui = { version = "0.2.2", default-features = false, features = ["font-kit"] }
 # Flattens the chip marks into paths the board can draw, on screen and in an
 # `--svg` export alike (#79, #80). Already in the tree underneath gpui.
 usvg = "0.45"
+# Fallback faces live in /System/Library/Fonts and the Korean one is 55MB,
+# so they are mapped rather than read (#119). Already in the tree by way
+# of gpui.
+memmap2 = "0.9"
 # The platform backends left the gpui crate at this revision; `current_platform`
 # lives here now and is what opens a real window (#115).
 # `font-kit` moved from gpui to here, and this crate defaults to no

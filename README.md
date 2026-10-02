@@ -162,6 +162,15 @@ Press `T` (or click `TEST` in the status bar) to open the test panel. Panels doc
 The board and the gpui UI are both set in **D-DIN**, compiled into the binary
 from `assets/fonts/D-DIN.ttf` so there is no system-font dependency.
 
+D-DIN covers 232 codepoints, which is Latin-1 and a little punctuation, so
+anything outside that — Hangul, most obviously — used to come out of the board
+as the `?` the glyph lookup falls back to. The faces are a chain now: each
+character takes the first face that has it, and only what D-DIN lacks ever
+reaches macOS's own. They are mapped rather than read, since the Korean one is
+55MB and a board of ASCII never touches a page of it; the whole chain costs
+about a third of a megabyte resident. Every face is drawn to the same cap
+height, so a mixed label is one line at one size (#119).
+
 > D-DIN is Copyright © 2017 Datto Inc. (<https://www.datto.com/fonts/d-din>),
 > with Reserved Font Name "D-DIN", drawn by Charles Nix at Monotype after the
 > DIN 1451 standard. It is licensed under the SIL Open Font License, Version
