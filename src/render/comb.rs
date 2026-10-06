@@ -227,11 +227,11 @@ const WALL: f32 = BORDER * 1.6;
 /// How far inside a wall the second line runs, where two cells of one
 /// cluster meet (#128).
 ///
-/// Twice the line, so the wall comes out as line, space, line all the same
-/// width (#129). Derived rather than chosen: an absolute gap picked to look
-/// right on a wide board reaches too far into a cell on a narrow one, where
-/// the cells shrink but the lines do not.
-const SEAM: f32 = WALL * 2.0;
+/// The space is a quarter wider than the lines either side of it (#129,
+/// #130). Derived rather than chosen: an absolute gap picked to look right
+/// on a wide board reaches too far into a cell on a narrow one, where the
+/// cells shrink but the lines do not.
+const SEAM: f32 = WALL * 2.25;
 
 /// The inner line of a doubled wall: the same wall, a `SEAM` further in.
 ///
@@ -1563,17 +1563,17 @@ mod tests {
                 let outer = span(wall[face], wall[(face + 1) % 6]);
                 assert!(span(line[0], line[1]) < outer, "r={r} face={face}: the seam is not inset");
 
-                // Line, space, line, all the same width (#129). An absolute
-                // gap picked to look right on a wide board reaches too far
-                // into a cell on a narrow one, so it is derived from the line
-                // rather than chosen.
+                // The space between the two lines is a fixed share of their
+                // own width (#129, #130). An absolute gap picked to look
+                // right on a wide board reaches too far into a cell on a
+                // narrow one, so it is derived from the line, not chosen.
                 let mid = Pt::new((line[0].x + line[1].x) / 2.0, (line[0].y + line[1].y) / 2.0);
                 let wall_mid =
                     Pt::new((wall[face].x + wall[(face + 1) % 6].x) / 2.0, (wall[face].y + wall[(face + 1) % 6].y) / 2.0);
                 let space = span(mid, wall_mid) - WALL;
                 assert!(
-                    (space - WALL).abs() < 0.01,
-                    "r={r} face={face}: the space between the lines is {space}, not the {WALL} they are"
+                    (space / WALL - 1.25).abs() < 0.01,
+                    "r={r} face={face}: the space is {space} against a line of {WALL}"
                 );
             }
         }
