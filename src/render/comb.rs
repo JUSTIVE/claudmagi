@@ -221,10 +221,17 @@ const DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1
 /// rotated a step to line up with that.
 const FACE_DIRS: [(i32, i32); 6] = [(1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1)];
 
+/// A seated cell's wall, against the hairline an empty one gets.
+const WALL: f32 = BORDER * 1.6;
+
 /// How far inside a wall the second line runs, where two cells of one
-/// cluster meet (#128). Absolute like `GAP` and `BORDER` beside it, so the
-/// doubling looks the same whatever size the cells are drawn.
-const SEAM: f32 = 2.8;
+/// cluster meet (#128).
+///
+/// Twice the line, so the wall comes out as line, space, line all the same
+/// width (#129). Derived rather than chosen: an absolute gap picked to look
+/// right on a wide board reaches too far into a cell on a narrow one, where
+/// the cells shrink but the lines do not.
+const SEAM: f32 = WALL * 2.0;
 
 /// The inner line of a doubled wall: the same wall, a `SEAM` further in.
 ///
@@ -723,7 +730,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         };
         out.push(Shape::Stroke {
             pieces: vec![closed(corners(center, r, GAP))],
-            width: BORDER * 1.6,
+            width: WALL,
             color: fade(edge),
         });
         // A wall shared with a cell of the same cluster is drawn twice (#128).
@@ -735,7 +742,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             if mates.get(&next).is_some_and(|g| *g == info.group.as_str()) {
                 out.push(Shape::Stroke {
                     pieces: vec![seam(center, r, face)],
-                    width: BORDER * 1.6,
+                    width: WALL,
                     color: fade(edge),
                 });
             }
@@ -1555,6 +1562,19 @@ mod tests {
                 let span = |a: Pt, b: Pt| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
                 let outer = span(wall[face], wall[(face + 1) % 6]);
                 assert!(span(line[0], line[1]) < outer, "r={r} face={face}: the seam is not inset");
+
+                // Line, space, line, all the same width (#129). An absolute
+                // gap picked to look right on a wide board reaches too far
+                // into a cell on a narrow one, so it is derived from the line
+                // rather than chosen.
+                let mid = Pt::new((line[0].x + line[1].x) / 2.0, (line[0].y + line[1].y) / 2.0);
+                let wall_mid =
+                    Pt::new((wall[face].x + wall[(face + 1) % 6].x) / 2.0, (wall[face].y + wall[(face + 1) % 6].y) / 2.0);
+                let space = span(mid, wall_mid) - WALL;
+                assert!(
+                    (space - WALL).abs() < 0.01,
+                    "r={r} face={face}: the space between the lines is {space}, not the {WALL} they are"
+                );
             }
         }
     }
