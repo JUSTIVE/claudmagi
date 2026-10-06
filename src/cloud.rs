@@ -111,9 +111,19 @@ struct Page {
     data: Vec<Raw>,
 }
 
-/// Where a cloud session's chip points. The web app is the one place every
-/// origin can be opened from; the desktop app takes the same link.
-pub fn session_url(id: &str) -> String {
+/// Where a cloud session's chip points, in the Claude desktop app (#127).
+///
+/// The app registers `claude://` and routes `/code/<id>` straight at a
+/// session: its own handler takes the first path segment and accepts it
+/// against `^(cse|session)_[A-Za-z0-9_-]+$`, which is the shape these ids
+/// come in. A cloud session is the app's own work, so sending the click
+/// there rather than to a browser tab is sending it where it came from.
+pub fn app_url(id: &str) -> String {
+    format!("claude://code/{id}")
+}
+
+/// The same session on the web, for a machine with no desktop app.
+pub fn web_url(id: &str) -> String {
     format!("https://claude.ai/code/{id}")
 }
 
@@ -225,7 +235,7 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
                 // Sessions on one repository belong together, the way panes
                 // of one tab do.
                 window: repo.clone(),
-                focus_url: Some(session_url(&raw.id)),
+                focus_url: Some(app_url(&raw.id)),
             }),
             synthetic: false,
             subagents: Vec::new(),
@@ -401,7 +411,7 @@ mod tests {
         assert!(!s.synthetic, "it is a real session, just not one of ours");
         let seat = s.seat.as_ref().expect("a cloud session is seated in the cloud");
         assert_eq!(seat.host, "cloud");
-        assert_eq!(seat.focus_url.as_deref(), Some("https://claude.ai/code/cse_1"));
+        assert_eq!(seat.focus_url.as_deref(), Some("claude://code/cse_1"));
     }
 
     /// The board's three phases, out of fields that do not look like them.

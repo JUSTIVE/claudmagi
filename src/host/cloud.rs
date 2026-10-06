@@ -1,9 +1,11 @@
 //! The cloud, which is a host with no window (#120).
 //!
 //! A cloud session runs in Anthropic's own container, so there is nothing on
-//! this machine to raise. What there is instead is a link: the web app opens
-//! any of them, and the desktop app takes the same one, so a chip's click
-//! lands in whichever the person already has.
+//! this machine to raise. What there is instead is a link, and the right one
+//! is the Claude desktop app's own: a cloud session is the app's work, and
+//! `claude://code/<id>` puts the click back where it came from rather than
+//! in a browser tab. A machine without the app falls through to the web
+//! (#127).
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -27,11 +29,16 @@ impl Host for Cloud {
     }
 
     fn focus(&self, seat: &Seat) -> Result<Outcome> {
-        let url = match seat.focus_url.as_deref() {
+        let app = match seat.focus_url.as_deref() {
             Some(url) => url.to_string(),
-            None => crate::cloud::session_url(&seat.handle),
+            None => crate::cloud::app_url(&seat.handle),
         };
-        Command::new("open").arg(&url).status().context("opening the session")?;
-        Ok(Outcome::Focused(url))
+        if Command::new("open").arg(&app).status().is_ok_and(|s| s.success()) {
+            return Ok(Outcome::Focused(app));
+        }
+        // No desktop app on this machine, or it would not take the link.
+        let web = crate::cloud::web_url(&seat.handle);
+        Command::new("open").arg(&web).status().context("opening the session")?;
+        Ok(Outcome::Focused(web))
     }
 }

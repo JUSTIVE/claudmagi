@@ -18,7 +18,7 @@
 use crate::font;
 use crate::geom::Pt;
 use crate::logos;
-use crate::model::{BoardModel, Phase};
+use crate::model::{BoardModel, Phase, SessionInfo};
 use crate::render::scene::{self, Shape};
 use crate::theme::{self, Palette, Rgba};
 
@@ -551,6 +551,15 @@ struct SlotInk {
 const WAVE_STEP: f32 = 0.07;
 const WAVE_FADE: f32 = 0.5;
 
+/// When the last cell of a grid this wide can still be arriving (#126). The
+/// furthest cell waits `wave` steps and then fades, and `wave` is bounded by
+/// the grid, so this is generous rather than exact — the clock only has to
+/// not stop early.
+pub fn wave_over(comb: &Comb, t: f32) -> bool {
+    let far = comb.cells.iter().map(|c| c.wave).fold(0.0f32, f32::max);
+    t > far * WAVE_STEP + WAVE_FADE
+}
+
 /// How faint an empty cell is before the wave reaches it. Not nothing: the
 /// grid is the furniture of this view and is there whether anything is
 /// running or not (#102). What the wave does is bring it up.
@@ -851,6 +860,18 @@ fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
         Some(Status::Cancelled) | None => theme::with_alpha(pal.ink, 0.45),
         Some(_) => theme::with_alpha(pal.ink, 0.7),
     }
+}
+
+/// This session puts something on screen that blinks (#126).
+///
+/// Every `pulse_at` in the drawing above is behind one of these three, so
+/// the frame clock can ask once rather than guessing. Kept beside them so
+/// the two cannot drift apart without the test below noticing.
+pub fn blinks(info: &SessionInfo) -> bool {
+    info.phase() == Phase::NeedsUser
+        || info.ticket.as_ref().is_some_and(ticket_needs_action)
+        || info.prs.last().is_some_and(pr_needs_action)
+        || !info.prs_unanswered.is_empty()
 }
 
 fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
@@ -1379,6 +1400,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The frame clock asks `blinks()` whether anything is moving, and a
+    /// board that stops repainting while something still blinks is the one
+    /// failure that would not look like a bug in the clock (#126).
+    #[test]
+    fn nothing_blinks_without_blinks_saying_so() {
+        use crate::pr::{Look, Pr};
+        use crate::ticket::{Status, Ticket};
+        use crate::model::SessionInfo;
+
+        // Every drawing above reaches `pulse_at` through one of these.
+        let waiting = SessionInfo::synthetic(1, "S", Phase::NeedsUser);
+        assert!(blinks(&waiting), "a session asking outright");
+        let mut red = SessionInfo::synthetic(2, "S", Phase::Working);
+        red.prs = vec![Pr::synthetic(1, Look::Failing)];
+        assert!(blinks(&red), "a failing check");
+        let mut todo = SessionInfo::synthetic(3, "S", Phase::Working);
+        todo.ticket = Some(Ticket::synthetic(1, Some(Status::Todo)));
+        assert!(blinks(&todo), "an issue still in the queue");
+        let mut mute = SessionInfo::synthetic(4, "S", Phase::Working);
+        mute.prs_unanswered = vec![crate::pr::PrRef { repo: "o/r".into(), number: 1 }];
+        assert!(blinks(&mute), "a pull request GitHub would not answer for");
+
+        // And a board with none of them is genuinely still.
+        let mut calm = SessionInfo::synthetic(5, "S", Phase::Working);
+        calm.prs = vec![Pr::synthetic(1, Look::Merged)];
+        calm.ticket = Some(Ticket::synthetic(1, Some(Status::Started)));
+        assert!(!blinks(&calm));
+        assert!(!blinks(&SessionInfo::synthetic(6, "S", Phase::Idle)));
     }
 
     #[test]

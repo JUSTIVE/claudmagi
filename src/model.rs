@@ -353,6 +353,23 @@ impl Anim {
     fn dead(&self) -> bool {
         self.gone && self.fade <= 0.001
     }
+
+    /// Something about this chip is still moving, or is about to (#126).
+    ///
+    /// The board repaints on a clock, and a clock that runs at full speed
+    /// over a board where nothing moves is most of what this app costs. The
+    /// unplug is in here because it is on a timer: nothing is moving while a
+    /// session waits out `UNPLUG_DELAY_SECS`, but something will be.
+    fn moving(&self, phase: Phase, hovered: bool, now: Instant) -> bool {
+        let settling = |v: f32, target: f32| (v - target).abs() > 0.001;
+        let young = self.age(now) < UNPLUG_DELAY_SECS;
+        let target_p = if phase == Phase::Working || young { 0.0 } else { 1.0 };
+        settling(self.disconnect, target_p)
+            || settling(self.hover_t, if hovered { 1.0 } else { 0.0 })
+            || settling(self.fade, if self.gone { 0.0 } else { 1.0 })
+            || self.reloc.is_some()
+            || (phase != Phase::Working && young)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -639,6 +656,30 @@ impl BoardModel {
 
     /// Advances animations by `dt` seconds. Returns true when chips were
     /// dropped (callers may want to relayout).
+    /// Anything on the board is still moving, so the next frame will differ
+    /// from this one (#126).
+    pub fn moving(&self, now: Instant) -> bool {
+        if self.notice.is_some() {
+            return true;
+        }
+        let hovered = self.hovered;
+        self.chips.iter().enumerate().any(|(i, c)| {
+            c.anim.moving(c.info.phase(), hovered == Some(Target::Session(i)), now)
+                || c.subs.iter().enumerate().any(|(j, s)| {
+                    s.anim.moving(s.info.phase(), hovered == Some(Target::Sub(i, j)), now)
+                })
+        })
+    }
+
+    /// Something on the board is blinking, which changes twice a period
+    /// whatever else is still (#113, #126).
+    ///
+    /// The rules live with the drawing that obeys them (`render::comb`), so
+    /// this asks there rather than keeping a second copy.
+    pub fn blinking(&self) -> bool {
+        self.live().any(|c| crate::render::comb::blinks(&c.info))
+    }
+
     pub fn tick(&mut self, dt: f32, now: Instant) -> bool {
         let hovered = self.hovered;
         let mut dropped = false;
@@ -1014,4 +1055,44 @@ mod tests {
         assert_eq!(m.chips[1].subs[0].anim.disconnect, 1.0);
         assert!(m.chips.iter().all(|c| c.anim.alpha(Instant::now()) > 0.99));
     }
+    /// The frame clock stops at full speed when this says nothing is moving,
+    /// so a chip that is still settling and is called still would be a board
+    /// that looks stuck (#126).
+    #[test]
+    fn a_chip_is_moving_until_it_has_settled() {
+        let now = Instant::now();
+        let mut m = BoardModel::new();
+        m.apply(vec![SessionInfo::synthetic(1, "S-1", Phase::Working)], now);
+        // Born this instant: fading in, so moving.
+        assert!(m.moving(now), "a chip arriving is moving");
+
+        // Run the clock until it has nothing left to do.
+        let mut t = now;
+        for _ in 0..400 {
+            t += Duration::from_millis(50);
+            m.tick(0.05, t);
+        }
+        assert!(!m.moving(t), "a settled board is still: {:?}", m.chips[0].anim);
+
+        // Taking it away starts the fade out again.
+        m.apply(Vec::new(), t);
+        assert!(m.moving(t), "a chip leaving is moving");
+
+        // And an idle session is on a timer to unplug, which is movement
+        // waiting to happen rather than nothing at all. Run it past the fade
+        // but not past the delay, so the fade is not what answers.
+        let mut m = BoardModel::new();
+        m.apply(vec![SessionInfo::synthetic(2, "S-2", Phase::Idle)], now);
+        let mut t = now;
+        while m.chips[0].anim.fade < 1.0 && t.duration_since(now).as_secs_f32() < UNPLUG_DELAY_SECS {
+            t += Duration::from_millis(25);
+            m.tick(0.025, t);
+        }
+        let waited = t.duration_since(now).as_secs_f32();
+        assert!(waited < UNPLUG_DELAY_SECS, "the delay has to outlast the fade for this to test anything");
+        assert_eq!(m.chips[0].anim.fade, 1.0, "faded all the way in, so the fade is not what moves");
+        assert_eq!(m.chips[0].anim.disconnect, 0.0, "and it has not started pulling out yet");
+        assert!(m.moving(t), "an idle chip still has an unplug coming");
+    }
+
 }

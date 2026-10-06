@@ -40,6 +40,10 @@ const POLL_MS: u64 = 1000;
 /// Redraw cadence: the packets glide at 30fps, which halves the CPU of a
 /// vsync-driven loop (#38).
 const FRAME_MS: u64 = 33;
+/// And while nothing is. A floor rather than a stop: anything the predicate
+/// below fails to notice is a quarter second late instead of frozen, which
+/// is the difference between a slow board and a broken one (#126).
+const IDLE_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -130,13 +134,20 @@ impl Board {
         })
         .detach();
 
-        // Frame clock: repaint on a fixed cadence instead of every vsync.
+        // Frame clock: repaint on a fixed cadence instead of every vsync, and
+        // slow right down when nothing on screen is moving (#126). A board
+        // that sits still was redrawing itself thirty times a second —
+        // rebuilding every shape, tessellating them and handing Metal a frame
+        // — for no change at all, which was most of what this app cost.
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(FRAME_MS)).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let Ok(ms) = this.update(cx, |board, cx| {
+                    cx.notify();
+                    if board.moving() { FRAME_MS } else { IDLE_MS }
+                }) else {
                     break;
-                }
+                };
+                cx.background_executor().timer(Duration::from_millis(ms)).await;
             }
         })
         .detach();
@@ -453,6 +464,29 @@ impl Board {
         }
         let _ = cx;
         out
+    }
+
+    /// Something on screen is *animating*, so the next frame will differ from
+    /// this one without anybody doing anything (#126).
+    ///
+    /// Only animation. Everything else that changes the board — a poll
+    /// answering, a key, the mouse — calls `cx.notify()` where it happens,
+    /// and gpui repaints then whatever this says. The clock is here for the
+    /// things nothing notifies about, and there are four of them: the arrival
+    /// wave, the blink, a chip settling into or out of its socket, and the
+    /// packets that run along a trace for as long as the trace is there.
+    fn moving(&self) -> bool {
+        let now = Instant::now();
+        if self.model.moving(now) || self.model.blinking() {
+            return true;
+        }
+        match (&self.comb, self.comb_since) {
+            // The comb is still once its cells have all arrived.
+            (Some(comb), Some(since)) => !comb::wave_over(comb, now.duration_since(since).as_secs_f32()),
+            (Some(_), None) => false,
+            // The circuit board's packets never stop while a lane exists.
+            (None, _) => !self.lanes.is_empty(),
+        }
     }
 
     /// Opens the pane the `NO WARP TABS` tag asks for (#70). That tag is the
