@@ -61,6 +61,11 @@ struct Raw {
     worker_status: Option<String>,
     #[serde(default)]
     unread: bool,
+    /// Set when the session was started by a schedule rather than by a
+    /// person. The endpoint can leave these out and is asked to; this is
+    /// here so that a renamed parameter cannot quietly put them back (#125).
+    #[serde(default)]
+    trigger_id: Option<String>,
     #[serde(default)]
     last_event_at: Option<String>,
     #[serde(default)]
@@ -182,6 +187,11 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
     let Ok(page) = serde_json::from_str::<Page>(body) else { return Vec::new() };
     let mut out = Vec::new();
     for raw in page.data {
+        // A scheduled run is a routine, not somebody's work. It is asked for
+        // without them, and dropped here too in case it ever arrives anyway.
+        if raw.trigger_id.is_some() {
+            continue;
+        }
         let connected = raw.connection_status.as_deref() == Some("connected");
         let last = usage::parse_iso8601(raw.last_event_at.as_deref().unwrap_or("")).unwrap_or(0);
         // A container that is still up is current whatever its clock says.
@@ -294,7 +304,10 @@ fn fetch() -> Option<Vec<SessionInfo>> {
             return None;
         }
     };
-    let url = format!("{URL}?limit={LIMIT}&include_trigger_sessions=true");
+    // Routines are not work anyone is waiting on, and a fortnight of nightly
+    // runs is most of what the cloud remembers: on this account they were
+    // twelve of nineteen. The endpoint drops them on request (#125).
+    let url = format!("{URL}?limit={LIMIT}&include_trigger_sessions=false");
     let out = Command::new("/usr/bin/curl")
         .args(["-sS", "-m", &CURL_TIMEOUT_S.to_string(), "-w", "\n%{http_code}"])
         .args(["-H", &format!("Authorization: Bearer {token}")])
@@ -455,15 +468,33 @@ mod tests {
         assert_eq!(list[0].group, "cloud", "and groups with the other homeless ones");
     }
 
-    /// A scheduled run's bolt is decoration, and the board has its own way of
-    /// saying what a thing is.
+    /// A title's lightning bolt is decoration, and the board has its own way
+    /// of saying what a thing is.
     #[test]
-    fn a_scheduled_run_loses_its_decoration() {
+    fn a_title_loses_its_decoration() {
         let rows = format!(
-            r#"{{"id":"cse_1","title":"⚡ graphql-coverage-daily","connection_status":"connected","last_event_at":"{}"}}"#,
+            r#"{{"id":"cse_1","title":"⚡ nightly","connection_status":"connected","last_event_at":"{}"}}"#,
             at(10)
         );
-        assert_eq!(parse(&body(&rows), NOW)[0].name, "graphql-coverage-daily");
+        assert_eq!(parse(&body(&rows), NOW)[0].name, "nightly");
+    }
+
+    /// A routine is not work anyone is waiting on (#125). The endpoint is
+    /// asked to leave them out, and this is the guard for the day that
+    /// parameter is renamed: on this account they were two thirds of
+    /// everything the cloud remembered.
+    #[test]
+    fn a_scheduled_run_never_reaches_the_board() {
+        let row = |id: &str, trigger: &str| {
+            format!(
+                r#"{{"id":"{id}","title":"nightly","connection_status":"connected","last_event_at":"{}"{trigger}}}"#,
+                at(10)
+            )
+        };
+        let rows = [row("routine", r#","trigger_id":"trg_1""#), row("work", "")].join(",");
+        let list = parse(&body(&rows), NOW);
+        let ids: Vec<&str> = list.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, vec!["work"], "a session a schedule started is not on the board");
     }
     /// A cloud session has no transcript here, so the only place a pull
     /// request can come from is the sentence the last turn wrote about
