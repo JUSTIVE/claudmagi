@@ -227,11 +227,11 @@ const WALL: f32 = BORDER * 1.6;
 /// How far inside a wall the second line runs, where two cells of one
 /// cluster meet (#128).
 ///
-/// The space is a quarter wider than the lines either side of it (#129,
-/// #130). Derived rather than chosen: an absolute gap picked to look right
-/// on a wide board reaches too far into a cell on a narrow one, where the
-/// cells shrink but the lines do not.
-const SEAM: f32 = WALL * 2.25;
+/// The space is twice the lines either side of it (#129, #130, #131).
+/// Derived rather than chosen: an absolute gap picked to look right on a
+/// wide board reaches too far into a cell on a narrow one, where the cells
+/// shrink with the window but the lines do not.
+const SEAM: f32 = WALL * 3.0;
 
 /// The inner line of a doubled wall: the same wall, a `SEAM` further in.
 ///
@@ -1572,7 +1572,7 @@ mod tests {
                     Pt::new((wall[face].x + wall[(face + 1) % 6].x) / 2.0, (wall[face].y + wall[(face + 1) % 6].y) / 2.0);
                 let space = span(mid, wall_mid) - WALL;
                 assert!(
-                    (space / WALL - 1.25).abs() < 0.01,
+                    (space / WALL - 2.0).abs() < 0.01,
                     "r={r} face={face}: the space is {space} against a line of {WALL}"
                 );
             }
