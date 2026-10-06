@@ -214,6 +214,28 @@ fn seat_somewhere(
 /// The six cells sharing a wall with a cell.
 const DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)];
 
+/// The neighbour across each wall, in the order `corners` walks them (#128).
+///
+/// `corners` starts at the top and goes clockwise, so wall `i` runs from
+/// corner `i` to corner `i + 1`. These are the same six directions as `DIRS`,
+/// rotated a step to line up with that.
+const FACE_DIRS: [(i32, i32); 6] = [(1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1)];
+
+/// How far inside a wall the second line runs, where two cells of one
+/// cluster meet (#128). Absolute like `GAP` and `BORDER` beside it, so the
+/// doubling looks the same whatever size the cells are drawn.
+const SEAM: f32 = 2.8;
+
+/// The inner line of a doubled wall: the same wall, a `SEAM` further in.
+///
+/// Taken off a whole inner hexagon rather than offset by hand, so it comes
+/// out shorter than the wall it doubles and stops clear of the walls either
+/// side instead of crossing them.
+pub fn seam(center: Pt, r: f32, face: usize) -> Vec<Pt> {
+    let inner = corners(center, r, GAP + SEAM * 2.0);
+    vec![inner[face % 6], inner[(face + 1) % 6]]
+}
+
 /// Where a cluster's sessions sit around `(cq, crow)`.
 ///
 /// The flower, walked outwards, but a seat is passed over when taking it
@@ -580,6 +602,14 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
     let r = comb.r;
     out.push(Shape::Rect { x: 0.0, y: 0.0, w: 1.0e5, h: 1.0e5, color: pal.bg });
 
+    // Which cluster sits in each seated cell, so a wall can be asked whether
+    // the cell across it is a neighbour or a cluster-mate (#128).
+    let mates: std::collections::HashMap<(i32, i32), &str> = comb
+        .cells
+        .iter()
+        .filter_map(|c| Some(((c.q, c.row), model.chips.get(c.chip?)?.info.group.as_str())))
+        .collect();
+
     for cell in &comb.cells {
         let center = cell.center - Pt::new(0.0, scroll_y) + origin;
         if center.y < -r * 2.0 || center.y > 1.0e4 {
@@ -696,6 +726,20 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             width: BORDER * 1.6,
             color: fade(edge),
         });
+        // A wall shared with a cell of the same cluster is drawn twice (#128).
+        // Adjacency is already what says two sessions belong together (#121);
+        // doubling the wall is that said in the drawing rather than left to
+        // be inferred from a gap.
+        for (face, (dq, drow)) in FACE_DIRS.into_iter().enumerate() {
+            let next = (cell.q + dq, cell.row + drow);
+            if mates.get(&next).is_some_and(|g| *g == info.group.as_str()) {
+                out.push(Shape::Stroke {
+                    pieces: vec![seam(center, r, face)],
+                    width: BORDER * 1.6,
+                    color: fade(edge),
+                });
+            }
+        }
 
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
@@ -1430,6 +1474,89 @@ mod tests {
         calm.ticket = Some(Ticket::synthetic(1, Some(Status::Started)));
         assert!(!blinks(&calm));
         assert!(!blinks(&SessionInfo::synthetic(6, "S", Phase::Idle)));
+    }
+
+    /// A wall two cluster-mates share is drawn twice, and a wall facing
+    /// anything else is drawn once (#128).
+    #[test]
+    fn a_shared_wall_is_a_double_line() {
+        // The seam is the only two-point stroke in the scene: a cell wall is
+        // a closed hexagon and the approval tick has three.
+        let seams = |model: &BoardModel, width: f32| {
+            let comb = lay_out(model, width, 900.0);
+            build_shapes(model, &comb, theme::PALETTE, 0.0, Pt::new(0.0, 0.0), 1.0e3)
+                .into_iter()
+                .filter(|s| matches!(s, Shape::Stroke { pieces, .. } if pieces.len() == 1 && pieces[0].len() == 2))
+                .count()
+        };
+
+        // One session has nobody to share a wall with.
+        assert_eq!(seams(&board(&[("a", 1)]), 980.0), 0);
+        // Two in one cluster share exactly one wall, which both of them draw.
+        assert_eq!(seams(&board(&[("a", 2)]), 980.0), 2);
+        // Three make a triangle: three shared walls, drawn from both sides.
+        assert_eq!(seams(&board(&[("a", 3)]), 980.0), 6);
+        // And separate clusters share nothing, however many there are:
+        // nothing of one ever touches another (#121).
+        assert_eq!(seams(&board(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)]), 980.0), 0);
+        assert_eq!(seams(&board(&[("a", 2), ("b", 2)]), 420.0), 4, "narrow boards too");
+    }
+
+    /// Wall `i` of the drawing is the wall facing `FACE_DIRS[i]` (#128).
+    ///
+    /// The one thing here that can be wrong without looking wrong in a count:
+    /// rotate the mapping and exactly as many seams are drawn, on the wrong
+    /// walls. So it is pinned against the grid itself — the seam for a wall
+    /// has to lean towards the cell across that wall, further than towards
+    /// any of the other five.
+    #[test]
+    fn each_seam_faces_the_cell_it_is_shared_with() {
+        let r = 70.0;
+        let center = Pt::new(500.0, 500.0);
+        for (face, (dq, drow)) in FACE_DIRS.into_iter().enumerate() {
+            let line = seam(center, r, face);
+            let mid = Pt::new((line[0].x + line[1].x) / 2.0, (line[0].y + line[1].y) / 2.0);
+            let out = Pt::new(mid.x - center.x, mid.y - center.y);
+            // How far the seam leans towards the cell one step that way.
+            let toward = |q: i32, row: i32| {
+                let n = axial(q, row, r);
+                (out.x * n.x + out.y * n.y) / (n.x * n.x + n.y * n.y).sqrt().max(1.0)
+            };
+            let mine = toward(dq, drow);
+            assert!(mine > 0.0, "face {face} leans away from its own neighbour");
+            for (q, row) in DIRS {
+                if (q, row) == (dq, drow) {
+                    continue;
+                }
+                assert!(
+                    mine > toward(q, row) + 1.0,
+                    "face {face} leans towards {:?} as much as towards {:?}",
+                    (q, row),
+                    (dq, drow)
+                );
+            }
+        }
+    }
+
+    /// The second line sits inside the wall it doubles, and stops short of
+    /// the walls either side rather than crossing them (#128).
+    #[test]
+    fn the_second_line_stays_inside_its_cell() {
+        for r in [R_MIN, 70.0, R_MAX] {
+            let center = Pt::new(500.0, 500.0);
+            let wall = corners(center, r, GAP);
+            for face in 0..6 {
+                let line = seam(center, r, face);
+                assert_eq!(line.len(), 2);
+                for p in &line {
+                    assert!(inside_hex(*p, center, r, GAP), "r={r} face={face}: the seam left its cell");
+                }
+                // Shorter than the wall it doubles, at both ends.
+                let span = |a: Pt, b: Pt| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+                let outer = span(wall[face], wall[(face + 1) % 6]);
+                assert!(span(line[0], line[1]) < outer, "r={r} face={face}: the seam is not inset");
+            }
+        }
     }
 
     #[test]
