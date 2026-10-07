@@ -86,11 +86,26 @@ pub struct Comb {
     pub height: f32,
 }
 
-/// Pointy-top axial coordinates to a centre point.
+/// Flat-top axial coordinates to a centre point (#132).
+///
+/// Flat top and bottom, points left and right. `q` is the column and steps
+/// by three quarters of the width; `row` steps by the full height, and a
+/// column carries half a row of its own so the columns interlock.
 fn axial(q: i32, row: i32, r: f32) -> Pt {
-    let sqrt3 = 3.0f32.sqrt();
-    Pt::new(r * sqrt3 * (q as f32 + row as f32 / 2.0), r * 1.5 * row as f32)
+    Pt::new(1.5 * r * q as f32, r * SQRT3 * (row as f32 + q as f32 / 2.0))
 }
+
+/// Half a cell's width: centre to the point on either side.
+fn half_w(r: f32) -> f32 {
+    r
+}
+
+/// Half a cell's height: centre to the flat above or below.
+fn half_h(r: f32) -> f32 {
+    r * SQRT3 / 2.0
+}
+
+const SQRT3: f32 = 1.732_050_8;
 
 
 /// How far out a subagent cell may be looked for. One ring is what it should
@@ -108,15 +123,16 @@ pub fn inside_hex(p: Pt, center: Pt, r: f32, gap: f32) -> bool {
     })
 }
 
-/// The six corners of a pointy-top hex, pulled in so two neighbours leave
-/// `gap` between their edges.
+/// The six corners of a flat-top hex, pulled in so two neighbours leave
+/// `gap` between their edges. Corner 0 is the point due east, and they go
+/// clockwise from there.
 pub fn corners(center: Pt, r: f32, gap: f32) -> Vec<Pt> {
     // Each of the two gives up half the gap, and insetting a regular
     // hexagon's edges by `d` pulls its circumradius in by `2d / sqrt(3)`.
-    let r = (r - gap / 3.0f32.sqrt()).max(1.0);
+    let r = (r - gap / SQRT3).max(1.0);
     (0..6)
         .map(|i| {
-            let a = std::f32::consts::PI / 180.0 * (60.0 * i as f32 - 90.0);
+            let a = std::f32::consts::PI / 180.0 * (60.0 * i as f32);
             Pt::new(center.x + r * a.cos(), center.y + r * a.sin())
         })
         .collect()
@@ -176,8 +192,7 @@ fn seat_somewhere(
     width: f32,
     r: f32,
 ) -> Option<Vec<((i32, i32), usize)>> {
-    let sqrt3 = 3.0f32.sqrt();
-    let half = r * sqrt3 / 2.0;
+    let half = half_w(r);
     // The flower's shape does not depend on where it is put — `seat_cluster`
     // works in offsets from its centre — so it is worked out once and then
     // carried across the scan. Rebuilding it at every candidate was the whole
@@ -186,26 +201,39 @@ fn seat_somewhere(
     // Far enough to hold any flower the board can throw at it, plus the rows
     // a tall board can show; the scan stops at the first fit long before.
     let rows = (members.len() as i32 + 2) * 4 + 64;
-    let cols = (width / (r * sqrt3)).ceil() as i32 + 2;
-    for row in 0..rows {
-        // A row is offset by half a cell for every row down, so the column
-        // that sits at the left edge moves with it.
-        let first = -(row as f32 / 2.0).floor() as i32 - 1;
-        for q in first..=first + cols {
-            let fits = shape.iter().all(|((dq, drow), _)| {
-                let cell = (dq + q, drow + row);
-                let at = axial(cell.0, cell.1, r);
-                at.x - half >= 0.0
-                    && at.x + half <= width
-                    && at.y - r >= 0.0
-                    && !taken.contains(&cell)
-                    // The rim: a seat beside somebody else's is what makes
-                    // two clusters read as one (#121).
-                    && !DIRS.iter().any(|(nq, nrow)| taken.contains(&(cell.0 + nq, cell.1 + nrow)))
-            });
-            if fits {
-                return Some(shape.iter().map(|((dq, drow), m)| ((dq + q, drow + row), *m)).collect());
-            }
+    let cols = (width / (1.5 * r)).ceil() as i32 + 2;
+
+    // Candidates in reading order, and with a flat top that has to be worked
+    // out rather than read off the indices: a column carries half a row of
+    // its own, so a constant `row` runs diagonally down the board. Sorting
+    // the anchors by where they actually land is what keeps "the first that
+    // fits" meaning the top-left one (#132).
+    let mut anchors: Vec<(i32, i32)> = Vec::with_capacity((rows * cols) as usize);
+    for q in 0..=cols {
+        let shift = q as f32 / 2.0;
+        for row in (-shift.ceil() as i32)..=(rows - shift.floor() as i32) {
+            anchors.push((q, row));
+        }
+    }
+    anchors.sort_by(|a, b| {
+        let (pa, pb) = (axial(a.0, a.1, r), axial(b.0, b.1, r));
+        pa.y.total_cmp(&pb.y).then(pa.x.total_cmp(&pb.x))
+    });
+
+    for (q, row) in anchors {
+        let fits = shape.iter().all(|((dq, drow), _)| {
+            let cell = (dq + q, drow + row);
+            let at = axial(cell.0, cell.1, r);
+            at.x - half >= 0.0
+                && at.x + half <= width
+                && at.y - half_h(r) >= 0.0
+                && !taken.contains(&cell)
+                // The rim: a seat beside somebody else's is what makes
+                // two clusters read as one (#121).
+                && !DIRS.iter().any(|(nq, nrow)| taken.contains(&(cell.0 + nq, cell.1 + nrow)))
+        });
+        if fits {
+            return Some(shape.iter().map(|((dq, drow), m)| ((dq + q, drow + row), *m)).collect());
         }
     }
     None
@@ -216,10 +244,11 @@ const DIRS: [(i32, i32); 6] = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1
 
 /// The neighbour across each wall, in the order `corners` walks them (#128).
 ///
-/// `corners` starts at the top and goes clockwise, so wall `i` runs from
-/// corner `i` to corner `i + 1`. These are the same six directions as `DIRS`,
-/// rotated a step to line up with that.
-const FACE_DIRS: [(i32, i32); 6] = [(1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1)];
+/// `corners` starts at the point due east and goes clockwise, so wall `i`
+/// runs from corner `i` to corner `i + 1` and faces out at `60i + 30`
+/// degrees. With a flat top those line up with `DIRS` as they stand (#132);
+/// with the pointy top this had before, they were a step out.
+const FACE_DIRS: [(i32, i32); 6] = DIRS;
 
 /// A seated cell's wall, against the hairline an empty one gets.
 const WALL: f32 = BORDER * 1.6;
@@ -287,9 +316,8 @@ fn seat_cluster(cq: i32, crow: i32, members: &[usize]) -> Vec<((i32, i32), usize
 /// Whether a cell is somewhere the grid will actually draw it: inside the
 /// width, and not above the first row (#111).
 fn on_screen((q, row): (i32, i32), r: f32, width: f32) -> bool {
-    let sqrt3 = 3.0f32.sqrt();
     let at = axial(q, row, r);
-    at.x - r * sqrt3 / 2.0 >= -0.5 && at.x + r * sqrt3 / 2.0 <= width + 0.5 && at.y - r >= -0.5
+    at.x - half_w(r) >= -0.5 && at.x + half_w(r) <= width + 0.5 && at.y - half_h(r) >= -0.5
 }
 
 fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
@@ -302,8 +330,9 @@ fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
 /// tab land in one flower. Flowers are placed left to right and then down,
 /// each leaving a ring of empty cells around it.
 pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
-    let sqrt3 = 3.0f32.sqrt();
-    let r = (width / (COLS * sqrt3)).clamp(R_MIN, R_MAX);
+    // `COLS` columns across the width. A flat-top column is three quarters
+    // of a cell wide, with the last one's far point sticking out past that.
+    let r = (width / (COLS * 1.5 + 0.5)).clamp(R_MIN, R_MAX);
 
     // Sessions by group, in board order.
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
@@ -370,36 +399,45 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             sub_seats.push((n, *chip));
         }
     }
-    let last_row = seats
+    // How far down the seated cells reach, in pixels: with a flat top a
+    // column carries half a row of its own, so the row index alone no longer
+    // says which cell is lowest.
+    let seated_bottom = seats
         .iter()
         .chain(sub_seats.iter())
-        .map(|((_, row), _)| *row)
-        .max()
-        .unwrap_or(0)
-        + 2;
+        .map(|((q, row), _)| axial(*q, *row, r).y)
+        .fold(0.0f32, f32::max);
 
     // Every cell of the grid, occupied or not: the empties are half the point.
+    //
+    // Columns rather than rows: a flat-top cell's `x` depends only on `q`, so
+    // a column is a straight line down the board and the row range it needs
+    // is the one that covers the board's height at that column.
     let mut cells = Vec::new();
-    let rows = ((height / (r * 1.5)).ceil() as i32).max(last_row + 2);
-    for row in -(PAD_ROWS as i32)..=rows {
-        let mut q = -(row / 2) - 1;
-        loop {
-            let center = axial(q, row, r);
-            if center.x - r * sqrt3 / 2.0 > width {
-                break;
-            }
-            if center.x + r * sqrt3 / 2.0 >= 0.0 {
-                let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-                let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-                cells.push(Cell { center, q, row, chip, subs, wave: 0.0 });
-            }
-            q += 1;
+    let bottom = height.max(seated_bottom) + r * SQRT3 * PAD_ROWS;
+    let mut q = 0;
+    loop {
+        let x = 1.5 * r * q as f32;
+        if x - half_w(r) > width {
+            break;
         }
+        // `y = r * sqrt(3) * (row + q / 2)`, so the rows that cover a strip of
+        // the board shift up by half a step for every column across.
+        let shift = q as f32 / 2.0;
+        let lo = (-(PAD_ROWS) - shift).floor() as i32;
+        let hi = (bottom / (r * SQRT3) - shift).ceil() as i32;
+        for row in lo..=hi {
+            let center = axial(q, row, r);
+            let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
+            let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
+            cells.push(Cell { center, q, row, chip, subs, wave: 0.0 });
+        }
+        q += 1;
     }
     // How far each cell is from the nearest session, in cells. The clusters
     // are where the view starts and everything else follows outwards (#92).
     let hubs: Vec<Pt> = cells.iter().filter(|c| c.chip.is_some()).map(|c| c.center).collect();
-    let pitch = r * sqrt3;
+    let pitch = r * SQRT3;
     for cell in &mut cells {
         cell.wave = hubs
             .iter()
@@ -410,7 +448,7 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
         }
     }
 
-    let height = cells.iter().map(|c| c.center.y).fold(0.0f32, f32::max) + r;
+    let height = cells.iter().map(|c| c.center.y).fold(0.0f32, f32::max) + half_h(r);
     Comb { cells, r, height }
 }
 
@@ -444,9 +482,8 @@ pub enum Slot {
 /// straight up and down, so a band no taller than the cell's radius can span
 /// the whole interior and still touch nothing but those two sides.
 pub fn session_bed(center: Pt, r: f32) -> (Pt, f32, f32) {
-    let sqrt3 = 3.0f32.sqrt();
-    let inner = r - GAP / sqrt3;
-    (center, sqrt3 * inner - BORDER * 2.0, r * BED_H)
+    let h = r * BED_H;
+    (center, room_at(r, 0.0, h, GAP) - BORDER * 2.0, h)
 }
 
 /// How tall that band is, against the cell's radius. Kept under a half, which
@@ -502,8 +539,9 @@ pub struct Extras {
 const CHECK_H: f32 = 0.95;
 
 /// How wide the cell's interior is at a row, taking the row's own height into
-/// account: a hexagon narrows towards its points, so what matters is the
-/// width at the row's far edge rather than at its middle.
+/// account: a flat-top hexagon is widest along its own middle and narrows
+/// every step away from it, so what matters is the width at the row's far
+/// edge rather than at its middle.
 fn row_room(r: f32, dy: f32, height: f32) -> f32 {
     room_at(r, dy, height, GAP)
 }
@@ -512,10 +550,13 @@ fn row_room(r: f32, dy: f32, height: f32) -> f32 {
 /// `height` tall. Shared with the mini hexes of a sub-grid, which are drawn to
 /// a gap of their own (#94, #95).
 fn room_at(r: f32, dy: f32, height: f32, gap: f32) -> f32 {
-    let sqrt3 = 3.0f32.sqrt();
-    let inner = r - gap / sqrt3;
+    let inner = r - gap / SQRT3;
     let y = dy.abs() + height / 2.0;
-    let half = if y <= inner / 2.0 { sqrt3 / 2.0 * inner } else { sqrt3 * (inner - y).max(0.0) };
+    // Flat top: the sides run from the point at `inner` down to `inner / 2`
+    // at the flat, so the half-width falls away by `1 / sqrt(3)` per step up
+    // or down. There is no band of constant width as there was with a pointy
+    // top — the widest the cell ever is, is the one line through its middle.
+    let half = (inner - y / SQRT3).max(0.0);
     2.0 * half
 }
 
@@ -1233,8 +1274,11 @@ mod tests {
                 let corner = Pt::new(at.x + sx * w / 2.0, at.y + sy * h / 2.0);
                 assert!(inside_hex(corner, center, r, GAP), "r={r}: the bed pokes out of its cell");
             }
-            // Wall to wall: anything wider would be outside.
-            let wider = Pt::new(at.x + w / 2.0 + BORDER * 2.5, at.y);
+            // Wall to wall at its own height: a flat-top cell is widest
+            // along one line through its middle and narrows from there, so
+            // what the bed has to fill is the width at its own corners, not
+            // the width at the centre (#132).
+            let wider = Pt::new(at.x + w / 2.0 + BORDER * 2.5, at.y + h / 2.0);
             assert!(!inside_hex(wider, center, r, GAP), "r={r}: the bed is leaving room at the sides");
         }
     }
@@ -1582,10 +1626,22 @@ mod tests {
     #[test]
     fn two_neighbours_leave_a_gap_between_them() {
         let r = 60.0;
-        let (a, b) = (Pt::new(0.0, 0.0), axial(1, 0, r));
-        let right = corners(a, r, GAP).into_iter().map(|p| p.x).fold(f32::MIN, f32::max);
-        let left = corners(b, r, GAP).into_iter().map(|p| p.x).fold(f32::MAX, f32::min);
-        assert!((left - right - GAP).abs() < 0.01, "the gap should be {GAP}, got {}", left - right);
+        let a = Pt::new(0.0, 0.0);
+        // The one neighbour a flat-top cell meets squarely is the one below
+        // it, so the gap can be read straight off their two edges.
+        let below = axial(0, 1, r);
+        let bottom = corners(a, r, GAP).into_iter().map(|p| p.y).fold(f32::MIN, f32::max);
+        let top = corners(below, r, GAP).into_iter().map(|p| p.y).fold(f32::MAX, f32::min);
+        assert!((top - bottom - GAP).abs() < 0.01, "the gap should be {GAP}, got {}", top - bottom);
+
+        // And every other neighbour is the same distance away, which is what
+        // makes the gap a property of the grid rather than of one direction.
+        let span = |p: Pt| (p.x * p.x + p.y * p.y).sqrt();
+        let pitch = span(axial(0, 1, r));
+        for (q, row) in DIRS {
+            let d = span(axial(q, row, r));
+            assert!((d - pitch).abs() < 0.01, "{:?} sits {d} away, not {pitch}", (q, row));
+        }
         assert!(GAP > BORDER * 3.0, "a gap the width of a hairline is no gap at all");
     }
 }
