@@ -475,16 +475,32 @@ pub enum Slot {
     Pr,
 }
 
-/// The band the session's row is bedded on: the full width of the cell's
-/// interior at that height (#91).
+/// The band the session's row is bedded on: the cell's whole interior at
+/// that height, points and all (#91, #133).
 ///
-/// The middle row sits at the hexagon's widest point, where its sides run
-/// straight up and down, so a band no taller than the cell's radius can span
-/// the whole interior and still touch nothing but those two sides.
-pub fn session_bed(center: Pt, r: f32) -> (Pt, f32, f32) {
+/// A rectangle would stop short of the two points a flat-top cell has at
+/// either side and leave them empty. So the band takes the cell's own shape
+/// where the cell is the nearer of the two: a six-sided slab, flat along the
+/// top and bottom and coming to a point at each end exactly where the cell
+/// does. It fills side to side without leaving the hexagon, which a
+/// rectangle wide enough to reach the points could not do.
+pub fn session_bed(center: Pt, r: f32) -> Vec<Pt> {
     let h = r * BED_H;
-    (center, room_at(r, 0.0, h, GAP) - BORDER * 2.0, h)
+    // Inside the wall by its own width, so the band never paints over it.
+    let inner = (r - (GAP + WALL * 2.0) / SQRT3).max(1.0);
+    let (half_h, point) = (h / 2.0, inner);
+    // The sides fall away by `1 / sqrt(3)` for every step off the middle.
+    let shoulder = (inner - half_h / SQRT3).max(0.0);
+    vec![
+        Pt::new(center.x + point, center.y),
+        Pt::new(center.x + shoulder, center.y + half_h),
+        Pt::new(center.x - shoulder, center.y + half_h),
+        Pt::new(center.x - point, center.y),
+        Pt::new(center.x - shoulder, center.y - half_h),
+        Pt::new(center.x + shoulder, center.y - half_h),
+    ]
 }
+
 
 /// How tall that band is, against the cell's radius. Kept under a half, which
 /// is where the hexagon starts tapering towards its points.
@@ -841,16 +857,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
-                let (at, w, h) = session_bed(center, r);
-                out.push(Shape::RoundedRect {
-                    center: at,
-                    w,
-                    h,
-                    r: 1.0,
-                    angle: 0.0,
-                    color: fade(edge),
-                    stroke: None,
-                });
+                out.push(Shape::Poly { points: session_bed(center, r), color: fade(edge) });
             }
             out.push(Shape::Mark {
                 mark: slot.mark,
@@ -1269,17 +1276,30 @@ mod tests {
     fn the_session_bed_fills_the_cell_from_side_to_side() {
         for r in [46.0f32, 70.0, 104.0] {
             let center = Pt::new(300.0, 300.0);
-            let (at, w, h) = session_bed(center, r);
-            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                let corner = Pt::new(at.x + sx * w / 2.0, at.y + sy * h / 2.0);
-                assert!(inside_hex(corner, center, r, GAP), "r={r}: the bed pokes out of its cell");
+            let bed = session_bed(center, r);
+            assert_eq!(bed.len(), 6, "the band takes the cell's own shape at its ends (#133)");
+            for p in &bed {
+                assert!(inside_hex(*p, center, r, GAP), "r={r}: the bed pokes out of its cell");
             }
-            // Wall to wall at its own height: a flat-top cell is widest
-            // along one line through its middle and narrows from there, so
-            // what the bed has to fill is the width at its own corners, not
-            // the width at the centre (#132).
-            let wider = Pt::new(at.x + w / 2.0 + BORDER * 2.5, at.y + h / 2.0);
-            assert!(!inside_hex(wider, center, r, GAP), "r={r}: the bed is leaving room at the sides");
+
+            // Side to side: its ends reach the cell's points, give or take
+            // the wall it has to stay off. A rectangle wide enough to do
+            // that would have left the hexagon at its corners, which is the
+            // whole reason this has six sides (#133).
+            let h = r * BED_H;
+            let reach = bed.iter().map(|p| p.x - center.x).fold(f32::MIN, f32::max);
+            let point = corners(center, r, GAP).iter().map(|p| p.x - center.x).fold(f32::MIN, f32::max);
+            assert!(point - reach < WALL * 2.0, "r={r}: the bed stops {} short of the point", point - reach);
+            let rect_corner = Pt::new(center.x + reach, center.y + h / 2.0);
+            assert!(
+                !inside_hex(rect_corner, center, r, GAP),
+                "r={r}: a rectangle that wide would still have fitted, so the shaping buys nothing"
+            );
+
+            // And it is a band, not a wedge: flat along the top and bottom.
+            let flats: Vec<f32> = bed.iter().map(|p| p.y - center.y).collect();
+            assert!(flats.iter().filter(|y| (**y - h / 2.0).abs() < 0.01).count() == 2);
+            assert!(flats.iter().filter(|y| (**y + h / 2.0).abs() < 0.01).count() == 2);
         }
     }
 
