@@ -706,6 +706,26 @@ fn fake_pr_number(pid: i32) -> u32 {
     8700 + (pid - 90_000).max(0) as u32
 }
 
+/// Where a sandbox pull request pretends to live.
+const SANDBOX_REPO: &str = "sandbox/demo";
+
+/// The next number to chain onto a session, or `None` once it holds as many
+/// as a real one ever would. Answered and unanswered share the count and the
+/// numbering: they are one set of numbers a transcript named, split by
+/// whether GitHub spoke for them (#112, #134).
+fn next_pr_number(s: &SessionInfo) -> Option<u32> {
+    if s.prs.len() + s.prs_unanswered.len() >= pr::MAX_PER_SESSION {
+        return None;
+    }
+    let highest = s
+        .prs
+        .iter()
+        .map(|p| p.id.number)
+        .chain(s.prs_unanswered.iter().map(|r| r.number))
+        .max();
+    Some(highest.map_or_else(|| fake_pr_number(s.pid), |n| n + 1))
+}
+
 /// In-memory sessions you can create, retarget and destroy at will.
 pub struct FakeSource {
     inner: Mutex<FakeState>,
@@ -782,11 +802,32 @@ impl FakeSource {
         }
     }
 
-    /// Sets the sandbox session's first PR, or clears them all.
+    /// Sets the newest sandbox PR's state, or clears the whole chain.
+    ///
+    /// The newest one rather than the chain (#134). Replacing the chain meant
+    /// anything built with `+` collapsed to a single PR the moment a state
+    /// was picked for it, so the sandbox could show a session with several
+    /// pull requests or a session with a state, never both. The newest is the
+    /// one a cell draws, which is what the letters are for. Review and CI
+    /// ride along: they are orthogonal to the state (#116, #62), so changing
+    /// the state is not a reason to drop them.
     pub fn set_pr(&self, session_id: &str, look: Option<pr::Look>) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            let n = s.prs.first().map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
-            s.prs = look.map(|l| vec![pr::Pr::synthetic(n, l)]).unwrap_or_default();
+            let Some(look) = look else {
+                s.prs.clear();
+                s.prs_unanswered.clear();
+                return;
+            };
+            let last = s.prs.last();
+            let n = last.map(|p| p.id.number).unwrap_or_else(|| fake_pr_number(s.pid));
+            let (approved, pending) = (last.is_some_and(|p| p.approved), last.map_or(0, |p| p.pending));
+            let mut next = pr::Pr::synthetic(n, look);
+            next.approved = approved;
+            next.pending = pending;
+            match s.prs.last_mut() {
+                Some(end) => *end = next,
+                None => s.prs.push(next),
+            }
         }
     }
 
@@ -794,11 +835,19 @@ impl FakeSource {
     /// one ticket with several (#63).
     pub fn add_pr(&self, session_id: &str, look: pr::Look) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            if s.prs.len() >= pr::MAX_PER_SESSION {
-                return;
-            }
-            let n = s.prs.iter().map(|p| p.id.number).max().unwrap_or_else(|| fake_pr_number(s.pid));
-            s.prs.push(pr::Pr::synthetic(n + 1, look));
+            let Some(n) = next_pr_number(s) else { return };
+            s.prs.push(pr::Pr::synthetic(n, look));
+        }
+    }
+
+    /// Chains a number GitHub would not answer for (#112), which is the other
+    /// half of what a cell's pull request list holds (#134). Nothing else in
+    /// the sandbox can make one, and it is the row that reads differently:
+    /// a number with no state behind it.
+    pub fn add_unanswered(&self, session_id: &str) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            let Some(n) = next_pr_number(s) else { return };
+            s.prs_unanswered.push(pr::PrRef { repo: SANDBOX_REPO.into(), number: n });
         }
     }
 
@@ -829,7 +878,9 @@ impl FakeSource {
     /// approval is: a thing laid on top of whatever state the PR is in.
     pub fn set_pr_approved(&self, session_id: &str, on: bool) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            for p in s.prs.iter_mut() {
+            // The newest, like the state letters: a chain whose nodes all say
+            // the same thing is one node drawn several times (#134).
+            if let Some(p) = s.prs.last_mut() {
                 p.approved = on;
             }
         }
@@ -838,7 +889,7 @@ impl FakeSource {
     /// Puts a sandbox PR's CI in flight, or stops it (#62).
     pub fn set_pr_running(&self, session_id: &str, on: bool) {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
-            for p in s.prs.iter_mut() {
+            if let Some(p) = s.prs.last_mut() {
                 p.pending = if on { 2 } else { 0 };
             }
         }
@@ -1114,6 +1165,51 @@ mod tests {
         assert_eq!(src.rate(), 0.25, "and says what it is set to");
     }
 
+    /// The sandbox can build a chain of pull requests and then shape it
+    /// (#134). Picking a state used to replace the chain, so a synthetic
+    /// session could have several pull requests or a state, never both.
+    #[test]
+    fn a_sandbox_chain_survives_being_shaped() {
+        let src = FakeSource::new();
+        src.fill(1);
+        let id = src.snapshot()[0].session_id.clone();
+        src.add_pr(&id, pr::Look::Open);
+        src.add_pr(&id, pr::Look::Draft);
+        src.add_unanswered(&id);
+        let snap = src.snapshot();
+        let (prs, silent) = (&snap[0].prs, &snap[0].prs_unanswered);
+        let first = prs[0].id.number;
+        assert_eq!(prs.len(), 2);
+        assert_eq!(
+            (prs[1].id.number, silent[0].number),
+            (first + 1, first + 2),
+            "answered and unanswered share one run of numbers"
+        );
+
+        // Shaping the newest leaves the rest of the chain standing.
+        src.set_pr(&id, Some(pr::Look::Failing));
+        src.set_pr_approved(&id, true);
+        let snap = src.snapshot();
+        let prs = &snap[0].prs;
+        assert_eq!(prs.len(), 2, "picking a state collapsed the chain");
+        assert_eq!((prs[0].look(), prs[1].look()), (pr::Look::Open, pr::Look::Failing));
+        assert!(!prs[0].approved && prs[1].approved, "the tick went onto the whole chain");
+
+        // Review outlives a change of state: the two are orthogonal (#116).
+        src.set_pr(&id, Some(pr::Look::Merged));
+        assert!(src.snapshot()[0].prs[1].approved);
+
+        // The cap counts both halves, and one button empties both.
+        for _ in 0..5 {
+            src.add_pr(&id, pr::Look::Open);
+        }
+        let snap = src.snapshot();
+        assert_eq!(snap[0].prs.len() + snap[0].prs_unanswered.len(), pr::MAX_PER_SESSION);
+        src.set_pr(&id, None);
+        let snap = src.snapshot();
+        assert!(snap[0].prs.is_empty() && snap[0].prs_unanswered.is_empty());
+    }
+
     #[test]
     fn churn_only_runs_in_auto_mode_and_rate_limits() {
         let src = FakeSource::new();
@@ -1179,3 +1275,4 @@ mod tests {
         assert_eq!(project_slug("/Users/ben/.claude/x"), "-Users-ben--claude-x");
     }
 }
+

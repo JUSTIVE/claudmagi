@@ -207,17 +207,31 @@ impl Board {
             // than the session row can hold, and cycling through them to reach
             // one was tedious (#58).
             if info.synthetic {
-                let look = info.prs.first().map(|p| p.look());
-                let mut links = div().flex().items_center().gap_1().pl_3().child(
+                // The letters shape the newest, which is the one a cell
+                // draws, so the row answers for that one too (#134).
+                let look = info.prs.last().map(|p| p.look());
+                // What the cell would be drawing, and how many are behind it:
+                // the answered one it prefers, or the number nobody spoke for
+                // (#112), with the rest of the chain counted off (#134).
+                let head = info
+                    .prs
+                    .last()
+                    .map(|p| p.label())
+                    .or_else(|| info.prs_unanswered.last().map(|r| format!("{}?", r.label())));
+                let chain = info.prs.len() + info.prs_unanswered.len();
+                // Wrapping rather than shrinking: this row now carries ten
+                // controls and a narrow window is not a reason to clip their
+                // letters off, the way the GROW row above already works.
+                let mut links = div().flex().items_center().flex_wrap().gap_1().pl_3().child(
                     div()
                         .w(px(56.))
                         .flex_none()
                         .text_size(px(10.))
                         .text_color(dim(0.55))
-                        .child(match info.prs.len() {
-                            0 => "PR".to_string(),
-                            1 => info.prs[0].label(),
-                            n => format!("{} +{}", info.prs[0].label(), n - 1),
+                        .child(match (head, chain) {
+                            (None, _) => "PR".to_string(),
+                            (Some(h), 0 | 1) => h,
+                            (Some(h), n) => format!("{h} +{}", n - 1),
                         }),
                 );
                 let sb = sandbox.clone();
@@ -236,7 +250,7 @@ impl Board {
                 }
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
-                let ci = info.prs.iter().any(|p| p.running());
+                let ci = info.prs.last().is_some_and(|p| p.running());
                 links = links.child(
                     button(SharedString::from(format!("pr-ci-{i}")), "CI", ci)
                         .on_click(move |_, _, _| sb.set_pr_running(&sid, !ci)),
@@ -245,16 +259,28 @@ impl Board {
                 // letters, which is exactly the shape of the thing (#116).
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
-                let ok = info.prs.iter().any(|p| p.approved);
+                let ok = info.prs.last().is_some_and(|p| p.approved);
                 links = links.child(
                     button(SharedString::from(format!("pr-ok-{i}")), "OK", ok)
                         .on_click(move |_, _, _| sb.set_pr_approved(&sid, !ok)),
                 );
+                // Chaining walks the states rather than laying down the
+                // same one again: four identical nodes exercise nothing a
+                // single one does not (#63, #134).
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                let next = pr::Look::ALL[info.prs.len() % pr::Look::ALL.len()];
+                links = links.child(
+                    button(SharedString::from(format!("pr-add-{i}")), "+", false)
+                        .on_click(move |_, _, _| sb.add_pr(&sid, next)),
+                );
+                // And a number GitHub would not answer for, which the
+                // sandbox had no way to make at all (#112, #134).
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
                 links = links.child(
-                    button(SharedString::from(format!("pr-add-{i}")), "+", false)
-                        .on_click(move |_, _, _| sb.add_pr(&sid, pr::Look::Open)),
+                    button(SharedString::from(format!("pr-silent-{i}")), "?", false)
+                        .on_click(move |_, _, _| sb.add_unanswered(&sid)),
                 );
                 list = list.child(links);
 
