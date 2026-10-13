@@ -37,6 +37,11 @@ const TTL: Duration = Duration::from_secs(30);
 /// the board for the whole TTL.
 const RETRY: Duration = Duration::from_secs(5);
 
+/// What the endpoint calls a session the person has put away (#136). The
+/// other value seen is `active`; anything else is left alone, so a value
+/// nobody here has heard of cannot empty the board.
+const ARCHIVED: &str = "archived";
+
 /// A session whose container has let go still shows for this long after its
 /// last event. Long enough that work finished over lunch is still there to
 /// be looked at, short enough that last week's scheduled runs are not.
@@ -53,6 +58,10 @@ struct Raw {
     config: RawConfig,
     #[serde(default)]
     external_metadata: RawMeta,
+    /// `archived` once the person has put the session away; `active`
+    /// otherwise (#136).
+    #[serde(default)]
+    status: Option<String>,
     /// `connected` while the container is up.
     #[serde(default)]
     connection_status: Option<String>,
@@ -200,6 +209,13 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
         // A scheduled run is a routine, not somebody's work. It is asked for
         // without them, and dropped here too in case it ever arrives anyway.
         if raw.trigger_id.is_some() {
+            continue;
+        }
+        // Archived is the person saying they are done with it, which is a
+        // better answer than anything the board could work out for itself:
+        // it outranks the clock below and the container being up, and a
+        // session archived while it is still running goes too (#136).
+        if raw.status.as_deref() == Some(ARCHIVED) {
             continue;
         }
         let connected = raw.connection_status.as_deref() == Some("connected");
@@ -506,6 +522,36 @@ mod tests {
         let ids: Vec<&str> = list.iter().map(|s| s.session_id.as_str()).collect();
         assert_eq!(ids, vec!["work"], "a session a schedule started is not on the board");
     }
+    /// Archiving is the person saying they are done with it, and the board
+    /// is for what is going on now (#136).
+    #[test]
+    fn an_archived_session_is_off_the_board() {
+        let row = |id: &str, status: &str, conn: &str| {
+            format!(
+                r#"{{"id":"{id}","title":"t","status":"{status}","connection_status":"{conn}",
+                     "worker_status":"running","unread":true,"last_event_at":"{}"}}"#,
+                at(60)
+            )
+        };
+        let rows = [
+            row("put-away", "archived", "disconnected"),
+            // Archived while the container is still up and a turn is in
+            // flight: the person has still said they are done with it.
+            row("put-away-busy", "archived", "connected"),
+            row("working", "active", "connected"),
+            // A status this board has never heard of is not a reason to drop
+            // somebody's session.
+            row("unknown", "something_new", "connected"),
+        ]
+        .join(",");
+        let list = parse(&body(&rows), NOW);
+        let ids: Vec<&str> = list.iter().map(|s| s.session_id.as_str()).collect();
+        assert!(!ids.contains(&"put-away"), "an archived session is still on the board");
+        assert!(!ids.contains(&"put-away-busy"), "archiving outranks the container being up");
+        assert!(ids.contains(&"working"));
+        assert!(ids.contains(&"unknown"), "a status nobody here knows is not a reason to drop a session");
+    }
+
     /// A cloud session has no transcript here, so the only place a pull
     /// request can come from is the sentence the last turn wrote about
     /// itself (#120).
@@ -538,3 +584,4 @@ mod tests {
     }
 
 }
+
