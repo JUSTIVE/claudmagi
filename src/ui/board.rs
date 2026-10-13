@@ -63,7 +63,7 @@ pub struct Board {
     pub(crate) settings_panel: PanelState,
     /// The list down the right-hand side (#103).
     pub(crate) list_panel: PanelState,
-    layout: Layout,
+    pub(crate) layout: Layout,
     lanes: Rc<Vec<Lane>>,
     /// True while the last built lanes were mid-slide (#49).
     lanes_moving: bool,
@@ -80,6 +80,10 @@ pub struct Board {
     tickets: Vec<scene::TicketDraw>,
     hovered_ticket: Option<usize>,
     pressed_ticket: Option<usize>,
+    /// The cell whose pull requests are dropped down, by session id (#134).
+    /// The id rather than the index: sessions come and go while the list is
+    /// open, and an index would quietly become somebody else's.
+    pub(crate) pr_menu: Option<String>,
     title: String,
     drag_anchor: Option<(f64, f64)>,
     started: Instant,
@@ -97,7 +101,7 @@ pub struct Board {
     /// The window in pixels, for the chrome that has to fit inside it (#83).
     pub(crate) window: (f32, f32),
     /// The hex grid, when the comb view is the one showing (#86).
-    comb: Option<comb::Comb>,
+    pub(crate) comb: Option<comb::Comb>,
     /// When the comb's first frame was painted, which is what its cells
     /// arrive on. Started there rather than when the view was chosen: a
     /// window that opens straight into the comb spends its first moments on
@@ -204,6 +208,7 @@ impl Board {
             tickets: Vec::new(),
             hovered_ticket: None,
             pressed_ticket: None,
+            pr_menu: None,
             title: sources::machine_user(),
             drag_anchor: None,
             started: now,
@@ -343,6 +348,32 @@ impl Board {
                 && (m.x - t.center.x).abs() <= t.width / 2.0 + 3.0
                 && (m.y - (t.center.y - self.scroll_y)).abs() <= scene::PR_H / 2.0 + 3.0
         })
+    }
+
+    /// The session whose pull request row is under the pointer, when that row
+    /// has more than one pull request to show (#134).
+    ///
+    /// Only in the comb. On the board every pull request is already a node of
+    /// its own, so there is no one place a list could drop from.
+    fn pr_menu_at(&self, m: Pt) -> Option<String> {
+        let comb = self.comb.as_ref()?;
+        let (i, slot) = comb::hit_slot(comb, m + Pt::new(0.0, self.scroll_y))?;
+        if slot != comb::Slot::Pr {
+            return None;
+        }
+        let info = &self.model.chips.get(i)?.info;
+        matches!(pr_press(info), PrPress::List).then(|| info.session_id.clone())
+    }
+
+    /// The list hangs off a cell, so it goes when the cell does: the comb put
+    /// away, or the session ended (#134).
+    fn prune_pr_menu(&mut self) {
+        let Some(id) = self.pr_menu.as_deref() else { return };
+        let standing = self.comb.is_some()
+            && self.model.chips.iter().any(|c| c.info.session_id == id && !c.anim.gone);
+        if !standing {
+            self.pr_menu = None;
+        }
     }
 
     /// Opens a link node, reporting what happened in the status bar the way a
@@ -510,9 +541,12 @@ impl Board {
                 // A row with nothing in it is still part of the cell.
                 None => self.activate(Target::Session(i), cx),
             },
-            comb::Slot::Pr => match info.prs.last() {
-                Some(p) => self.open_link(p.label(), None, Some(p.url()), "pull request", cx),
-                None => self.activate(Target::Session(i), cx),
+            comb::Slot::Pr => match pr_press(&info) {
+                PrPress::Cell => self.activate(Target::Session(i), cx),
+                PrPress::One { label, url } => self.open_link(label, None, url, "pull request", cx),
+                // The list dropped down on the press already, and the
+                // release is nothing more (#134).
+                PrPress::List => {}
             },
             comb::Slot::Session => self.activate(Target::Session(i), cx),
         }
@@ -595,6 +629,7 @@ impl Render for Board {
             self.comb = None;
             self.comb_since = None;
         }
+        self.prune_pr_menu();
         self.content_bottom = match &self.comb {
             Some(c) => c.height,
             None => self.layout.board_bottom(&self.draws, &self.prs, &self.tickets),
@@ -663,6 +698,7 @@ impl Render for Board {
                 }
                 match ev.keystroke.key.as_str() {
                     "l" if cmd => this.toggle_list(),
+                    "escape" if this.pr_menu.is_some() => this.pr_menu = None,
                     "escape" if this.list_panel.open => this.list_panel.open = false,
                     "escape" if this.settings_panel.open => this.settings_panel.open = false,
                     "escape" if this.dev.open => this.dev.open = false,
@@ -699,6 +735,15 @@ impl Render for Board {
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
                     let m = this.to_design(ev.position);
                     this.mouse = Some(m);
+                    // A cell with more than one pull request drops its list
+                    // down on the press, the way a menu opens; the same row
+                    // again puts it away, and so does a press anywhere else
+                    // that reaches the board at all (#134).
+                    let asked = this.pr_menu_at(m);
+                    this.pr_menu = match (asked, this.pr_menu.take()) {
+                        (Some(id), Some(open)) if id == open => None,
+                        (asked, _) => asked,
+                    };
                     this.model.hovered = this.hit_test(m);
                     this.hovered_pr = this.hit_pr(m);
                     this.hovered_ticket = this.hit_ticket(m);
@@ -904,7 +949,40 @@ impl Render for Board {
             // is looked for (#71).
             .when(list_open, |d| d.child(self.render_list(cx)))
             .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
-            .child(self.pr_tooltips(cx))
+            // The connectors these hang on are the board's, not the comb's:
+            // in the comb view they would sit over the honeycomb at
+            // positions nothing is drawn at (#115, #134).
+            .when(self.comb.is_none(), |d| d.child(self.pr_tooltips(cx)))
+            .children(self.render_pr_menu(cx))
+    }
+}
+
+/// What the pull request line of a cell does when it is pressed (#134).
+#[derive(Debug, PartialEq)]
+pub(crate) enum PrPress {
+    /// Nothing on that line: the press belongs to the cell as a whole.
+    Cell,
+    /// One pull request, opened where it lives.
+    One { label: String, url: Option<String> },
+    /// Several, so the list drops down instead of one of them opening.
+    List,
+}
+
+/// The line draws the newest pull request a session has and can open it; what
+/// it cannot do is say that there are others, which is the whole reason the
+/// list exists (#134). A number GitHub would not answer for counts as one of
+/// them: the cell falls back to drawing it, so the line is already speaking
+/// for it.
+pub(crate) fn pr_press(info: &crate::model::SessionInfo) -> PrPress {
+    match crate::pr::rows(&info.prs, &info.prs_unanswered).as_slice() {
+        [] => PrPress::Cell,
+        [one] => PrPress::One {
+            label: one.label.clone(),
+            // The sandbox's pull requests are made up, so they go nowhere,
+            // the same way its sessions have no terminal to jump to.
+            url: (!info.synthetic).then(|| one.url.clone()),
+        },
+        _ => PrPress::List,
     }
 }
 
@@ -1007,8 +1085,43 @@ fn status_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Phase, SessionInfo};
+    use crate::pr;
 
     const VP: (f32, f32) = (980.0, 620.0);
+
+    /// A cell's GitHub line opens what it is showing, and drops a list when
+    /// it is showing one of several (#134).
+    #[test]
+    fn a_cell_with_more_than_one_pull_request_drops_its_list() {
+        let mut info = SessionInfo::synthetic(1, "demo", Phase::Working);
+        info.synthetic = false;
+        assert_eq!(pr_press(&info), PrPress::Cell, "an empty line belongs to the cell");
+
+        info.prs = vec![pr::Pr::synthetic(11, pr::Look::Open)];
+        assert_eq!(
+            pr_press(&info),
+            PrPress::One {
+                label: "#11".into(),
+                url: Some("https://github.com/sandbox/demo/pull/11".into()),
+            }
+        );
+
+        // A number GitHub would not answer for is one of them: the cell falls
+        // back to drawing it, so the line is already speaking for it (#112).
+        info.prs_unanswered = vec![pr::PrRef { repo: "sandbox/demo".into(), number: 12 }];
+        assert_eq!(pr_press(&info), PrPress::List);
+
+        info.prs_unanswered.clear();
+        info.prs.push(pr::Pr::synthetic(12, pr::Look::Merged));
+        assert_eq!(pr_press(&info), PrPress::List);
+
+        // The sandbox has nowhere to send a click, the way its sessions have
+        // no terminal to jump to.
+        info.prs.pop();
+        info.synthetic = true;
+        assert_eq!(pr_press(&info), PrPress::One { label: "#11".into(), url: None });
+    }
 
     /// Pushed all the way down, the lowest lane has to be clear of the status
     /// bar. The bar is a fixed number of window pixels, so zooming out makes

@@ -5,6 +5,7 @@ pub mod devtools;
 pub mod list;
 pub mod palette;
 pub mod panel;
+pub mod prmenu;
 pub mod settings;
 
 /// Hands gpui the embedded board typeface so `theme::UI_FONT` resolves to the

@@ -619,6 +619,29 @@ pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
     Some((cell.chip?, slot))
 }
 
+/// Where one of a cell's rows sits, and the box it has to itself, in the
+/// grid's own coordinates (#134).
+///
+/// The same band `hit_slot` answers for, as a rectangle. Taken at the band's
+/// far edge, which is where the cell is narrowest: a flat-top hexagon is
+/// widest along its middle line and falls away by `1 / sqrt(3)` every step
+/// from it, so a box measured at its own middle would poke out of the sides
+/// at its corners.
+pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> {
+    let cell = comb.cells.iter().find(|c| c.chip == Some(chip))?;
+    let row = match slot {
+        Slot::Ticket => 0,
+        Slot::Session => 1,
+        Slot::Pr => 2,
+    };
+    let dy = ROW_DY[row] * comb.r;
+    // Every band is the same height: the rows are evenly spaced, so each one
+    // reaches halfway to its neighbour on either side.
+    let h = (ROW_DY[2] - ROW_DY[1]) * comb.r;
+    let w = row_room(comb.r, dy, h);
+    (w > 0.0).then(|| (Pt::new(cell.center.x, cell.center.y + dy), w, h))
+}
+
 /// What goes on one of a cell's three lines.
 struct SlotInk {
     mark: logos::Mark,
@@ -1268,6 +1291,38 @@ mod tests {
         assert_eq!(hit_slot(&comb, at), Some((0, Slot::Session)));
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 0.42)), Some((0, Slot::Pr)));
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 3.0)), None, "outside the cell is nothing");
+    }
+
+    /// A row's box is the row: what it covers answers for that row, and all
+    /// four of its corners are inside the cell (#134).
+    #[test]
+    fn a_rows_box_covers_its_own_row_and_nothing_outside_the_cell() {
+        let model = board(&[("warp-tab:1-1", 1)]);
+        let comb = lay_out(&model, 980.0, 620.0);
+        let center = comb.cells.iter().find(|c| c.chip == Some(0)).unwrap().center;
+        for slot in [Slot::Ticket, Slot::Session, Slot::Pr] {
+            let (at, w, h) = slot_box(&comb, 0, slot).expect("every row has a box");
+            assert_eq!(hit_slot(&comb, at), Some((0, slot)), "{slot:?}: the box is over another row");
+            for sx in [-1.0, 1.0f32] {
+                for sy in [-1.0, 1.0f32] {
+                    let corner = at + Pt::new(sx * w / 2.0, sy * h / 2.0);
+                    assert!(
+                        inside_hex(corner, center, comb.r, GAP),
+                        "{slot:?}: the corner at ({sx}, {sy}) is outside the cell"
+                    );
+                    // A hair inside: the far edge is the line two rows share,
+                    // and which side of it a point falls on is `hit_slot`'s
+                    // business rather than the box's.
+                    let inside = at + Pt::new(sx * w / 2.0, sy * h * 0.49);
+                    assert_eq!(
+                        hit_slot(&comb, inside).map(|(_, s)| s),
+                        Some(slot),
+                        "{slot:?}: the corner at ({sx}, {sy}) belongs to another row"
+                    );
+                }
+            }
+        }
+        assert!(slot_box(&comb, 999, Slot::Pr).is_none(), "a cell nobody sits in has no box");
     }
 
     /// The session's bed runs wall to wall inside the cell and touches

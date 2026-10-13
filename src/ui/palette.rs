@@ -173,7 +173,7 @@ pub struct Body {
 }
 
 impl Style {
-    fn body(self, theme: Palette) -> Body {
+    pub(crate) fn body(self, theme: Palette) -> Body {
         let at = theme::hsla;
         let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
         let body = |fill, border, text| Body { fill, border, text };
