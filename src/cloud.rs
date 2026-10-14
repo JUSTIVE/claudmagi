@@ -264,6 +264,9 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
             // Named but not looked up: nothing here has asked `gh` about it,
             // which is exactly what this field is for (#112).
             prs_unanswered: pr.into_iter().collect(),
+            // Nothing of this session is on this disk, so there is no
+            // transcript to read a published page out of (#120).
+            artifacts: Vec::new(),
             job: None,
             parked_job: None,
         };

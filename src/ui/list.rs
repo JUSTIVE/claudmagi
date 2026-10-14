@@ -118,6 +118,29 @@ impl Board {
                 );
             }
 
+            // And the pages it published, which share the cell's bottom line
+            // with the pull requests and read the same way here (#137).
+            for (k, a) in info.artifacts.iter().enumerate() {
+                let (label, url) = (a.label(), a.url());
+                let state = a.version_label().unwrap_or_else(|| "ARTIFACT".into());
+                block = block.child(
+                    div()
+                        .id(SharedString::from(format!("list-artifact-{i}-{k}")))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .pl_2()
+                        .cursor_pointer()
+                        .hover(|s| s.bg(dim(0.08)))
+                        .text_size(px(10.))
+                        .child(div().flex_1().overflow_hidden().text_color(dim(0.75)).child(a.label()))
+                        .child(div().flex_none().text_color(dim(0.4)).child(state))
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.open_link(label.clone(), None, Some(url.clone()), crate::made::ARTIFACT, cx)
+                        })),
+                );
+            }
+
             // And its subagents, which have nowhere of their own to go.
             for sub in &subs {
                 block = block.child(

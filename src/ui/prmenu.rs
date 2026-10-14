@@ -1,12 +1,13 @@
-//! The pull request list a cell drops down (#134).
+//! The list a cell's bottom line drops down (#134, #137).
 //!
-//! A cell has one line for GitHub and draws the newest pull request it has,
-//! so when a session owns several the others are neither seen nor reachable:
-//! the line opened the one it was showing, and nothing said there were more.
-//! Pressing the line now drops the whole set down instead, one row each, and
-//! a row opens its own pull request.
+//! That line has room for one thing and draws the newest, so when a session
+//! owns several the others are neither seen nor reachable: the line opened
+//! the one it was showing, and nothing said there were more. Pressing it now
+//! drops the whole set down instead, one row each, and a row opens its own.
 //!
-//! The rows are the nodes: each wears the body the board would give that pull
+//! The set is everything the session made (`made::rows`): its pull requests,
+//! newest number first, and then the pages it published on claude.ai. The
+//! rows are the nodes: each wears the body the board would give that pull
 //! request (#78), so the list reads the way the board does. A number GitHub
 //! would not answer for is in the list as well, drawn as not knowing rather
 //! than left out (#112) — it can still be opened, since the number is all a
@@ -17,8 +18,7 @@ use gpui::{
     div, point, prelude::*, px, svg,
 };
 
-use crate::logos;
-use crate::pr;
+use crate::made;
 use crate::render::comb;
 use crate::theme;
 use crate::ui::board::{Board, STATUS_H};
@@ -49,11 +49,11 @@ impl Board {
     pub(crate) fn render_pr_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.pr_menu.clone()?;
         let i = self.model.chips.iter().position(|c| c.info.session_id == id)?;
-        let (at, _, h) = comb::slot_box(self.comb.as_ref()?, i, comb::Slot::Pr)?;
+        let (at, _, h) = comb::slot_box(self.comb.as_ref()?, i, comb::Slot::Output)?;
         let info = &self.model.chips[i].info;
-        let rows = pr::rows(&info.prs, &info.prs_unanswered);
-        // The sandbox's pull requests are made up, so they go nowhere, the
-        // same way its sessions have no terminal to jump to.
+        let rows = made::rows(info);
+        // The sandbox's pull requests and pages are made up, so they go
+        // nowhere, the same way its sessions have no terminal to jump to.
         let real = !info.synthetic;
         if rows.len() < 2 {
             return None;
@@ -83,14 +83,20 @@ impl Board {
                 Some(look) => {
                     Style::Pr { look, running: row.running, signed_off: row.signed_off }.body(theme)
                 }
-                // No state to draw, so it is drawn as not knowing (#112).
+                // A page has no state to draw and no state to be missing; a
+                // number GitHub would not answer for has one and is missing
+                // it, which is worth saying more quietly (#112, #137).
+                None if row.kind == made::ARTIFACT => {
+                    Body { fill: None, border: Some(ink(0.3)), text: ink(0.75) }
+                }
                 None => Body { fill: None, border: Some(ink(0.3)), text: ink(0.5) },
             };
-            let detail = match row.title.trim() {
-                "" => "GitHub would not answer".to_string(),
-                title => title.to_string(),
+            let detail = match (row.detail.trim(), row.kind) {
+                ("", made::PULL_REQUEST) => "GitHub would not answer".to_string(),
+                (detail, _) => detail.to_string(),
             };
-            let (label, url) = (row.label.clone(), row.url.clone());
+            let (mark, kind) = (row.mark, row.kind);
+            let (label, url) = (row.name.clone(), row.url.clone());
             list = list.child(
                 div()
                     .id(SharedString::from(format!("pr-menu-{i}-{k}")))
@@ -115,14 +121,8 @@ impl Board {
                             .when_some(body.border, |d, c| d.border_1().border_color(c))
                             .text_color(body.text)
                             .overflow_hidden()
-                            .child(
-                                svg()
-                                    .path(logos::GITHUB_PATH)
-                                    .size(px(LOGO))
-                                    .flex_none()
-                                    .text_color(body.text),
-                            )
-                            .child(row.label.clone())
+                            .child(svg().path(mark.path()).size(px(LOGO)).flex_none().text_color(body.text))
+                            .child(row.chip.clone())
                             // Review's tick, beside the number it signed off
                             // on, exactly as the cell draws it (#116).
                             .when(row.signed_off, |d| {
@@ -134,18 +134,16 @@ impl Board {
                             .flex_1()
                             .overflow_hidden()
                             .text_size(px(10.))
-                            .text_color(ink(if row.look.is_some() { 0.55 } else { 0.4 }))
+                            .text_color(ink(if row.look.is_some() || row.kind == made::ARTIFACT {
+                                0.55
+                            } else {
+                                0.4
+                            }))
                             .child(detail),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.pr_menu = None;
-                        this.open_link(
-                            label.clone(),
-                            None,
-                            real.then(|| url.clone()),
-                            "pull request",
-                            cx,
-                        );
+                        this.open_link(label.clone(), None, real.then(|| url.clone()), kind, cx);
                     })),
             );
         }

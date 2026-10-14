@@ -19,6 +19,7 @@ use base_gpui::tooltip::{
     TooltipPopup, TooltipPortal, TooltipPositioner, TooltipRoot, TooltipSide, TooltipTrigger,
 };
 
+use crate::made;
 use crate::render::comb;
 use crate::settings::{BoardView, Settings};
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
@@ -350,19 +351,19 @@ impl Board {
         })
     }
 
-    /// The session whose pull request row is under the pointer, when that row
-    /// has more than one pull request to show (#134).
+    /// The session whose output row is under the pointer, when that row has
+    /// more than one thing to show (#134, #137).
     ///
     /// Only in the comb. On the board every pull request is already a node of
     /// its own, so there is no one place a list could drop from.
     fn pr_menu_at(&self, m: Pt) -> Option<String> {
         let comb = self.comb.as_ref()?;
         let (i, slot) = comb::hit_slot(comb, m + Pt::new(0.0, self.scroll_y))?;
-        if slot != comb::Slot::Pr {
+        if slot != comb::Slot::Output {
             return None;
         }
         let info = &self.model.chips.get(i)?.info;
-        matches!(pr_press(info), PrPress::List).then(|| info.session_id.clone())
+        matches!(made::press(info), made::Press::List).then(|| info.session_id.clone())
     }
 
     /// The list hangs off a cell, so it goes when the cell does: the comb put
@@ -541,12 +542,12 @@ impl Board {
                 // A row with nothing in it is still part of the cell.
                 None => self.activate(Target::Session(i), cx),
             },
-            comb::Slot::Pr => match pr_press(&info) {
-                PrPress::Cell => self.activate(Target::Session(i), cx),
-                PrPress::One { label, url } => self.open_link(label, None, url, "pull request", cx),
+            comb::Slot::Output => match made::press(&info) {
+                made::Press::Cell => self.activate(Target::Session(i), cx),
+                made::Press::One { name, kind, url } => self.open_link(name, None, url, kind, cx),
                 // The list dropped down on the press already, and the
                 // release is nothing more (#134).
-                PrPress::List => {}
+                made::Press::List => {}
             },
             comb::Slot::Session => self.activate(Target::Session(i), cx),
         }
@@ -957,35 +958,6 @@ impl Render for Board {
     }
 }
 
-/// What the pull request line of a cell does when it is pressed (#134).
-#[derive(Debug, PartialEq)]
-pub(crate) enum PrPress {
-    /// Nothing on that line: the press belongs to the cell as a whole.
-    Cell,
-    /// One pull request, opened where it lives.
-    One { label: String, url: Option<String> },
-    /// Several, so the list drops down instead of one of them opening.
-    List,
-}
-
-/// The line draws the newest pull request a session has and can open it; what
-/// it cannot do is say that there are others, which is the whole reason the
-/// list exists (#134). A number GitHub would not answer for counts as one of
-/// them: the cell falls back to drawing it, so the line is already speaking
-/// for it.
-pub(crate) fn pr_press(info: &crate::model::SessionInfo) -> PrPress {
-    match crate::pr::rows(&info.prs, &info.prs_unanswered).as_slice() {
-        [] => PrPress::Cell,
-        [one] => PrPress::One {
-            label: one.label.clone(),
-            // The sandbox's pull requests are made up, so they go nowhere,
-            // the same way its sessions have no terminal to jump to.
-            url: (!info.synthetic).then(|| one.url.clone()),
-        },
-        _ => PrPress::List,
-    }
-}
-
 /// How far down the board can be pushed.
 ///
 /// The status bar is drawn over the board's bottom edge, so what can be seen
@@ -1085,43 +1057,7 @@ fn status_button(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Phase, SessionInfo};
-    use crate::pr;
-
     const VP: (f32, f32) = (980.0, 620.0);
-
-    /// A cell's GitHub line opens what it is showing, and drops a list when
-    /// it is showing one of several (#134).
-    #[test]
-    fn a_cell_with_more_than_one_pull_request_drops_its_list() {
-        let mut info = SessionInfo::synthetic(1, "demo", Phase::Working);
-        info.synthetic = false;
-        assert_eq!(pr_press(&info), PrPress::Cell, "an empty line belongs to the cell");
-
-        info.prs = vec![pr::Pr::synthetic(11, pr::Look::Open)];
-        assert_eq!(
-            pr_press(&info),
-            PrPress::One {
-                label: "#11".into(),
-                url: Some("https://github.com/sandbox/demo/pull/11".into()),
-            }
-        );
-
-        // A number GitHub would not answer for is one of them: the cell falls
-        // back to drawing it, so the line is already speaking for it (#112).
-        info.prs_unanswered = vec![pr::PrRef { repo: "sandbox/demo".into(), number: 12 }];
-        assert_eq!(pr_press(&info), PrPress::List);
-
-        info.prs_unanswered.clear();
-        info.prs.push(pr::Pr::synthetic(12, pr::Look::Merged));
-        assert_eq!(pr_press(&info), PrPress::List);
-
-        // The sandbox has nowhere to send a click, the way its sessions have
-        // no terminal to jump to.
-        info.prs.pop();
-        info.synthetic = true;
-        assert_eq!(pr_press(&info), PrPress::One { label: "#11".into(), url: None });
-    }
 
     /// Pushed all the way down, the lowest lane has to be clear of the status
     /// bar. The bar is a fixed number of window pixels, so zooming out makes

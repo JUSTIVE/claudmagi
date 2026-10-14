@@ -25,6 +25,7 @@ const WARP: &[u8] = include_bytes!("../assets/logos/warp.svg");
 const ORCA: &[u8] = include_bytes!("../assets/logos/orca.svg");
 const ANTHROPIC: &[u8] = include_bytes!("../assets/logos/anthropic.svg");
 const CLOUD: &[u8] = include_bytes!("../assets/logos/cloud.svg");
+const ARTIFACT: &[u8] = include_bytes!("../assets/logos/artifact.svg");
 
 pub const GITHUB_PATH: &str = "logos/github.svg";
 pub const LINEAR_PATH: &str = "logos/linear.svg";
@@ -33,6 +34,7 @@ pub const WARP_PATH: &str = "logos/warp.svg";
 pub const ORCA_PATH: &str = "logos/orca.svg";
 pub const ANTHROPIC_PATH: &str = "logos/anthropic.svg";
 pub const CLOUD_PATH: &str = "logos/cloud.svg";
+pub const ARTIFACT_PATH: &str = "logos/artifact.svg";
 
 /// Which mark a node wears (#80).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -53,10 +55,14 @@ pub enum Mark {
     ClaudeApp,
     /// Not on this machine at all (#120).
     Cloud,
+    /// A page the session published on claude.ai (#137). A window, because
+    /// that is what an artifact is: something made here that opens over
+    /// there.
+    Artifact,
 }
 
 impl Mark {
-    pub const ALL: [Mark; 7] = [
+    pub const ALL: [Mark; 8] = [
         Mark::Claude,
         Mark::GitHub,
         Mark::Linear,
@@ -64,6 +70,7 @@ impl Mark {
         Mark::Orca,
         Mark::ClaudeApp,
         Mark::Cloud,
+        Mark::Artifact,
     ];
 
     /// The mark for a seat's host, or `None` where the board cannot say
@@ -87,6 +94,7 @@ impl Mark {
             Mark::Orca => ORCA_PATH,
             Mark::ClaudeApp => ANTHROPIC_PATH,
             Mark::Cloud => CLOUD_PATH,
+            Mark::Artifact => ARTIFACT_PATH,
         }
     }
 
@@ -99,6 +107,7 @@ impl Mark {
             Mark::Orca => ORCA,
             Mark::ClaudeApp => ANTHROPIC,
             Mark::Cloud => CLOUD,
+            Mark::Artifact => ARTIFACT,
         }
     }
 }
@@ -191,7 +200,7 @@ fn scale_cmd(cmd: font::Cmd, k: f32) -> font::Cmd {
     }
 }
 
-/// Serves the three marks and nothing else.
+/// Serves the marks and nothing else.
 pub struct Logos;
 
 impl AssetSource for Logos {

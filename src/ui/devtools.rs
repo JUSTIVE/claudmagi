@@ -282,6 +282,23 @@ impl Board {
                     button(SharedString::from(format!("pr-silent-{i}")), "?", false)
                         .on_click(move |_, _, _| sb.add_unanswered(&sid)),
                 );
+                // The pages the session published share this line on the cell
+                // (#137), so they share this row here: one to hang another
+                // page on, one to take them all away, the way `−` does for
+                // the pull request.
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                links = links.child(
+                    button(SharedString::from(format!("art-add-{i}")), "A+", false)
+                        .on_click(move |_, _, _| sb.add_artifact(&sid)),
+                );
+                let sb = sandbox.clone();
+                let sid = info.session_id.clone();
+                let pages = info.artifacts.len();
+                links = links.child(
+                    button(SharedString::from(format!("art-none-{i}")), "A−", pages == 0)
+                        .on_click(move |_, _, _| sb.clear_artifacts(&sid)),
+                );
                 list = list.child(links);
 
                 // And the same for the Linear node at the other end (#58).

@@ -69,6 +69,9 @@ pub struct ClaudeSource {
     transcripts: Mutex<HashMap<String, Option<PathBuf>>>,
     prs: pr::Tracker,
     tickets: ticket::Tracker,
+    /// The pages each session published, read out of the same transcript
+    /// (#137).
+    artifacts: crate::artifact::Tracker,
     /// Every host, asked in order for each session's seat (#118).
     hosts: Vec<Box<dyn crate::host::Host>>,
     /// Sessions running in Anthropic's own containers, which leave nothing on
@@ -84,6 +87,7 @@ impl Default for ClaudeSource {
             transcripts: Mutex::default(),
             prs: pr::Tracker::default(),
             tickets: ticket::Tracker::default(),
+            artifacts: crate::artifact::Tracker::default(),
             hosts: crate::host::all(),
             cloud: crate::cloud::Tracker::default(),
         }
@@ -343,6 +347,7 @@ pub fn read_sessions(hosts: &[Box<dyn crate::host::Host>]) -> Vec<SessionInfo> {
                 prs: Vec::new(),
                 ticket: None,
                 prs_unanswered: Vec::new(),
+                artifacts: Vec::new(),
                 job: if parked { r.job_id } else { None },
                 parked_job: r.parked_job_id,
             }
@@ -513,6 +518,9 @@ impl ClaudeSource {
             // Pool every transcript's Linear links before judging any of them,
             // so the team prefixes are all known by the time we pick (#57).
             self.tickets.scan(&s.session_id, transcript.as_deref(), s.context_since);
+            // The pages this session published. Nothing to pool and nobody to
+            // ask: the transcript is the whole answer (#137).
+            s.artifacts = self.artifacts.resolve(&s.session_id, transcript.as_deref(), s.context_since);
         }
         // Naming what the board shows before reading it back means an eager
         // tracker has already fetched everything by the time we look (#64).
@@ -848,6 +856,32 @@ impl FakeSource {
         if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
             let Some(n) = next_pr_number(s) else { return };
             s.prs_unanswered.push(pr::PrRef { repo: SANDBOX_REPO.into(), number: n });
+        }
+    }
+
+    /// Hangs another made-up page on a sandbox session (#137). A real one
+    /// comes out of a transcript, which the sandbox has none of, and the
+    /// output row and the list it drops are both worth being able to see
+    /// without waiting for a session to publish something.
+    pub fn add_artifact(&self, session_id: &str) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            if s.artifacts.len() >= crate::artifact::MAX_PER_SESSION {
+                return;
+            }
+            let n = s.artifacts.len() as u32 + 1;
+            s.artifacts.push(crate::artifact::Artifact {
+                id: format!("sandbox{}{n:02}", s.pid),
+                title: format!("{} report {n}", s.name),
+                // Published more than once, which is the usual shape of one.
+                version: Some(n + 1),
+            });
+        }
+    }
+
+    /// Takes them all away again, the way `−` takes the pull request away.
+    pub fn clear_artifacts(&self, session_id: &str) {
+        if let Some(s) = self.lock().sessions.iter_mut().find(|s| s.session_id == session_id) {
+            s.artifacts.clear();
         }
     }
 

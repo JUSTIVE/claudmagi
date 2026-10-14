@@ -1,8 +1,10 @@
+mod artifact;
 mod cloud;
 mod font;
 mod geom;
 mod host;
 mod logos;
+mod made;
 mod mac;
 mod model;
 mod pr;
@@ -114,6 +116,23 @@ fn main() {
                 fake.add_pr(id, pr::Look::Merged);
                 fake.add_pr(id, pr::Look::Closed);
             }
+            // Pages the session published, which ride at the end of the pull
+            // request's own line (#137): one cell with a single page, so the
+            // mark stands alone, and one with several, so the count shows.
+            if let Some(id) = ids.get(0) {
+                fake.add_artifact(id);
+            }
+            if let Some(id) = ids.get(2) {
+                fake.add_artifact(id);
+                fake.add_artifact(id);
+            }
+            // And one cell whose only output is a page, where the line leads
+            // with it under its own name instead of standing empty. It sits
+            // past the sessions the looks above claim, so it wants a board
+            // wider than the default count to show up.
+            if let Some(id) = ids.get(pr::Look::ALL.len() + 3) {
+                fake.add_artifact(id);
+            }
             // One lane finished end to end, so the bold trace shows up in a
             // demo render (#61).
             if let Some(id) = ids.get(4) {
@@ -185,11 +204,19 @@ fn main() {
                 },
                 None => "-".into(),
             };
+            // The pages it published share the cell's output line with the
+            // pull requests (#137), so they share this line too.
+            let pages: Vec<String> = s
+                .artifacts
+                .iter()
+                .map(|a| format!("{} {}", a.version_label().unwrap_or_else(|| "·".into()), a.label()))
+                .collect();
             println!(
-                "{:<16} {:<20} {}",
+                "{:<16} {:<20} {:<40} {}",
                 s.label(),
                 ticket,
-                if prs.is_empty() { "-".to_string() } else { prs.join("  ·  ") }
+                if prs.is_empty() { "-".to_string() } else { prs.join("  ·  ") },
+                if pages.is_empty() { "-".to_string() } else { pages.join("  ·  ") }
             );
         }
         return;

@@ -161,6 +161,10 @@ pub enum Style {
     Pr { look: pr::Look, running: bool, signed_off: bool },
     /// The Linear node at the head of a lane; `None` before Orca answers.
     Ticket(Option<ticket::Status>),
+    /// A page the session published (#137). Outlined rather than filled: a
+    /// page has no state to be further along in, and the fills on this board
+    /// all mean progress.
+    Artifact,
 }
 
 /// A node's body: fill, outline, and the label that goes on it. `None` where
@@ -207,6 +211,7 @@ impl Style {
             Style::Ticket(None | Some(ticket::Status::Backlog)) => {
                 body(Some(ink(0.10)), Some(ink(0.45)), ink(0.6))
             }
+            Style::Artifact => body(None, Some(ink(0.35)), ink(0.8)),
         }
     }
 }
@@ -220,6 +225,7 @@ pub enum Kind {
     Session,
     Ticket,
     Pr,
+    Artifact,
 }
 
 impl Kind {
@@ -229,6 +235,7 @@ impl Kind {
             Kind::Session => logos::CLAUDE_PATH,
             Kind::Ticket => logos::LINEAR_PATH,
             Kind::Pr => logos::GITHUB_PATH,
+            Kind::Artifact => logos::ARTIFACT_PATH,
         }
     }
 }
@@ -417,6 +424,33 @@ impl Board {
                     // The bare number matters as much as `#1234`: nobody types
                     // the hash when they are after a PR.
                     fields: vec![label.clone(), pr.id.number.to_string(), pr.title.clone(), pr.id.repo.clone()],
+                    label,
+                });
+            }
+            // And the pages it published, which the cell shows on the same
+            // line as the pull request and are otherwise only reachable by
+            // dropping that line's list (#137). Searching by name is the
+            // whole point here: a page is named after the work, not numbered.
+            for a in &info.artifacts {
+                let key = (Kind::Artifact, a.id.clone());
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                let label = a.label();
+                out.push(Entry {
+                    kind: Kind::Artifact,
+                    style: Style::Artifact,
+                    owner: i,
+                    related: false,
+                    detail: a.version_label().map(|v| format!("artifact · {v}")).unwrap_or("artifact".into()),
+                    action: Action::Open {
+                        label: label.clone(),
+                        first: None,
+                        then: Some(a.url()),
+                        what: crate::made::ARTIFACT,
+                    },
+                    fields: vec![label.clone(), a.id.clone()],
                     label,
                 });
             }

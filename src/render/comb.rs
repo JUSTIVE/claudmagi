@@ -472,7 +472,10 @@ pub fn hit(comb: &Comb, p: Pt) -> Option<usize> {
 pub enum Slot {
     Ticket,
     Session,
-    Pr,
+    /// What the work produced: the pull request, and the pages the session
+    /// published alongside it (#137). One line, because both are things to
+    /// open and a cell has no room for a fourth row.
+    Output,
 }
 
 /// The band the session's row is bedded on: the cell's whole interior at
@@ -526,6 +529,12 @@ pub struct RowBox {
     pub check: f32,
     /// What the row had to play with, mark and label together.
     pub room: f32,
+    /// How wide the pages mark is drawn after the label, or zero where the
+    /// row has none to tell about (#137).
+    pub made: f32,
+    /// How many pages, where there is more than one to count. The mark alone
+    /// says "there is a page"; this says how many.
+    pub tally: String,
 }
 
 pub fn row_box(r: f32, row: usize, label: &str, extras: Extras) -> RowBox {
@@ -535,18 +544,27 @@ pub fn row_box(r: f32, row: usize, label: &str, extras: Extras) -> RowBox {
     let room = row_room(r, dy, font::height(scale).max(mark)) - ROW_PAD * 2.0;
     let check = if extras.check { font::height(scale) * CHECK_H } else { 0.0 };
     let origin = if extras.origin { mark * crate::render::scene::ORIGIN_SIZE } else { 0.0 };
+    // A second mark, after the label rather than before it: the row speaks
+    // for its pull request and the pages come after, the way they do in the
+    // list the row drops (#137).
+    let made = if extras.made > 0 { mark } else { 0.0 };
+    let tally = if extras.made > 1 { extras.made.to_string() } else { String::new() };
     let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
-    let taken = mark + MARK_GAP + span(origin) + span(check);
-    RowBox { dy, scale, mark, origin, label: fit(label, scale, room - taken), check, room }
+    let taken = mark + MARK_GAP + span(origin) + span(check) + span(made) + span(font::measure(&tally, scale));
+    RowBox { dy, scale, mark, origin, label: fit(label, scale, room - taken), check, room, made, tally }
 }
 
 /// What a row carries besides its own mark and label.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Extras {
     /// A second mark saying where the session is running (#122).
     pub origin: bool,
     /// Review has signed off on this row's pull request (#116).
     pub check: bool,
+    /// How many pages this session published, for the row that is already
+    /// speaking for something else (#137). Zero where the row has none to
+    /// tell about, or where the pages *are* what the row is showing.
+    pub made: usize,
 }
 
 /// The approval tick, against the cap height of the row it sits in. A hair
@@ -612,7 +630,7 @@ pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
     let slot = if dy < (ROW_DY[0] + ROW_DY[1]) / 2.0 {
         Slot::Ticket
     } else if dy > (ROW_DY[1] + ROW_DY[2]) / 2.0 {
-        Slot::Pr
+        Slot::Output
     } else {
         Slot::Session
     };
@@ -632,7 +650,7 @@ pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> 
     let row = match slot {
         Slot::Ticket => 0,
         Slot::Session => 1,
-        Slot::Pr => 2,
+        Slot::Output => 2,
     };
     let dy = ROW_DY[row] * comb.r;
     // Every band is the same height: the rows are evenly spaced, so each one
@@ -653,6 +671,8 @@ struct SlotInk {
     /// Where the session is running (#122). Only the middle row sets it:
     /// the issue and the pull request are not anywhere in particular.
     origin: Option<logos::Mark>,
+    /// Pages this session published, told after the row's own label (#137).
+    made: usize,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -837,6 +857,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 color: read(ticket_color(t, pal)),
                 check: false,
                 origin: None,
+                made: 0,
             }),
             Some(SlotInk {
                 mark: logos::Mark::Claude,
@@ -846,15 +867,20 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 // Where this session is running, beside the mark that says
                 // what it is (#122).
                 origin: info.seat.as_ref().and_then(|s| logos::Mark::host(s.host)),
+                made: 0,
             }),
             // The answered one if there is one, otherwise the number GitHub
-            // would not speak for, drawn quietly and blinking.
+            // would not speak for, drawn quietly and blinking. With no pull
+            // request at all the line is the newest page's, under its own
+            // name: a cell with one thing to show shows it rather than
+            // leaving the line empty and the page unreachable (#137).
             pr.map(|p| SlotInk {
                 mark: logos::Mark::GitHub,
                 label: p.label(),
                 color: read(pr_color(p, pal)),
                 check: p.signed_off(),
                 origin: None,
+                made: info.artifacts.len(),
             })
             .or_else(|| {
                 unanswered.map(|id| SlotInk {
@@ -863,20 +889,36 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     color: theme::with_alpha(pal.ink, 0.5),
                     check: false,
                     origin: None,
+                    made: info.artifacts.len(),
+                })
+            })
+            .or_else(|| {
+                info.artifacts.last().map(|a| SlotInk {
+                    mark: logos::Mark::Artifact,
+                    label: a.label(),
+                    color: read(theme::lerp(pal.bg, pal.ink, 0.75)),
+                    check: false,
+                    origin: None,
+                    // The mark at the front is already the pages' own, so a
+                    // second one after the name would be saying it twice.
+                    made: 0,
                 })
             }),
         ];
         for (row, slot) in slots.iter().enumerate() {
             let Some(slot) = slot else { continue };
-            let extras = Extras { origin: slot.origin.is_some(), check: slot.check };
-            let RowBox { dy, scale, mark, origin, label, check, .. } = row_box(r, row, &slot.label, extras);
+            let extras = Extras { origin: slot.origin.is_some(), check: slot.check, made: slot.made };
+            let RowBox { dy, scale, mark, origin, label, check, made, tally, .. } =
+                row_box(r, row, &slot.label, extras);
             // The session's label lies on the bed, so it blinks with it;
             // the other two answer for themselves.
             let slot_beat = if row == 1 { beat } else { row_beat(row) };
             let text_w = font::measure(&label, scale);
             let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
             let (tick, badge) = (span(check), span(origin));
-            let left = center.x - (mark + MARK_GAP + badge + text_w + tick) / 2.0;
+            let tally_w = font::measure(&tally, scale);
+            let pages = span(made) + span(tally_w);
+            let left = center.x - (mark + MARK_GAP + badge + text_w + tick + pages) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
@@ -917,6 +959,30 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     width: (check * 0.2).max(0.7),
                     color: fade(theme::with_alpha(slot.color, slot_beat)),
                 });
+            }
+            // The pages this session published, after everything the row was
+            // already saying (#137). A mark on its own means there is one;
+            // the count follows when there is more than one. Drawn in the
+            // row's own colour, because it belongs to the same line.
+            if made > 0.0 {
+                let at = left + mark + MARK_GAP + badge + text_w + tick + MARK_GAP;
+                out.push(Shape::Mark {
+                    mark: logos::Mark::Artifact,
+                    size: made,
+                    angle: 0.0,
+                    center: Pt::new(at + made / 2.0, center.y + dy),
+                    color: fade(theme::with_alpha(slot.color, slot_beat)),
+                });
+                if tally_w > 0.0 {
+                    out.push(Shape::Text {
+                        text: tally.clone(),
+                        scale,
+                        stroke: 1.0,
+                        angle: 0.0,
+                        center: Pt::new(at + made + MARK_GAP + tally_w / 2.0, center.y + dy),
+                        color: fade(theme::with_alpha(slot.color, slot_beat)),
+                    });
+                }
             }
         }
 
@@ -1289,7 +1355,7 @@ mod tests {
         let at = comb.cells.iter().find(|c| c.chip == Some(0)).unwrap().center;
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, -comb.r * 0.42)), Some((0, Slot::Ticket)));
         assert_eq!(hit_slot(&comb, at), Some((0, Slot::Session)));
-        assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 0.42)), Some((0, Slot::Pr)));
+        assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 0.42)), Some((0, Slot::Output)));
         assert_eq!(hit_slot(&comb, at + Pt::new(0.0, comb.r * 3.0)), None, "outside the cell is nothing");
     }
 
@@ -1300,7 +1366,7 @@ mod tests {
         let model = board(&[("warp-tab:1-1", 1)]);
         let comb = lay_out(&model, 980.0, 620.0);
         let center = comb.cells.iter().find(|c| c.chip == Some(0)).unwrap().center;
-        for slot in [Slot::Ticket, Slot::Session, Slot::Pr] {
+        for slot in [Slot::Ticket, Slot::Session, Slot::Output] {
             let (at, w, h) = slot_box(&comb, 0, slot).expect("every row has a box");
             assert_eq!(hit_slot(&comb, at), Some((0, slot)), "{slot:?}: the box is over another row");
             for sx in [-1.0, 1.0f32] {
@@ -1322,7 +1388,7 @@ mod tests {
                 }
             }
         }
-        assert!(slot_box(&comb, 999, Slot::Pr).is_none(), "a cell nobody sits in has no box");
+        assert!(slot_box(&comb, 999, Slot::Output).is_none(), "a cell nobody sits in has no box");
     }
 
     /// The session's bed runs wall to wall inside the cell and touches
@@ -1412,34 +1478,53 @@ mod tests {
             "a-very-long-session-name-nobody-would-ever-type",
             "서비스-긴-이름의-한글-라벨",
         ];
+        // Every combination of the three things that come out of a label's
+        // room: review's tick (#116), the origin badge (#122), and the pages
+        // mark with its count (#137) — the mark alone and the mark with a
+        // number beside it are different widths.
+        let cases: Vec<Extras> = [false, true]
+            .into_iter()
+            .flat_map(|check| [false, true].into_iter().map(move |origin| (check, origin)))
+            .flat_map(|(check, origin)| {
+                [0usize, 1, 4].into_iter().map(move |made| Extras { origin, check, made })
+            })
+            .collect();
         for r in [R_MIN, 70.0, R_MAX] {
             let center = Pt::new(500.0, 500.0);
             for row in 0..3 {
                 for label in labels {
-                    for check in [false, true] {
-                        for origin in [false, true] {
-                            let extras = Extras { origin, check };
-                            let b = row_box(r, row, label, extras);
-                            if b.label.is_empty() {
-                                continue;
-                            }
-                            let text_w = font::measure(&b.label, b.scale);
-                            let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
-                            let w = b.mark + MARK_GAP + span(b.origin) + text_w + span(b.check);
-                            let h = font::height(b.scale).max(b.mark).max(b.check).max(b.origin);
-                            for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-                                let corner =
-                                    Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
-                                assert!(
-                                    inside_hex(corner, center, r, GAP),
-                                    "r={r} row={row} check={check} origin={origin} {label:?}: \
-                                     {:?} reaches outside its cell",
-                                    b.label
-                                );
-                            }
-                            assert_eq!(b.check > 0.0, check, "the tick is there when it was asked for");
-                            assert_eq!(b.origin > 0.0, origin, "and so is the origin mark");
+                    for extras in cases.iter().copied() {
+                        let b = row_box(r, row, label, extras);
+                        if b.label.is_empty() {
+                            continue;
                         }
+                        let text_w = font::measure(&b.label, b.scale);
+                        let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+                        let tally_w = font::measure(&b.tally, b.scale);
+                        let w = b.mark
+                            + MARK_GAP
+                            + span(b.origin)
+                            + text_w
+                            + span(b.check)
+                            + span(b.made)
+                            + span(tally_w);
+                        let h = font::height(b.scale).max(b.mark).max(b.check).max(b.origin);
+                        for (sx, sy) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                            let corner = Pt::new(center.x + sx * w / 2.0, center.y + b.dy + sy * h / 2.0);
+                            assert!(
+                                inside_hex(corner, center, r, GAP),
+                                "r={r} row={row} {extras:?} {label:?}: {:?} reaches outside its cell",
+                                b.label
+                            );
+                        }
+                        assert_eq!(b.check > 0.0, extras.check, "the tick is there when it was asked for");
+                        assert_eq!(b.origin > 0.0, extras.origin, "and so is the origin mark");
+                        assert_eq!(b.made > 0.0, extras.made > 0, "and the pages mark when there are pages");
+                        assert_eq!(
+                            b.tally.is_empty(),
+                            extras.made < 2,
+                            "one page is the mark alone; the count is for the rest"
+                        );
                     }
                 }
             }

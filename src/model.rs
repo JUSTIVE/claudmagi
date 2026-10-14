@@ -118,6 +118,11 @@ pub struct SessionInfo {
     /// Knowing the number without knowing the state is worth saying: it is
     /// GitHub that is the problem, not the absence of a PR (#112).
     pub prs_unanswered: Vec<crate::pr::PrRef>,
+    /// The claude.ai pages this session published, oldest first, read out of
+    /// its transcript the way the pull requests are (#137). A report is a
+    /// thing the work produced, like a PR, so it shares the cell's bottom
+    /// row with one.
+    pub artifacts: Vec<crate::artifact::Artifact>,
     /// When the work in this session last turned over: the moment it was
     /// renamed, which is how a tab announces that it is on something new.
     /// Zero when it still carries the name it started with, so a session that
@@ -154,6 +159,7 @@ impl SessionInfo {
             prs: Vec::new(),
             ticket: None,
             prs_unanswered: Vec::new(),
+            artifacts: Vec::new(),
             context_since: 0,
             job: None,
             parked_job: None,
