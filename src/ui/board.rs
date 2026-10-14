@@ -625,7 +625,11 @@ impl Render for Board {
             } else if self.comb_since.is_none() {
                 self.comb_since = Some(now);
             }
-            self.comb = Some(comb::lay_out(&self.model, self.layout.width, self.layout.height));
+            // The visible height, not the window's: the status bar is drawn
+            // over the board's bottom edge, and the middle of the screen is
+            // the middle of what is left (#138).
+            let seen = visible_height(&self.layout);
+            self.comb = Some(comb::lay_out(&self.model, self.layout.width, seen));
         } else {
             self.comb = None;
             self.comb_since = None;

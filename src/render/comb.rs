@@ -182,14 +182,16 @@ fn rings(n: usize) -> i32 {
 
 /// A whole flower's worth of seats, somewhere it fits.
 ///
-/// Scanned in reading order from the top left, so the first answer is also
-/// the tightest packing. `taken` is everything already seated; a candidate is
-/// refused when any of its seats lands on one of those or beside one, which
-/// is what keeps a rim of empty cells between clusters (#121).
+/// Scanned outwards from the middle of the board, so the first answer is the
+/// free spot nearest the middle (#138). `taken` is everything already seated;
+/// a candidate is refused when any of its seats lands on one of those or
+/// beside one, which is what keeps a rim of empty cells between clusters
+/// (#121).
 fn seat_somewhere(
     members: &[usize],
     taken: &std::collections::HashSet<(i32, i32)>,
     width: f32,
+    height: f32,
     r: f32,
 ) -> Option<Vec<((i32, i32), usize)>> {
     let half = half_w(r);
@@ -198,29 +200,76 @@ fn seat_somewhere(
     // carried across the scan. Rebuilding it at every candidate was the whole
     // cost of this: a dozen clusters of seven took 5ms a frame.
     let shape = seat_cluster(0, 0, members);
+    // Where the flower's weight actually falls, which is not the cell it is
+    // anchored on: a cluster grows downwards out of its first seat (#109), so
+    // measuring from the anchor would hang it above the middle by half its
+    // own height. `axial` is linear in the coordinates, so the middle of the
+    // seats is exactly the middle of their centres.
+    let mid = shape.iter().fold(Pt::new(0.0, 0.0), |acc, ((dq, drow), _)| acc + axial(*dq, *drow, r))
+        * (1.0 / shape.len().max(1) as f32);
+    let board = Pt::new(width / 2.0, height / 2.0);
+    // What is already seated, as a weight. A cluster is put where it brings
+    // the middle of everything on the board nearest the middle of the screen,
+    // not merely where it is nearest the middle itself: the second cluster
+    // has to stand aside for the first, and scoring each one alone would then
+    // let every later one drift off the same way, building the arrangement
+    // out of one corner of the middle (#138).
+    let (seated, count) = taken.iter().fold((Pt::new(0.0, 0.0), 0.0f32), |(sum, n), (q, row)| {
+        (sum + axial(*q, *row, r), n + 1.0)
+    });
+    let weight = shape.len() as f32;
+    // How far below its anchor the flower's lowest edge reaches, for telling
+    // a spot on the screen from one under the fold.
+    let low = shape
+        .iter()
+        .map(|((dq, drow), _)| axial(*dq, *drow, r).y + half_h(r))
+        .fold(f32::MIN, f32::max);
     // Far enough to hold any flower the board can throw at it, plus the rows
     // a tall board can show; the scan stops at the first fit long before.
     let rows = (members.len() as i32 + 2) * 4 + 64;
     let cols = (width / (1.5 * r)).ceil() as i32 + 2;
 
-    // Candidates in reading order, and with a flat top that has to be worked
-    // out rather than read off the indices: a column carries half a row of
-    // its own, so a constant `row` runs diagonally down the board. Sorting
-    // the anchors by where they actually land is what keeps "the first that
-    // fits" meaning the top-left one (#132).
-    let mut anchors: Vec<(i32, i32)> = Vec::with_capacity((rows * cols) as usize);
+    // Candidates nearest the middle first, and with a flat top that has to be
+    // worked out rather than read off the indices: a column carries half a
+    // row of its own, so a constant `row` runs diagonally down the board.
+    // Sorting the anchors by where the flower would actually land is what
+    // keeps "the first that fits" meaning the nearest one (#132, #138).
+    let mut anchors: Vec<(f32, f32, f32, f32, (i32, i32))> =
+        Vec::with_capacity((rows * cols) as usize);
     for q in 0..=cols {
         let shift = q as f32 / 2.0;
         for row in (-shift.ceil() as i32)..=(rows - shift.floor() as i32) {
-            anchors.push((q, row));
+            let anchor = axial(q, row, r);
+            let at = anchor + mid;
+            // Anything on the screen beats anything under the fold, however
+            // well the balance would come out: the grid has a top edge and
+            // nothing may hang over it (#111), but it has no bottom edge at
+            // all — the board simply scrolls — so without this a cluster
+            // would settle off the end of a screen whose own rows were still
+            // empty.
+            let under = if anchor.y + low > height { 1.0 } else { 0.0 };
+            // How near the middle the whole arrangement would come out, and
+            // how near this flower itself would sit.
+            let whole = (seated + at * weight) * (1.0 / (count + weight));
+            let (bx, by) = (whole.x - board.x, whole.y - board.y);
+            let (dx, dy) = (at.x - board.x, at.y - board.y);
+            let (balance, tight) = (bx * bx + by * by, dx * dx + dy * dy);
+            // Two clusters cannot both have the middle, so the balance alone
+            // leaves pairs of equally good answers: the tighter packing wins
+            // them, and then the higher and the lefter, so a board that
+            // cannot be balanced at least lands the same way every time.
+            anchors.push((under, balance, tight, at.y, (q, row)));
         }
     }
     anchors.sort_by(|a, b| {
-        let (pa, pb) = (axial(a.0, a.1, r), axial(b.0, b.1, r));
-        pa.y.total_cmp(&pb.y).then(pa.x.total_cmp(&pb.x))
+        a.0.total_cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(a.2.total_cmp(&b.2))
+            .then(a.3.total_cmp(&b.3))
+            .then(a.4.cmp(&b.4))
     });
 
-    for (q, row) in anchors {
+    for (_, _, _, _, (q, row)) in anchors {
         let fits = shape.iter().all(|((dq, drow), _)| {
             let cell = (dq + q, drow + row);
             let at = axial(cell.0, cell.1, r);
@@ -326,9 +375,13 @@ fn has_free_neighbour(at: (i32, i32), taken: &[(i32, i32)]) -> bool {
 
 /// Lays the sessions out as clusters on a grid that fills `width`.
 ///
+/// `height` is what the board can actually show, which is where the middle
+/// of the screen is reckoned from (#138) as well as how far the empty grid
+/// is drawn.
+///
 /// Sessions are grouped the way the board groups them (#41): panes of one
-/// tab land in one flower. Flowers are placed left to right and then down,
-/// each leaving a ring of empty cells around it.
+/// tab land in one flower. Flowers are placed outwards from the middle of
+/// the screen, each leaving a ring of empty cells around it.
 pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
     // `COLS` columns across the width. A flat-top column is three quarters
     // of a cell wide, with the last one's far point sticking out past that.
@@ -357,14 +410,20 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
     // the corrections are not, and two groups ended up sharing a wall, which
     // reads as one larger cluster rather than two (#121).
     //
-    // So each flower takes the first cell, in reading order, where the whole
-    // of it fits on the board and nothing of it touches a flower already
-    // placed. Taking the first one packs them left to right and then down on
-    // its own, which is the arrangement the pixel walk was after.
+    // So each flower takes the cell nearest the middle of the screen where
+    // the whole of it fits on the board and nothing of it touches a flower
+    // already placed (#138). The first one lands dead centre, where the eye
+    // already is, and the rest gather round it rather than everything
+    // huddling in the top left corner of a board that is mostly empty.
+    //
+    // Nearest-free rather than laying all of them out and then centring the
+    // result: a seat only has to be found once, so a cluster keeps its cell
+    // while its neighbours come and go. Centring the whole arrangement would
+    // move every cell on the board each time one session ended.
     let mut seats: Vec<((i32, i32), usize)> = Vec::new();
     let mut taken: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
     for (_, members) in &groups {
-        let Some(placed) = seat_somewhere(members, &taken, width, r) else { continue };
+        let Some(placed) = seat_somewhere(members, &taken, width, height, r) else { continue };
         taken.extend(placed.iter().map(|(at, _)| *at));
         seats.extend(placed);
     }
@@ -1139,6 +1198,78 @@ mod tests {
         let (pa, pb) = (seat(0), seat(4));
         let d = ((pa.x - pb.x).powi(2) + (pa.y - pb.y).powi(2)).sqrt();
         assert!(d > near, "two tabs should not run into each other ({d})");
+    }
+
+    /// What a board with a few sessions on it looks like: they gather in the
+    /// middle of the screen, where the eye already is, rather than in the top
+    /// left corner of a grid that is mostly empty (#138).
+    #[test]
+    fn the_clusters_gather_in_the_middle_of_the_screen() {
+        let shapes: [&[(&str, usize)]; 5] = [
+            &[("a", 1)],
+            &[("a", 3)],
+            &[("a", 2), ("b", 2)],
+            &[("a", 1), ("b", 1), ("c", 1)],
+            &[("a", 2), ("b", 3), ("c", 2), ("d", 1), ("e", 1)],
+        ];
+        for (w, h) in [(980.0f32, 620.0f32), (520.0, 900.0), (1600.0, 480.0)] {
+            for shape in shapes {
+                let model = board(shape);
+                let comb = lay_out(&model, w, h);
+                let seats: Vec<Pt> =
+                    comb.cells.iter().filter(|c| c.chip.is_some()).map(|c| c.center).collect();
+                let n = seats.len() as f32;
+                let mid = seats.iter().fold(Pt::new(0.0, 0.0), |a, b| a + *b) * (1.0 / n);
+                let limit = match shape.len() {
+                    // One cluster has the middle, and misses it only by the
+                    // lattice: the farthest any point can be from the nearest
+                    // cell of a grid is a cell's own radius.
+                    1 => comb.r,
+                    // Two cannot share it, and the rim holds them a clear two
+                    // cells apart (#121), so the pair straddles it instead.
+                    2 => comb.r * 2.0,
+                    // Three or more can stand round it, and each is seated
+                    // where it brings the whole arrangement's middle nearest
+                    // the screen's, so being a cell out is not an excuse the
+                    // board has any more.
+                    _ => comb.r * 0.9,
+                };
+                let (dx, dy) = (mid.x - w / 2.0, mid.y - h / 2.0);
+                assert!(dx.abs() <= limit, "{w}x{h} {shape:?}: {dx} off the middle across");
+                assert!(dy.abs() <= limit, "{w}x{h} {shape:?}: {dy} off the middle down");
+            }
+        }
+    }
+
+    /// A cluster too tall for the board drops rather than hanging off the
+    /// top: the grid has a first row and nothing is drawn above it (#111).
+    #[test]
+    fn a_cluster_too_tall_to_centre_sits_under_the_top_instead() {
+        let model = board(&[("a", 12)]);
+        let comb = lay_out(&model, 980.0, 320.0);
+        let top = comb
+            .cells
+            .iter()
+            .filter(|c| c.chip.is_some())
+            .map(|c| c.center.y - half_h(comb.r))
+            .fold(f32::MAX, f32::min);
+        assert!(top >= -0.5, "a cell starts at {top}, above the grid");
+        assert!(top <= comb.r * SQRT3, "and no lower than it has to: {top}");
+    }
+
+    /// The grid has a top edge and nothing may hang over it (#111), but it
+    /// has no bottom edge at all — the board scrolls — so a cluster that the
+    /// balance pulls downwards would settle under the fold with the screen
+    /// still half empty. Being seen comes first (#138).
+    #[test]
+    fn a_cluster_takes_a_spot_on_the_screen_over_a_better_one_under_the_fold() {
+        let (w, h) = (1280.0f32, 360.0f32);
+        let model = board(&[("a", 2), ("b", 1), ("c", 1)]);
+        let comb = lay_out(&model, w, h);
+        for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
+            let low = cell.center.y + half_h(comb.r);
+            assert!(low <= h + 0.5, "a cell reaches {low} of a {h} screen that had room on it");
+        }
     }
 
     #[test]
