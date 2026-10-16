@@ -312,7 +312,52 @@ pub enum Shape {
     Mark { mark: logos::Mark, size: f32, angle: f32, center: Pt, color: Rgba },
     /// A filled polygon. The comb's subagents are solid hexes (#96), and a
     /// stroke cannot say that.
-    Poly { points: Vec<Pt>, color: Rgba },
+    ///
+    /// `screen` is how the fill is laid down: solid, or broken into a
+    /// pattern of the same colour where the board prints rather than paints
+    /// (#146, #149).
+    Poly { points: Vec<Pt>, color: Rgba, screen: Screen },
+}
+
+/// How a fill is laid down (#149).
+///
+/// A board with one ink says a state with *texture*: at the size these are
+/// drawn the eye reads the grain of a hatch — which way it runs and how fine
+/// it is — long before it reads how dark the patch is. Both of these are a
+/// fragment shader's work and cost one fill apiece, whatever area they
+/// cover: the renderer has them already (gpui's `pattern_slash` and
+/// `checkerboard`), so the screen is drawn at the pixel rather than at
+/// whatever lattice the shapes were built on.
+///
+/// The sizes are in board pixels and do not follow the zoom: a screen
+/// belongs to the sheet, not to what is drawn on it, so it stays the same
+/// grain however far the board is zoomed out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Screen {
+    Solid,
+    /// Stripes at 45 degrees: `width` of ink, then `gap` of nothing.
+    Slash { width: f32, gap: f32 },
+    /// Squares of `size`, half of them inked.
+    Check { size: f32 },
+}
+
+impl Screen {
+    /// How much of the area it actually covers, which is what anything laid
+    /// on top of it has to read against.
+    pub fn weight(self) -> f32 {
+        match self {
+            Screen::Solid => 1.0,
+            Screen::Slash { width, gap } => width / (width + gap).max(0.001),
+            Screen::Check { .. } => 0.5,
+        }
+    }
+}
+
+impl Shape {
+    /// A polygon filled the ordinary way.
+    pub fn poly(points: Vec<Pt>, color: Rgba) -> Shape {
+        Shape::Poly { points, color, screen: Screen::Solid }
+    }
 }
 
 impl Shape {

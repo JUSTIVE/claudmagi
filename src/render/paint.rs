@@ -11,8 +11,8 @@ use lyon::path::{LineCap, LineJoin};
 use crate::font;
 use crate::logos;
 use crate::geom::Pt;
-use crate::render::scene::Shape;
-use crate::theme;
+use crate::render::scene::{Screen, Shape};
+use crate::theme::{self, Rgba};
 
 /// Vertex budget for the cache (≈ 10 MB at 32 bytes a vertex). While the
 /// window is resized or scrolled every frame mints new geometry, so entries
@@ -209,18 +209,19 @@ impl PathCache {
     pub fn paint(&mut self, shapes: &[Shape], window: &mut Window) {
         self.frame += 1;
         let frame = self.frame;
+        let grain = window.scale_factor();
         for shape in shapes {
-            let color = match shape {
+            let (color, screen) = match shape {
                 Shape::Rect { x, y, w, h, color } => {
                     let bounds = Bounds { origin: point(px(*x), px(*y)), size: size(px(*w), px(*h)) };
                     window.paint_quad(fill(bounds, theme::hsla(*color)));
                     continue;
                 }
+                Shape::Poly { color, screen, .. } => (*color, *screen),
                 Shape::Stroke { color, .. }
                 | Shape::RoundedRect { color, .. }
                 | Shape::Text { color, .. }
-                | Shape::Mark { color, .. }
-                | Shape::Poly { color, .. } => *color,
+                | Shape::Mark { color, .. } => (*color, Screen::Solid),
             };
             let path = match key_of(shape) {
                 Some(key) => {
@@ -242,10 +243,25 @@ impl PathCache {
                 None => build(shape),
             };
             if let Some(path) = path {
-                window.paint_path(path, theme::hsla(color));
+                window.paint_path(path, ink(color, screen, grain));
             }
         }
         self.trim();
+    }
+}
+
+/// How a fill is handed to the renderer: a colour, or the same colour laid
+/// down as a pattern by the fragment shader (#149).
+///
+/// The pattern's sizes are in board pixels and the shader measures in the
+/// screen's own, so they are taken up by the scale here — a screen is a
+/// grain of the paper and has to come out the same on either kind of
+/// display.
+fn ink(color: Rgba, screen: Screen, grain: f32) -> gpui::Background {
+    match screen {
+        Screen::Solid => theme::hsla(color).into(),
+        Screen::Slash { width, gap } => gpui::pattern_slash(theme::hsla(color), width * grain, gap * grain),
+        Screen::Check { size } => gpui::checkerboard(theme::hsla(color), size * grain),
     }
 }
 

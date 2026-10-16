@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use crate::font;
 use crate::geom::Pt;
 use crate::logos;
-use crate::render::scene::Shape;
+use crate::render::scene::{Screen, Shape};
 use crate::theme::Rgba;
 
 fn svg_color(c: Rgba) -> String {
@@ -24,6 +24,44 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">"#
     );
+    // Every pattern the shapes ask for, defined once and referred to by
+    // name. The app has these in a fragment shader (#149); here they are
+    // tiles, laid on the page rather than on each shape, which is the one
+    // thing the two cannot agree on.
+    let mut screens: Vec<(Screen, Rgba)> = Vec::new();
+    for shape in shapes {
+        if let Shape::Poly { color, screen, .. } = shape {
+            if *screen != Screen::Solid && !screens.iter().any(|(sc, c)| sc == screen && *c == *color) {
+                screens.push((*screen, *color));
+            }
+        }
+    }
+    if !screens.is_empty() {
+        let _ = writeln!(s, "<defs>");
+        for (k, (screen, color)) in screens.iter().enumerate() {
+            let c = svg_color(*color);
+            match screen {
+                Screen::Solid => {}
+                Screen::Slash { width, gap } => {
+                    // The shader measures across the stripes, so the tile is
+                    // the period taken at right angles to them.
+                    let (w, period) = (width * 0.7071, (width + gap) * 0.7071);
+                    let _ = writeln!(
+                        s,
+                        r#"<pattern id="screen{k}" patternUnits="userSpaceOnUse" width="{period:.3}" height="{period:.3}" patternTransform="rotate(45)"><rect x="0" y="0" width="{w:.3}" height="{period:.3}" fill="{c}"/></pattern>"#
+                    );
+                }
+                Screen::Check { size } => {
+                    let two = size * 2.0;
+                    let _ = writeln!(
+                        s,
+                        r#"<pattern id="screen{k}" patternUnits="userSpaceOnUse" width="{two:.3}" height="{two:.3}"><rect x="0" y="0" width="{size:.3}" height="{size:.3}" fill="{c}"/><rect x="{size:.3}" y="{size:.3}" width="{size:.3}" height="{size:.3}" fill="{c}"/></pattern>"#
+                    );
+                }
+            }
+        }
+        let _ = writeln!(s, "</defs>");
+    }
     for shape in shapes {
         match shape {
             Shape::Rect { x, y, w, h, color } => {
@@ -57,9 +95,13 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                     center.y
                 );
             }
-            Shape::Poly { points, color } => {
+            Shape::Poly { points, color, screen } => {
                 let pts: Vec<String> = points.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect();
-                let _ = writeln!(s, r#"<polygon points="{}" fill="{}"/>"#, pts.join(" "), svg_color(*color));
+                let paint = match screens.iter().position(|(sc, c)| sc == screen && *c == *color) {
+                    Some(k) => format!("url(#screen{k})"),
+                    None => svg_color(*color),
+                };
+                let _ = writeln!(s, r#"<polygon points="{}" fill="{paint}"/>"#, pts.join(" "));
             }
             Shape::Mark { mark, size, angle, center, color } => {
                 let d = path_data(&logos::outline(*mark, *size), *center);

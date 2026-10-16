@@ -19,7 +19,7 @@ use crate::font;
 use crate::geom::Pt;
 use crate::logos;
 use crate::model::{BoardModel, Phase, SessionInfo};
-use crate::render::scene::{self, Shape};
+use crate::render::scene::{self, Screen, Shape};
 use crate::theme::{self, Palette, Rgba};
 
 /// Every hex is a hairline.
@@ -755,6 +755,29 @@ pub fn floor_color(c: Rgba, pal: Palette) -> Rgba {
     legible(theme::over(c, pal.bg), pal.bg, pal)
 }
 
+/// Whether anything in this cell is waiting on a person (#90, #100).
+fn wants_a_person(info: &SessionInfo) -> bool {
+    info.phase() == Phase::NeedsUser || info.prs.last().is_some_and(pr_needs_action)
+}
+
+/// The same statement as `body`'s colour, for a board that prints rather
+/// than paints (#146, #149): the screen the whole cell is laid down with.
+///
+/// Written here beside the colour because they are one statement in two
+/// alphabets, and a board that had them in two places would sooner or later
+/// say different things in each. Solid for work going on, warning stripes
+/// for anything waiting on a person, and a fine half-tone for a session
+/// sitting idle.
+pub fn body_screen(info: &SessionInfo) -> Screen {
+    if wants_a_person(info) {
+        return Screen::Slash { width: 4.0, gap: 4.0 };
+    }
+    match info.phase() {
+        Phase::Working => Screen::Solid,
+        Phase::Idle | Phase::NeedsUser => Screen::Check { size: 2.0 },
+    }
+}
+
 /// What the whole cell speaks in, and the beat the session's own row keeps.
 ///
 /// Colour and blink answer different questions (#100). The colour speaks for
@@ -763,7 +786,7 @@ pub fn floor_color(c: Rgba, pal: Palette) -> Rgba {
 /// check or an unstarted issue blinks on its own row, where the thing that
 /// needs doing actually is. (#90)
 pub fn body(info: &SessionInfo, pal: Palette, t: f32) -> (Rgba, f32) {
-    let needs = info.phase() == Phase::NeedsUser || info.prs.last().is_some_and(pr_needs_action);
+    let needs = wants_a_person(info);
     let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
     // Opaque, because the session's row is drawn on this same colour and a
     // label has to read on top of it (#89).
@@ -805,7 +828,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             origin: None,
             made: 0,
             fill: None,
-            screen: 0.0,
+            screen: Screen::Solid,
         }),
         Some(SlotInk {
             mark: logos::Mark::Claude,
@@ -819,7 +842,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             // The session's bed is the cell's own colour and is drawn for the
             // whole cell, not for this row alone (#89).
             fill: None,
-            screen: 0.0,
+            screen: Screen::Solid,
         }),
         // The answered one if there is one, otherwise the number GitHub would
         // not speak for, drawn quietly and blinking. With no pull request at
@@ -853,7 +876,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // claiming one. It stays the quiet, blinking line it was
                     // (#112).
                     fill: None,
-                    screen: 0.0,
+                    screen: Screen::Solid,
                 })
             })
             .or_else(|| {
@@ -869,7 +892,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // What was asked for is the pull request's state as a
                     // floor (#139); a page has no state to paint.
                     fill: None,
-                    screen: 0.0,
+                    screen: Screen::Solid,
                 })
             }),
     ]
@@ -897,7 +920,6 @@ pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape
     let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
     let (tick, badge) = (span(check), span(origin));
     let tally_w = font::measure(tally, scale);
-    let pages = span(made) + span(tally_w);
     let left = at.x - row_width(rb) / 2.0;
     let mut out = vec![Shape::Mark {
         mark: slot.mark,
@@ -1022,15 +1044,9 @@ pub struct SlotInk {
     /// Opaque, because the label is drawn in the board's colour on top of
     /// it.
     pub fill: Option<Rgba>,
-    /// The same statement for a board that prints rather than paints
-    /// (#146): how much of its one ink the floor is worth, nought to one.
-    ///
-    /// Said here and not worked out from `fill`, because it cannot be:
-    /// those colours differ by hue, and `floor_color` has already pinned
-    /// every one of them to the same contrast against the board, so their
-    /// darkness is identical. Colour and screen are two alphabets for one
-    /// statement and they are written side by side.
-    pub screen: f32,
+    /// The same statement for a board that prints rather than paints (#146,
+    /// #149): the weave the floor is laid down with.
+    pub screen: Screen,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -1118,7 +1134,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 // dark one — and a finished one is the same colour given
                 // back to the board (#110).
                 let color = if *going { pal.chip } else { theme::lerp(pal.bg, pal.chip, 0.45) };
-                out.push(Shape::Poly { points: corners(at, mr, SUB_GAP), color: fade(color) });
+                out.push(Shape::poly(corners(at, mr, SUB_GAP), fade(color)));
                 let (text, scale) = sub_box(mr, label);
                 if !text.is_empty() {
                     out.push(Shape::Text {
@@ -1178,11 +1194,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
-                out.push(Shape::Poly { points: session_bed(center, r), color: fade(edge) });
+                out.push(Shape::poly(session_bed(center, r), fade(edge)));
             }
             // The pull request's state as the cell's floor (#139).
             if let Some(fill) = slot.fill {
-                out.push(Shape::Poly { points: output_bed(center, r), color: fade(fill) });
+                out.push(Shape::poly(output_bed(center, r), fade(fill)));
             }
             let at = Pt::new(center.x, center.y + rb.dy);
             out.extend(row_shapes(at, &rb, slot, fade(theme::with_alpha(slot.color, slot_beat))));
@@ -1281,23 +1297,29 @@ pub fn blinks(info: &SessionInfo) -> bool {
         || !info.prs_unanswered.is_empty()
 }
 
-/// What a pull request's floor is worth in ink, where the board has only the
-/// one (#146).
+/// How a pull request's floor is screened, where the board has one ink and
+/// cannot say it in colour (#146, #149).
 ///
-/// Spread by weight rather than taken from the colour: red checks are the
-/// heaviest thing a cell can be carrying and a closed request the lightest,
-/// and the six of them have to be told apart by area alone.
-fn pr_screen(p: &crate::pr::Pr) -> f32 {
+/// Told apart by grain rather than by darkness: the six floor colours differ
+/// by hue and `floor_color` has already pinned every one of them to the same
+/// contrast against the board, so as tones they are identical. Each is a
+/// different weave instead, and none of them is the cell's own (`body_screen`
+/// above) — the floor has to be a floor and not the rest of the body.
+fn pr_screen(p: &crate::pr::Pr) -> Screen {
     use crate::pr::Look;
     if p.running() {
-        return 0.45;
+        // In flight: a thin hatch with air in it.
+        return Screen::Slash { width: 1.0, gap: 3.0 };
     }
     match p.look() {
-        Look::Failing => 1.0,
-        Look::Merged => 0.8,
-        Look::Open => 0.6,
-        Look::Draft => 0.3,
-        Look::Closed => 0.15,
+        // Packed tight, and the cell is already striped for it (#90).
+        Look::Failing => Screen::Slash { width: 2.0, gap: 1.0 },
+        // Landed: the blocks of a tiled floor.
+        Look::Merged => Screen::Check { size: 4.0 },
+        Look::Open => Screen::Slash { width: 2.0, gap: 4.0 },
+        // Barely there, and barely there at all.
+        Look::Draft => Screen::Slash { width: 1.0, gap: 1.0 },
+        Look::Closed => Screen::Slash { width: 1.0, gap: 6.0 },
     }
 }
 
@@ -1832,7 +1854,7 @@ mod tests {
         // hexagon, and the session's band and a subagent have six sides.
         let floor = |shapes: &[Shape]| -> Option<Rgba> {
             shapes.iter().find_map(|s| match s {
-                Shape::Poly { points, color } if points.len() == 4 => Some(*color),
+                Shape::Poly { points, color, .. } if points.len() == 4 => Some(*color),
                 _ => None,
             })
         };
