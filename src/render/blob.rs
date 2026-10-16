@@ -118,12 +118,20 @@ pub struct Ball {
     /// circle, which is what the little ones are and what the shape is
     /// measured as.
     pub give: [(f32, f32); 2],
+    /// One over the reach squared, which is how every sample asks its
+    /// distance: the field is walked a few hundred thousand times a frame
+    /// and a division there is the dearest thing in the view.
+    inv2: f32,
 }
 
 impl Ball {
     /// A ball with no give in it.
     pub fn round(at: Pt, reach: f32) -> Ball {
-        Ball { at, reach, give: [(0.0, 0.0); 2] }
+        Ball::with_give(at, reach, [(0.0, 0.0); 2])
+    }
+
+    pub fn with_give(at: Pt, reach: f32, give: [(f32, f32); 2]) -> Ball {
+        Ball { at, reach, give, inv2: 1.0 / (reach * reach).max(f32::EPSILON) }
     }
 
     /// A ball that gives, each one in its own pose and on its own beat
@@ -136,7 +144,7 @@ impl Ball {
             let a = t / KNEAD[k] * turn + ((seed >> (24 * k as u32)) & 0xffff) as f32 / 65536.0 * turn;
             (size * a.cos(), size * a.sin())
         };
-        Ball { at, reach, give: [pose(0, SQUISH), pose(1, SQUISH / 2.0)] }
+        Ball::with_give(at, reach, [pose(0, SQUISH), pose(1, SQUISH / 2.0)])
     }
 
     /// How far out the ball can possibly reach, which is what the lattice
@@ -160,15 +168,30 @@ impl Ball {
     pub fn pull(&self, p: Pt) -> f32 {
         let (dx, dy) = (p.x - self.at.x, p.y - self.at.y);
         let d2 = dx * dx + dy * dy;
+        // Past anything the give could stretch to, which is most of the
+        // window a ball is walked over and all of a neighbour's: answered
+        // before the direction is worked out at all.
+        // How far out it is against its own reach. Past anything the give
+        // could stretch to, which is most of the window a ball is walked
+        // over and all of a neighbour's, the answer comes before the
+        // direction is worked out at all.
+        let u = d2 * self.inv2;
+        const OUT: f32 = (1.0 + SQUISH * 1.5) * (1.0 + SQUISH * 1.5);
+        if u >= OUT {
+            return 0.0;
+        }
         if d2 <= f32::EPSILON {
             return 1.0;
         }
         let [(c2, s2), (c4, s4)] = self.give;
-        let (cos2, sin2) = ((dx * dx - dy * dy) / d2, 2.0 * dx * dy / d2);
+        let turn = 1.0 / d2;
+        let (cos2, sin2) = ((dx * dx - dy * dy) * turn, 2.0 * dx * dy * turn);
         let (cos4, sin4) = (cos2 * cos2 - sin2 * sin2, 2.0 * sin2 * cos2);
-        let w = 1.0 + c2 * cos2 + s2 * sin2 + c4 * cos4 + s4 * sin4;
-        let reach = self.reach * w;
-        let t = (1.0 - d2 / (reach * reach)).max(0.0);
+        // The give, as what it does to the distance: one over `(1 + e)` 
+        // squared, taken to the square term. `e` is a few hundredths, so
+        // the next term is a ten-thousandth of nothing.
+        let e = c2 * cos2 + s2 * sin2 + c4 * cos4 + s4 * sin4;
+        let t = (1.0 - u * (1.0 - 2.0 * e + 3.0 * e * e)).max(0.0);
         t * t * t
     }
 }
@@ -179,6 +202,84 @@ fn seed_of(key: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     key.hash(&mut h);
     h.finish()
+}
+
+/// How much of its one ink a board that prints puts down for a colour
+/// (#146), and how far apart it puts it, in samples of the lattice.
+///
+/// The orange board is a sheet of orange with a near-black ink and nothing
+/// else — every other colour it names is that pair mixed. A tone is a
+/// screen: squares on the lattice whose *area* is the ink the colour asks
+/// for, so a working session comes out solid, an idle one half covered, and
+/// a pull request's floor its own shade of the same ink. A colour lighter
+/// than the sheet asks for no ink at all and comes out as the paper, which
+/// is the honest answer a press would give.
+///
+/// Two samples apart puts about ten squares across a body at any size the
+/// board is drawn, since both are fractions of the cell.
+const SCREEN: usize = 2;
+
+/// How much ink a colour takes on this board: nought is the bare sheet, one
+/// is solid.
+fn screen_level(c: Rgba, pal: Palette) -> f32 {
+    let (paper, ink) = (theme::luma(pal.bg), theme::luma(pal.ink));
+    ((theme::luma(theme::over(c, pal.bg)) - paper) / (ink - paper)).clamp(0.0, 1.0)
+}
+
+/// What that much ink reads as from a step back, which is what anything
+/// drawn on top of it has to hold its own against.
+fn screen_as(c: Rgba, pal: Palette) -> Rgba {
+    theme::lerp(pal.bg, pal.ink, screen_level(c, pal))
+}
+
+/// Lays the screen over the ground a patch holds, in place of filling it
+/// (#146). `level` is asked per square, since the pull request's floor is
+/// the same ground with a different tone below a line (#139).
+#[allow(clippy::too_many_arguments)]
+fn screen(
+    out: &mut Vec<Shape>,
+    ground: &[f32],
+    (wx, wy): (usize, usize),
+    corner: Pt,
+    step: f32,
+    ink: Rgba,
+    level: impl Fn(Pt) -> f32,
+) {
+    // Which of the lattice's own points carry a square: taken from the
+    // board's grid, not from this patch's corner, so neighbouring patches
+    // and neighbouring bodies print on one screen.
+    let (gi, gj) = ((corner.x / step).round() as i32, (corner.y / step).round() as i32);
+    let pitch = step * SCREEN as f32;
+    for j in 0..wy {
+        for i in 0..wx {
+            if (gi + i as i32).rem_euclid(SCREEN as i32) != 0 || (gj + j as i32).rem_euclid(SCREEN as i32) != 0 {
+                continue;
+            }
+            if ground[j * wx + i] <= 0.0 {
+                continue;
+            }
+            let at = Pt::new(corner.x + i as f32 * step, corner.y + j as f32 * step);
+            let mut side = pitch * level(at).clamp(0.0, 1.0).sqrt();
+            if side < 0.3 {
+                continue;
+            }
+            // Half a square where the ground runs out beside it: a screen
+            // thins towards the edge of what it covers rather than stopping
+            // in a straight line, which is also what keeps the squares from
+            // hanging out of the body.
+            let inside = |di: i32, dj: i32| {
+                let (x, y) = (i as i32 + di, j as i32 + dj);
+                x >= 0 && y >= 0 && (x as usize) < wx && (y as usize) < wy && ground[y as usize * wx + x as usize] > 0.0
+            };
+            if !(inside(-1, 0) && inside(1, 0) && inside(0, -1) && inside(0, 1)) {
+                side *= 0.5;
+            }
+            // A hair over, so a solid screen has no seams between its own
+            // squares to let the sheet show through.
+            let side = side + 0.5;
+            out.push(Shape::Rect { x: at.x - side / 2.0, y: at.y - side / 2.0, w: side, h: side, color: ink });
+        }
+    }
 }
 
 /// How a body comes in (#143).
@@ -462,7 +563,12 @@ impl Sampled {
         // A sample's worth of margin all round: the field is nought out
         // there, so every loop closes inside the lattice instead of being
         // cut off at its edge.
-        let at = Pt::new(lo.x - step, lo.y - step);
+        // Snapped to the step, so every body is sampled on the *same*
+        // lattice rather than on one of its own: the screen the orange
+        // board prints with is laid on these points, and a screen that
+        // does not line up across a seam reads as two sheets (#146).
+        let snap = |v: f32| (v / step).floor() * step;
+        let at = Pt::new(snap(lo.x - step), snap(lo.y - step));
         let nx = ((hi.x - lo.x) / step).ceil() as usize + 3;
         let ny = ((hi.y - lo.y) / step).ceil() as usize + 3;
         let n = nx * ny;
@@ -751,14 +857,45 @@ pub fn build_shapes(
             // sides.
             let letters = ease(((grown - 0.6) / 0.4).clamp(0.0, 1.0));
             let (skin, beat) = comb::body(info, pal, t);
+            // What the body reads as, which is the skin itself on a board
+            // that paints and the screen's own tone on one that prints
+            // (#146). Everything that has to hold its own against the body
+            // is measured against this and not against the fill.
+            let on = if pal.screened { screen_as(skin, pal) } else { skin };
+            // On a board that prints, the letters do not stand on the body
+            // at all: a screen is half sheet, and letters over it are a
+            // mess at any tone but solid. They stand on a plate of the bare
+            // sheet instead, the way a label is knocked out of a print, so
+            // what they have to read on is the paper (#146).
+            let rows = comb::slots(info, pal, if pal.screened { pal.bg } else { on });
             let (i0, j0, wx, wy) = field.window(&balls[b]);
             let corner = field.pt(i0, j0);
             // Sampled once: the floor below is the same ground with a line
             // drawn across it, and the pulls are the dear part.
             let ground: Vec<f32> =
                 (0..wx * wy).map(|k| field.ground(&balls, b, i0 + k % wx, j0 + k / wx)).collect();
+            let at = balls[b].at;
+            if pal.screened {
+                // The floor is the same ground under a line (#139), so it is
+                // a tone of the same screen rather than a shape of its own.
+                let line = at.y + (comb::ROW_DY[1] + comb::ROW_DY[2]) / 2.0 * r;
+                let body = screen_level(skin, pal);
+                // The floor's own worth, which the row carries rather than
+                // the colour: every floor colour has been pinned to the
+                // same contrast against the board (#139), so they are all
+                // exactly as dark as each other (#146).
+                let under = rows.iter().flatten().find_map(|s| s.fill.map(|_| s.screen));
+                screen(&mut out, &ground, (wx, wy), corner, field.step, fade(pal.ink), |p| {
+                    match under {
+                        Some(u) if p.y >= line => u,
+                        _ => body,
+                    }
+                });
+            }
             for ring in trace(&ground, wx, wy, corner, field.step) {
-                out.push(Shape::Poly { points: ring.clone(), color: fade(skin) });
+                if !pal.screened {
+                    out.push(Shape::Poly { points: ring.clone(), color: fade(skin) });
+                }
                 // The board's own colour along the seam, so two sessions in
                 // one body are still two. Outside, where the body meets the
                 // board, it is the board drawn on the board and nothing
@@ -771,7 +908,6 @@ pub fn build_shapes(
                 });
             }
 
-            let at = balls[b].at;
             if seat.colony {
                 // The agents, in the room of the body they belong to. Inside
                 // a body the board's part is played by the skin: an agent is
@@ -796,9 +932,9 @@ pub fn build_shapes(
                     continue;
                 }
                 let small = Sampled::of(&dots, (holes[0].1 * STEP).max(0.8));
-                let ink = comb::legible(pal.bg, skin, pal);
+                let ink = comb::legible(pal.bg, on, pal);
                 for (k, ((p, mr), (label, going))) in holes.iter().zip(&agents).enumerate() {
-                    let color = if *going { ink } else { theme::lerp(skin, ink, 0.45) };
+                    let color = if *going { ink } else { theme::lerp(on, ink, 0.45) };
                     let (i0, j0, wx, wy) = small.window(&dots[k]);
                     let ground: Vec<f32> =
                         (0..wx * wy).map(|n| small.ground(&dots, k, i0 + n % wx, j0 + n / wx)).collect();
@@ -809,7 +945,7 @@ pub fn build_shapes(
                         out.push(Shape::Stroke {
                             pieces: vec![closed(ring)],
                             width: comb::BORDER,
-                            color: fade(skin),
+                            color: fade(on),
                         });
                     }
                     let (text, scale) = comb::sub_box(lone(REACH * mr), label);
@@ -820,7 +956,7 @@ pub fn build_shapes(
                             stroke: 1.0,
                             angle: 0.0,
                             center: *p,
-                            color: theme::with_alpha(comb::legible(skin, color, pal), letters),
+                            color: theme::with_alpha(comb::legible(on, color, pal), letters),
                         });
                     }
                 }
@@ -833,7 +969,7 @@ pub fn build_shapes(
             // direction now and a line cut to the slack side hangs out of
             // the taut one (#147).
             let reach = lone(REACH * r) * (1.0 - SQUISH * 1.5);
-            for (row, slot) in comb::slots(info, pal, skin).iter().enumerate() {
+            for (row, slot) in rows.iter().enumerate() {
                 let Some(slot) = slot else { continue };
                 let extras = Extras { origin: slot.origin.is_some(), check: slot.check, made: slot.made };
                 let dy = comb::ROW_DY[row] * r;
@@ -842,7 +978,7 @@ pub fn build_shapes(
                 let rb = comb::row_box_in(2.0 * half, r, row, &slot.label, extras);
                 // The pull request's state as the floor of the body, which
                 // is the same line the press is divided on (#139).
-                if let Some(fill) = slot.fill {
+                if let Some(fill) = slot.fill.filter(|_| !pal.screened) {
                     let top = at.y + (comb::ROW_DY[1] + comb::ROW_DY[2]) / 2.0 * r;
                     let floor: Vec<f32> = ground
                         .iter()
@@ -860,8 +996,27 @@ pub fn build_shapes(
                 } else {
                     comb::row_beat(info, row, t)
                 };
-                let ink = theme::with_alpha(slot.color, slot_beat * letters);
-                out.extend(comb::row_shapes(Pt::new(at.x, at.y + dy), &rb, slot, ink));
+                // Rows that say their state by being painted write in the
+                // board's own colour (#139), which on a plate of that same
+                // colour is nothing at all: on the printing board they take
+                // the ink instead (#146).
+                let paint =
+                    if pal.screened { comb::legible(slot.color, pal.bg, pal) } else { slot.color };
+                let ink = theme::with_alpha(paint, slot_beat * letters);
+                let line = Pt::new(at.x, at.y + dy);
+                if pal.screened {
+                    let w = comb::row_width(&rb) + tall * 0.5;
+                    out.push(Shape::RoundedRect {
+                        center: line,
+                        w,
+                        h: tall,
+                        r: tall / 2.0,
+                        angle: 0.0,
+                        color: theme::with_alpha(pal.bg, grown * letters),
+                        stroke: None,
+                    });
+                }
+                out.extend(comb::row_shapes(line, &rb, slot, ink));
             }
         }
     }
@@ -909,6 +1064,56 @@ mod tests {
         assert!((area - round).abs() < round * 0.02, "area {area} against a circle's {round}");
     }
 
+    /// The orange board prints rather than paints (#146): one sheet, one
+    /// ink, and a tone is a screen of squares whose area is the ink the
+    /// colour asked for. Nothing on it is filled with a colour of its own.
+    #[test]
+    fn the_printing_board_lays_a_screen_instead_of_a_colour() {
+        use crate::settings::BoardTheme;
+        let model = board(&[("a", 2)]);
+        let comb = comb::lay_out(&model, 980.0, 620.0);
+        let mut sim = Sim::default();
+        sim.settle(&model, &comb, 1.0e3);
+        let drawn = |theme| {
+            let pal = Palette::for_theme(theme);
+            (pal, build_shapes(&model, &comb, pal, 0.0, Pt::new(0.0, 0.0), 1.0e3, &sim))
+        };
+        let (white, painted) = drawn(BoardTheme::White);
+        let (orange, printed) = drawn(BoardTheme::Orange);
+        assert!(!white.screened && orange.screened, "the boards do not disagree about printing");
+
+        let fills = |shapes: &[Shape]| shapes.iter().filter(|s| matches!(s, Shape::Poly { .. })).count();
+        assert!(fills(&painted) > 0, "the painted board did not fill its bodies");
+        assert_eq!(fills(&printed), 0, "the printing board painted a body a colour");
+
+        // The ink goes down in squares, and only in the board's one ink.
+        let squares: Vec<&Shape> = printed
+            .iter()
+            .filter(|s| matches!(s, Shape::Rect { w, .. } if *w < 100.0))
+            .collect();
+        assert!(squares.len() > 50, "only {} squares of screen", squares.len());
+        for sq in &squares {
+            if let Shape::Rect { w, h, color, .. } = sq {
+                assert!((w - h).abs() < 0.01, "a square of {w} by {h}");
+                assert_eq!((color.r, color.g, color.b), (orange.ink.r, orange.ink.g, orange.ink.b));
+            }
+        }
+
+        // How much ink a colour asks for: none for the sheet, all of it for
+        // the ink, and the mix in between.
+        assert!(screen_level(orange.bg, orange) < 0.01);
+        assert!(screen_level(orange.ink, orange) > 0.99);
+        let half = theme::lerp(orange.bg, orange.ink, 0.5);
+        assert!((screen_level(half, orange) - 0.5).abs() < 0.1, "half the ink is not half the screen");
+
+        // And the letters stand on a plate of the bare sheet, since a screen
+        // is half sheet and letters over it are a mess.
+        assert!(
+            printed.iter().any(|s| matches!(s, Shape::RoundedRect { color, .. } if color.r == orange.bg.r && color.g == orange.bg.g)),
+            "the rows were left standing on the screen"
+        );
+    }
+
     /// A drop of anything holds a shape, and a perfect circle is the one it
     /// never holds (#147). The reach gives by direction and the give turns,
     /// so the surface is a little off round and never twice the same.
@@ -948,10 +1153,8 @@ mod tests {
         // other, positive is both at their longest.
         let one = |apart: f32, give: f32| {
             let g = [(give, 0.0), (give / 2.0, 0.0)];
-            let balls = [
-                Ball { at: Pt::new(0.0, 0.0), reach: REACH * r, give: g },
-                Ball { at: Pt::new(apart, 0.0), reach: REACH * r, give: g },
-            ];
+            let balls =
+                [Ball::with_give(Pt::new(0.0, 0.0), REACH * r, g), Ball::with_give(Pt::new(apart, 0.0), REACH * r, g)];
             let field = Sampled::of(&balls, r * STEP);
             let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         trace(&v, field.nx, field.ny, field.at, field.step).len()
@@ -1093,10 +1296,8 @@ mod tests {
         // And both of them let out as far as the squish ever lets them, on
         // the line between them (#147).
         let g = [(SQUISH, 0.0), (SQUISH / 2.0, 0.0)];
-        let balls = [
-            Ball { at: Pt::new(0.0, 0.0), reach: REACH * r, give: g },
-            Ball { at: Pt::new(apart, 0.0), reach: REACH * r, give: g },
-        ];
+        let balls =
+            [Ball::with_give(Pt::new(0.0, 0.0), REACH * r, g), Ball::with_give(Pt::new(apart, 0.0), REACH * r, g)];
         let field = Sampled::of(&balls, r * 0.02);
         let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         assert_eq!(trace(&v, field.nx, field.ny, field.at, field.step).len(), 2, "two clusters ran together");

@@ -36,6 +36,11 @@ pub struct Palette {
     /// A lane whose work finished end to end (#84). The chip greens are made
     /// to sit on a chip; this one has to read as a hairline on the board.
     pub done: Rgba,
+    /// This board prints rather than paints (#146): it is a sheet of one
+    /// colour and it has one ink, so a tone is a screen of dots and not a
+    /// colour of its own. The metaball view reads it; the rest of the board
+    /// paints as it always did.
+    pub screened: bool,
 }
 
 pub const PALETTE: Palette = Palette {
@@ -56,6 +61,7 @@ pub const PALETTE: Palette = Palette {
     merged: Rgba { r: 0.510, g: 0.314, b: 0.875, a: 1.0 },   // #8250DF — the purple a merged PR wears on GitHub
     on_merged: Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
     done: Rgba { r: 0.078, g: 0.545, b: 0.318, a: 1.0 },     // #148B51 — deep enough to read as a line on white
+    screened: false,
 };
 
 /// Dull amber for idle text where an orange chip would vanish (orange theme)
@@ -81,6 +87,9 @@ pub const ORANGE: Palette = Palette {
     merged: Rgba { r: 0.294, g: 0.161, b: 0.549, a: 1.0 }, // #4B298C
     on_merged: Rgba { r: 0.937, g: 0.902, b: 1.0, a: 1.0 }, // #EFE6FF
     done: Rgba { r: 0.055, g: 0.318, b: 0.196, a: 1.0 }, // #0E5132 — a lighter green disappears into orange
+    // One sheet, one ink (#146). This is the board the look came off, and
+    // the look is a print.
+    screened: true,
     ..PALETTE
 };
 

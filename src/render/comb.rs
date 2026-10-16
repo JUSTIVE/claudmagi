@@ -805,6 +805,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             origin: None,
             made: 0,
             fill: None,
+            screen: 0.0,
         }),
         Some(SlotInk {
             mark: logos::Mark::Claude,
@@ -818,6 +819,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             // The session's bed is the cell's own colour and is drawn for the
             // whole cell, not for this row alone (#89).
             fill: None,
+            screen: 0.0,
         }),
         // The answered one if there is one, otherwise the number GitHub would
         // not speak for, drawn quietly and blinking. With no pull request at
@@ -836,6 +838,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                 origin: None,
                 made: info.artifacts.len(),
                 fill: Some(floor_color(pr_color(p, pal), pal)),
+                screen: pr_screen(p),
             })
             .or_else(|| {
                 info.prs_unanswered.last().map(|id| SlotInk {
@@ -850,6 +853,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // claiming one. It stays the quiet, blinking line it was
                     // (#112).
                     fill: None,
+                    screen: 0.0,
                 })
             })
             .or_else(|| {
@@ -865,6 +869,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // What was asked for is the pull request's state as a
                     // floor (#139); a page has no state to paint.
                     fill: None,
+                    screen: 0.0,
                 })
             }),
     ]
@@ -875,6 +880,16 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
 /// Both views lay the same line out the same way — mark, where it is running,
 /// the label, review's tick, the pages — and differ only in the room they
 /// have to do it in (#140).
+/// How much of the row the drawing actually covers: the mark, the label and
+/// everything that rides after it. What wants it is a board that has to put
+/// something behind the letters rather than beside them (#146).
+pub fn row_width(rb: &RowBox) -> f32 {
+    let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+    let text_w = font::measure(&rb.label, rb.scale);
+    let tally_w = font::measure(&rb.tally, rb.scale);
+    rb.mark + MARK_GAP + span(rb.origin) + text_w + span(rb.check) + span(rb.made) + span(tally_w)
+}
+
 pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape> {
     let RowBox { scale, mark, origin, label, check, made, tally, .. } = rb;
     let (scale, mark, origin, check, made) = (*scale, *mark, *origin, *check, *made);
@@ -883,7 +898,7 @@ pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape
     let (tick, badge) = (span(check), span(origin));
     let tally_w = font::measure(tally, scale);
     let pages = span(made) + span(tally_w);
-    let left = at.x - (mark + MARK_GAP + badge + text_w + tick + pages) / 2.0;
+    let left = at.x - row_width(rb) / 2.0;
     let mut out = vec![Shape::Mark {
         mark: slot.mark,
         size: mark,
@@ -1007,6 +1022,15 @@ pub struct SlotInk {
     /// Opaque, because the label is drawn in the board's colour on top of
     /// it.
     pub fill: Option<Rgba>,
+    /// The same statement for a board that prints rather than paints
+    /// (#146): how much of its one ink the floor is worth, nought to one.
+    ///
+    /// Said here and not worked out from `fill`, because it cannot be:
+    /// those colours differ by hue, and `floor_color` has already pinned
+    /// every one of them to the same contrast against the board, so their
+    /// darkness is identical. Colour and screen are two alphabets for one
+    /// statement and they are written side by side.
+    pub screen: f32,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -1255,6 +1279,26 @@ pub fn blinks(info: &SessionInfo) -> bool {
         || info.ticket.as_ref().is_some_and(ticket_needs_action)
         || info.prs.last().is_some_and(pr_needs_action)
         || !info.prs_unanswered.is_empty()
+}
+
+/// What a pull request's floor is worth in ink, where the board has only the
+/// one (#146).
+///
+/// Spread by weight rather than taken from the colour: red checks are the
+/// heaviest thing a cell can be carrying and a closed request the lightest,
+/// and the six of them have to be told apart by area alone.
+fn pr_screen(p: &crate::pr::Pr) -> f32 {
+    use crate::pr::Look;
+    if p.running() {
+        return 0.45;
+    }
+    match p.look() {
+        Look::Failing => 1.0,
+        Look::Merged => 0.8,
+        Look::Open => 0.6,
+        Look::Draft => 0.3,
+        Look::Closed => 0.15,
+    }
 }
 
 fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
