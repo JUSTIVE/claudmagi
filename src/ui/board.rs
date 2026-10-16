@@ -46,6 +46,14 @@ const FRAME_MS: u64 = 33;
 /// below fails to notice is a quarter second late instead of frozen, which
 /// is the difference between a slow board and a broken one (#126).
 const IDLE_MS: u64 = 250;
+/// And while the only thing moving is the metaball view's wander (#144).
+///
+/// That one never stops, so this is the cadence the blob board idles at for
+/// as long as it is open, which is why it is not the full thirty: the wander
+/// is a couple of pixels over several seconds, so a third of the frames
+/// carry it with nothing to see, and every frame of it is every body built
+/// and tessellated again (#38).
+const FLOAT_MS: u64 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -152,7 +160,13 @@ impl Board {
             loop {
                 let Ok(ms) = this.update(cx, |board, cx| {
                     cx.notify();
-                    if board.moving() { FRAME_MS } else { IDLE_MS }
+                    if board.moving() {
+                        FRAME_MS
+                    } else if board.afloat() {
+                        FLOAT_MS
+                    } else {
+                        IDLE_MS
+                    }
                 }) else {
                     break;
                 };
@@ -529,6 +543,14 @@ impl Board {
             // The circuit board's packets never stop while a lane exists.
             (None, _) => !self.lanes.is_empty(),
         }
+    }
+
+    /// Nothing is happening, but the metaball bodies are breathing anyway
+    /// (#144), so the clock keeps a slow beat instead of dropping to the
+    /// idle floor.
+    fn afloat(&self) -> bool {
+        self.settings.view == BoardView::Blob
+            && self.comb.as_ref().is_some_and(|c| c.cells.iter().any(|c| c.chip.is_some() || c.subs.is_some()))
     }
 
     /// Opens the pane the `NO WARP TABS` tag asks for (#70). That tag is the

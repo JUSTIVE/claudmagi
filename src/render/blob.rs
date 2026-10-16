@@ -126,6 +126,50 @@ const DRIFT: f32 = 0.06;
 /// How slow counts as stopped, in design units a second.
 const ASLEEP: f32 = 0.6;
 
+/// How far a body wanders from where the walk left it, against the cell's
+/// radius, and the two periods it wanders on, in seconds (#144).
+///
+/// Small on purpose: the whole of it is a couple of pixels, and what it is
+/// for is not to move anything anywhere but to keep the surface from
+/// reading as a drawing of what was running. Between two bodies it shows up
+/// as a neck that thickens and thins by about a tenth either way, which is
+/// the breath.
+///
+/// The two periods do not divide into each other, so a body never comes back
+/// to the same place on a beat anyone could feel.
+const WANDER: f32 = 0.03;
+const BREATH: [f32; 2] = [7.3, 9.7];
+
+/// The slow wander a body never stops making (#144).
+///
+/// The walk (#142) is a settling: it answers an arrival, a departure or a
+/// re-seating and then stops, and a board where none of that is happening
+/// stands perfectly still. This is the other thing, and it answers nothing
+/// at all — a body of liquid never quite holds still, and a board of them
+/// reads as a thing that is running rather than a picture of it.
+///
+/// It is drawn, not pushed. Through the spring it would be a force with a
+/// clock in it, which is the one thing the walk cannot have: the walk sleeps
+/// as soon as it is done (#143) and a wander in it would wake it every frame
+/// to work out what is already a function of the time. Here it costs the two
+/// sines it is, and the balls go on pushing each other about where they
+/// really are.
+///
+/// The phase comes from the session's own id, so no two bodies breathe
+/// together — except a subagent colony, which is given its parent's phase on
+/// purpose: moving as one is the only thing on the board that says the two
+/// cells belong to each other (#88).
+pub fn wander(key: &str, t: f32, r: f32) -> Pt {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    let seed = h.finish();
+    let turn = std::f32::consts::TAU;
+    let phase = |bits: u32| ((seed >> bits) & 0xffff) as f32 / 65536.0 * turn;
+    let swing = |k: usize| (t / BREATH[k] * turn + phase(16 * k as u32)).sin();
+    Pt::new(swing(0), swing(1)) * (r * WANDER)
+}
+
 /// Where a session's ball actually is, which is not quite where it was
 /// seated (#142).
 #[derive(Clone, Copy, Debug)]
@@ -184,8 +228,17 @@ impl Sim {
         self.moving
     }
 
-    /// Where this session's body is, or its seat if the walk has not met it.
-    pub fn at(&self, id: &str, seat: Pt) -> Pt {
+    /// Where this session's body is just now: where the walk left it, and
+    /// how far it has wandered off since (#142, #144).
+    pub fn at(&self, id: &str, seat: Pt, t: f32, r: f32) -> Pt {
+        self.walked(id, seat) + wander(id, t, r)
+    }
+
+    /// Where the walk left it, or its seat if the walk has not met it. This
+    /// is what the walk itself works on: the wander is drawn on top of the
+    /// balls rather than pushed through them, so it never becomes a force
+    /// the others have to answer.
+    fn walked(&self, id: &str, seat: Pt) -> Pt {
         self.bobs.get(id).map_or(seat, |b| b.at)
     }
 
@@ -246,7 +299,7 @@ impl Sim {
         let mut fastest = 0.0f32;
         let places: Vec<(String, Pt, f32, String)> =
             seats.iter().map(|(id, seat, size, g)| ((*id).to_string(), *seat, *size, (*g).to_string())).collect();
-        let now: Vec<Pt> = places.iter().map(|(id, seat, ..)| self.at(id, *seat)).collect();
+        let now: Vec<Pt> = places.iter().map(|(id, seat, ..)| self.walked(id, *seat)).collect();
         for (k, (id, seat, size, group)) in places.iter().enumerate() {
             let here = now[k];
             let mut f = (*seat - here) * STIFF;
@@ -578,7 +631,7 @@ pub fn build_shapes(
             .zip(&grown)
             .map(|((c, i), g)| {
                 let id = model.chips.get(*i).map_or("", |c| c.info.session_id.as_str());
-                Ball { at: place(sim.at(id, c.center)), reach: REACH * r * g }
+                Ball { at: place(sim.at(id, c.center, t, r)), reach: REACH * r * g }
             })
             .collect();
         if balls.iter().all(|b| b.reach < 1.0) || !balls.iter().any(|b| on_board(b.at)) {
@@ -659,11 +712,14 @@ pub fn build_shapes(
     // own size, and the session that spawned them is a whole cell away.
     for cell in &comb.cells {
         let Some(parent) = cell.subs else { continue };
-        let at = place(cell.center);
+        let Some(chip) = model.chips.get(parent) else { continue };
+        // The colony takes its parent's breath (#144): the two sit in
+        // neighbouring cells with nothing drawn between them, and moving as
+        // one is the only thing that says whose agents these are.
+        let at = place(cell.center) + wander(&chip.info.session_id, t, r);
         if !on_board(at) {
             continue;
         }
-        let Some(chip) = model.chips.get(parent) else { continue };
         let agents: Vec<(String, bool)> =
             chip.subs.iter().filter(|s| !s.anim.gone).map(|s| (s.info.label(), s.info.running)).collect();
         if agents.is_empty() {
@@ -766,6 +822,9 @@ mod tests {
         };
         // Neighbours in the honeycomb: a cell's height apart (#132).
         assert_eq!(one(r * 1.7320508), 1, "two sessions of one cluster are one body");
+        // And still one when both have walked (#142) and breathed (#144)
+        // as far apart as either is ever allowed to get.
+        assert_eq!(one(r * (1.7320508 + 2.0 * (DRIFT + WANDER))), 1, "a cluster came apart at full stretch");
         // The nearest two cells of different clusters can ever be, the rim
         // between them being the thing that says they are different (#121).
         assert_eq!(one(r * 3.0), 2, "two clusters never touch");
@@ -864,7 +923,7 @@ mod tests {
         let mut off: f32 = 0.0;
         for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
             let id = &model.chips[cell.chip.unwrap()].info.session_id;
-            let moved = (sim.at(id, cell.center) - cell.center).len();
+            let moved = (sim.walked(id, cell.center) - cell.center).len();
             assert!(moved <= comb.r * DRIFT + 0.01, "a ball sits {moved} from its seat");
             off = off.max(moved);
         }
@@ -879,7 +938,7 @@ mod tests {
         sim.advance(&model, &comb, 1.0e3, 1.0 / 30.0);
         for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
             let id = &model.chips[cell.chip.unwrap()].info.session_id;
-            let moved = (sim.at(id, cell.center) - cell.center).len();
+            let moved = (sim.walked(id, cell.center) - cell.center).len();
             assert!(moved <= comb.r * DRIFT + 0.01, "a shoved ball reached {moved} from its seat");
         }
     }
@@ -891,8 +950,9 @@ mod tests {
     fn no_amount_of_walking_runs_two_clusters_together() {
         let r = 90.0;
         // The nearest two cells of different clusters can be, with both of
-        // them walked as far towards each other as they are ever allowed.
-        let apart = r * 3.0 - 2.0 * r * DRIFT;
+        // them walked as far towards each other as they are ever allowed and
+        // breathing in on top of that (#144).
+        let apart = r * 3.0 - 2.0 * r * (DRIFT + WANDER);
         let balls =
             [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
         let field = Sampled::of(&balls, r * 0.02);
@@ -919,12 +979,36 @@ mod tests {
 
         let mut sim = Sim::default();
         sim.settle(&model, &seated(from), 1.0e3);
-        let lean = sim.at(&id, from) - from;
+        let lean = sim.walked(&id, from) - from;
 
         sim.advance(&model, &seated(next), 1.0e3, 1.0 / 60.0);
-        let moved = sim.at(&id, next) - next;
+        let moved = sim.walked(&id, next) - next;
         assert!((moved - lean).len() < r * 0.02, "the body did not go with its seat");
         assert!(!sim.moving(), "and it was not sent moving by the move");
+    }
+
+    /// The board is never quite still (#144): every body goes on wandering
+    /// after the walk has stopped, each on its own phase, and none of them
+    /// ever gets further out than the budget the seat answers for.
+    #[test]
+    fn the_bodies_never_stop_breathing() {
+        let r = 90.0;
+        let (mut most, mut apart, mut travelled) = (0.0f32, 0.0f32, 0.0f32);
+        let here = wander("S-1", 0.0, r);
+        for k in 0..2000 {
+            let t = k as f32 * 0.05;
+            let a = wander("S-1", t, r);
+            let b = wander("S-2", t, r);
+            most = most.max(a.len()).max(b.len());
+            apart = apart.max((a - b).len());
+            travelled = travelled.max((a - here).len());
+        }
+        assert!(most <= r * WANDER * 1.4143, "a body wandered {most} off, over its {} budget", r * WANDER);
+        assert!(travelled > r * WANDER, "the board stands still: nothing wandered anywhere");
+        assert!(apart > r * WANDER, "two bodies breathe as one: the phase is not theirs");
+        // And the wander is of the clock alone, so two frames of the same
+        // board at the same moment are the same picture.
+        assert_eq!(wander("S-1", 3.5, r), wander("S-1", 3.5, r));
     }
 
     /// What the view is laid out on: a ball alone takes up what its cell did,
