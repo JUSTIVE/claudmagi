@@ -422,41 +422,53 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
     // move every cell on the board each time one session ended.
     let mut seats: Vec<((i32, i32), usize)> = Vec::new();
     let mut taken: std::collections::HashSet<(i32, i32)> = std::collections::HashSet::new();
+    // Subagents take a cell of their own, next door to the session that
+    // spawned them (#88) — and they take it with their flower rather than
+    // after every flower is down (#145). Seated last, the nearest free cell
+    // could be one in the rim between two clusters, where a colony is as
+    // near one body as the other and reads as nobody's.
+    let mut sub_seats: Vec<((i32, i32), usize)> = Vec::new();
     for (_, members) in &groups {
+        // Everybody else's cells, taken before this flower puts down its
+        // own: a colony may touch its own cluster and may not touch another.
+        let strangers = taken.clone();
         let Some(placed) = seat_somewhere(members, &taken, width, height, r) else { continue };
         taken.extend(placed.iter().map(|(at, _)| *at));
+        for (at, chip) in &placed {
+            let has_subs = model.chips.get(*chip).is_some_and(|c| c.subs.iter().any(|s| !s.anim.gone));
+            if !has_subs {
+                continue;
+            }
+            // The nearest free cell, not merely an adjacent one: the middle
+            // of a full flower has six neighbours and a session in every one
+            // of them, and its subagents were being dropped on the floor
+            // (#108).
+            let free = (1..=SUB_SEARCH)
+                .flat_map(|k| {
+                    let mut out = ring(k);
+                    // Downwards first, where the eye goes after the cell itself.
+                    out.sort_by_key(|(q, row)| (-row, *q));
+                    out
+                })
+                .map(|(dq, dr)| (at.0 + dq, at.1 + dr))
+                // And on screen: a cell off the side or above the first row is
+                // not drawn at all, which loses the subagents as surely as
+                // finding nowhere did (#111). Downwards is unbounded, the view
+                // scrolling that way.
+                .find(|n| {
+                    !taken.contains(n)
+                        && on_screen(*n, r, width)
+                        && !DIRS.iter().any(|(dq, drow)| strangers.contains(&(n.0 + dq, n.1 + drow)))
+
+                });
+            if let Some(n) = free {
+                sub_seats.push((n, *chip));
+                // Held like any other seat from here on, so the flower that
+                // goes down next keeps its rim from the colony as well.
+                taken.insert(n);
+            }
+        }
         seats.extend(placed);
-    }
-    // Subagents take a cell of their own, next door to the session that
-    // spawned them (#88).
-    let mut sub_seats: Vec<((i32, i32), usize)> = Vec::new();
-    for (at, chip) in &seats {
-        let has_subs = model.chips.get(*chip).is_some_and(|c| c.subs.iter().any(|s| !s.anim.gone));
-        if !has_subs {
-            continue;
-        }
-        let taken = |n: &(i32, i32)| {
-            seats.iter().any(|(s, _)| s == n) || sub_seats.iter().any(|(s, _)| s == n)
-        };
-        // The nearest free cell, not merely an adjacent one: the middle of a
-        // full flower has six neighbours and a session in every one of them,
-        // and its subagents were being dropped on the floor (#108).
-        let free = (1..=SUB_SEARCH)
-            .flat_map(|k| {
-                let mut out = ring(k);
-                // Downwards first, where the eye goes after the cell itself.
-                out.sort_by_key(|(q, row)| (-row, *q));
-                out
-            })
-            .map(|(dq, dr)| (at.0 + dq, at.1 + dr))
-            // And on screen: a cell off the side or above the first row is
-            // not drawn at all, which loses the subagents as surely as
-            // finding nowhere did (#111). Downwards is unbounded, the view
-            // scrolling that way.
-            .find(|n| !taken(n) && on_screen(*n, r, width));
-        if let Some(n) = free {
-            sub_seats.push((n, *chip));
-        }
     }
     // How far down the seated cells reach, in pixels: with a flat top a
     // column carries half a row of its own, so the row index alone no longer
@@ -1561,6 +1573,58 @@ mod tests {
             assert_eq!(sorted.len(), n, "{n}: two sessions were seated in one cell");
             for at in &taken {
                 assert!(has_free_neighbour(*at, &taken), "{n}: a session was walled in by its own cluster");
+            }
+        }
+    }
+
+    /// A colony answers to one session, so it must never sit where it is as
+    /// near somebody else's body as its own (#145). Seated after every
+    /// flower was down, the nearest free cell was very often exactly that:
+    /// the one-cell rim that is there to keep two clusters apart (#121).
+    #[test]
+    fn a_subagent_cell_never_sits_beside_another_cluster() {
+        use crate::model::SubagentInfo;
+        let mut model = BoardModel::new();
+        let mut list = Vec::new();
+        for g in 0..4u32 {
+            for k in 0..3u32 {
+                let mut s = SessionInfo::synthetic(g * 10 + k + 1, &format!("S-{g}-{k}"), Phase::Working);
+                s.group = format!("warp-tab:1-{g}");
+                // One in each cluster has agents out, so the colonies land
+                // among the flowers rather than off on their own.
+                if k == 0 {
+                    s.subagents = vec![SubagentInfo::synthetic(1, "Explore", "", true)];
+                }
+                list.push(s);
+            }
+        }
+        model.apply(list, Instant::now());
+        model.settle();
+        for width in [620.0f32, 980.0, 1280.0] {
+            let comb = lay_out(&model, width, 620.0);
+            let group = |cell: &Cell| {
+                cell.chip.or(cell.subs).and_then(|i| model.chips.get(i)).map(|c| c.info.group.clone())
+            };
+            let colonies = comb.cells.iter().filter(|c| c.subs.is_some());
+            assert_eq!(colonies.clone().count(), 4, "{width}px: a cluster lost its agents");
+            for cell in colonies {
+                let mine = group(cell);
+                for (dq, drow) in DIRS {
+                    let Some(n) = comb.cells.iter().find(|c| c.q == cell.q + dq && c.row == cell.row + drow)
+                    else {
+                        continue;
+                    };
+                    let theirs = group(n);
+                    assert!(
+                        theirs.is_none() || theirs == mine,
+                        "{width}px: a colony of {mine:?} sits against {theirs:?}"
+                    );
+                }
+                // And it is still next door to its own, which is the whole
+                // of what says whose it is.
+                let parent = comb.cells.iter().find(|c| c.chip == cell.subs).expect("the session");
+                let d = ((cell.center.x - parent.center.x).powi(2) + (cell.center.y - parent.center.y).powi(2)).sqrt();
+                assert!(d < comb.r * 2.0, "{width}px: a colony sits {d} from its session");
             }
         }
     }

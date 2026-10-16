@@ -57,6 +57,43 @@ const TENSION: f32 = 0.28;
 /// board showing through at the one place the body should look most solid.
 const BLEED: f32 = 0.03;
 
+/// What the walk and the wander know a colony by (#145).
+///
+/// Its parent's name marked as the colony's own: the two are cells of one
+/// body and push each other about like any other pair of mates, so they must
+/// not be the same thing to the walk.
+pub fn colony_key(session_id: &str) -> String {
+    format!("{session_id}~subs")
+}
+
+/// The session a cell answers for, and the key it is walked under: a session
+/// in its own cell, or the colony of subagents it has out next door (#88,
+/// #145). Both are cells of the cluster and so both are balls of its body.
+fn member_of<'a>(model: &'a BoardModel, cell: &Cell) -> Option<(&'a crate::model::ChipState, String)> {
+    let (chip, colony) = match (cell.chip, cell.subs) {
+        (Some(i), _) => (i, false),
+        (None, Some(i)) => (i, true),
+        _ => return None,
+    };
+    let chip = model.chips.get(chip)?;
+    // A colony nobody is in is not a cell at all.
+    if colony && !chip.subs.iter().any(|s| !s.anim.gone) {
+        return None;
+    }
+    let id = chip.info.session_id.as_str();
+    Some((chip, if colony { colony_key(id) } else { id.to_string() }))
+}
+
+/// One cell of a cluster, which is one ball of its body: a session, or the
+/// colony of subagents that session has out next door (#88, #145).
+struct Member<'a> {
+    cell: &'a Cell,
+    chip: &'a crate::model::ChipState,
+    /// What the walk and the wander know it by (#142, #144).
+    key: String,
+    colony: bool,
+}
+
 /// A ball of the field.
 #[derive(Clone, Copy, Debug)]
 pub struct Ball {
@@ -155,10 +192,9 @@ const BREATH: [f32; 2] = [7.3, 9.7];
 /// sines it is, and the balls go on pushing each other about where they
 /// really are.
 ///
-/// The phase comes from the session's own id, so no two bodies breathe
-/// together — except a subagent colony, which is given its parent's phase on
-/// purpose: moving as one is the only thing on the board that says the two
-/// cells belong to each other (#88).
+/// The phase comes from the cell's own key, so no two of them breathe
+/// together — a colony included (#145): it says whose it is by being part of
+/// that body, not by moving with it.
 pub fn wander(key: &str, t: f32, r: f32) -> Pt {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -247,11 +283,11 @@ impl Sim {
         // Who is on the board, where they are seated, and how big they are
         // drawn just now: a ball grows into its size (#92), and what it
         // takes up while it grows is what shoulders its neighbours.
-        let mut seats: Vec<(&str, Pt, f32, &str)> = Vec::new();
+        let mut seats: Vec<(String, Pt, f32, &str)> = Vec::new();
         for cell in &comb.cells {
-            let Some(chip) = cell.chip.and_then(|i| model.chips.get(i)) else { continue };
+            let Some((chip, key)) = member_of(model, cell) else { continue };
             let size = lone(REACH * r * ease(comb::reveal(cell, t)));
-            seats.push((chip.info.session_id.as_str(), cell.center, size, chip.info.group.as_str()));
+            seats.push((key, cell.center, size, chip.info.group.as_str()));
         }
         // Who is here, where they sit and how big they are, to the pixel the
         // drawing is cached on: anything else and the walk goes back to work.
@@ -274,7 +310,7 @@ impl Sim {
         for (id, seat, ..) in &seats {
             let bob = self
                 .bobs
-                .entry((*id).to_string())
+                .entry(id.clone())
                 .or_insert(Bob { at: *seat, v: Pt::new(0.0, 0.0), seat: *seat });
             // The packing can move a seat out from under a body (#138). The
             // body goes with it, keeping whatever lean it had, rather than
@@ -297,16 +333,14 @@ impl Sim {
         }
 
         let mut fastest = 0.0f32;
-        let places: Vec<(String, Pt, f32, String)> =
-            seats.iter().map(|(id, seat, size, g)| ((*id).to_string(), *seat, *size, (*g).to_string())).collect();
-        let now: Vec<Pt> = places.iter().map(|(id, seat, ..)| self.walked(id, *seat)).collect();
-        for (k, (id, seat, size, group)) in places.iter().enumerate() {
+        let now: Vec<Pt> = seats.iter().map(|(id, seat, ..)| self.walked(id, *seat)).collect();
+        for (k, (id, seat, size, group)) in seats.iter().enumerate() {
             let here = now[k];
             let mut f = (*seat - here) * STIFF;
             // Only the balls of one body push each other: two clusters are a
             // rim apart and never touch, and a push between them would be a
             // force with nothing drawn to explain it.
-            for (j, (_, _, other_size, other_group)) in places.iter().enumerate() {
+            for (j, (_, _, other_size, other_group)) in seats.iter().enumerate() {
                 if j == k || other_group != group {
                     continue;
                 }
@@ -601,25 +635,30 @@ pub fn build_shapes(
         });
     }
 
-    // Sessions of one cluster make one body; every other cluster is out of
+    // The cells of one cluster make one body; every other cluster is out of
     // reach of it, so each can be sampled on a lattice of its own.
-    let mut clusters: Vec<Vec<(&Cell, usize)>> = Vec::new();
+    //
+    // A colony of subagents is one of those cells (#88, #145). It is a ball
+    // like any other and runs together with the rest, which is the whole of
+    // what says whose agents they are: out on its own, a colony sitting
+    // between two bodies belonged to whichever one the eye picked.
+    let mut clusters: Vec<Vec<Member>> = Vec::new();
     let mut names: Vec<&str> = Vec::new();
     for cell in &comb.cells {
-        let Some(i) = cell.chip else { continue };
-        let Some(chip) = model.chips.get(i) else { continue };
+        let Some((chip, key)) = member_of(model, cell) else { continue };
         let group = chip.info.group.as_str();
+        let seat = Member { cell, chip, key, colony: cell.chip.is_none() };
         match names.iter().position(|n| *n == group) {
-            Some(k) => clusters[k].push((cell, i)),
+            Some(k) => clusters[k].push(seat),
             None => {
                 names.push(group);
-                clusters.push(vec![(cell, i)]);
+                clusters.push(vec![seat]);
             }
         }
     }
 
     for cluster in &clusters {
-        let grown: Vec<f32> = cluster.iter().map(|(c, _)| ease(comb::reveal(c, t))).collect();
+        let grown: Vec<f32> = cluster.iter().map(|m| ease(comb::reveal(m.cell, t))).collect();
         // Growing the reach rather than the weight: a ball under the level
         // is not a small ball, it is no ball at all, so a weight that ramps
         // would have the body pop into existence halfway through its own
@@ -629,18 +668,14 @@ pub fn build_shapes(
         let balls: Vec<Ball> = cluster
             .iter()
             .zip(&grown)
-            .map(|((c, i), g)| {
-                let id = model.chips.get(*i).map_or("", |c| c.info.session_id.as_str());
-                Ball { at: place(sim.at(id, c.center, t, r)), reach: REACH * r * g }
-            })
+            .map(|(m, g)| Ball { at: place(sim.at(&m.key, m.cell.center, t, r)), reach: REACH * r * g })
             .collect();
         if balls.iter().all(|b| b.reach < 1.0) || !balls.iter().any(|b| on_board(b.at)) {
             continue;
         }
         let field = Sampled::of(&balls, step);
-        for (b, ((cell, chip), grown)) in cluster.iter().zip(&grown).enumerate() {
-            let Some(c) = model.chips.get(*chip) else { continue };
-            let info = &c.info;
+        for (b, (seat, grown)) in cluster.iter().zip(&grown).enumerate() {
+            let info = &seat.chip.info;
             let fade = |col: Rgba| theme::with_alpha(col, *grown);
             // The letters wait for a body big enough to hold them (#143).
             // They are cut to the size the ball ends up (#94), so a row drawn
@@ -669,6 +704,60 @@ pub fn build_shapes(
             }
 
             let at = balls[b].at;
+            if seat.colony {
+                // The agents, in the room of the body they belong to. Inside
+                // a body the board's part is played by the skin: an agent is
+                // drawn in the board's own colour, which is what every letter
+                // on a body is drawn in (#139), and a finished one gives that
+                // colour back to the skin exactly as it gave it back to the
+                // board when the colony stood out there on its own (#110).
+                let agents: Vec<(String, bool)> = seat
+                    .chip
+                    .subs
+                    .iter()
+                    .filter(|s| !s.anim.gone)
+                    .map(|s| (s.info.label(), s.info.running))
+                    .collect();
+                if agents.is_empty() {
+                    continue;
+                }
+                let holes = comb::sub_grid(at, r, agents.len());
+                let dots: Vec<Ball> =
+                    holes.iter().map(|(p, mr)| Ball { at: *p, reach: REACH * mr * grown }).collect();
+                if dots.iter().all(|b| b.reach < 1.0) {
+                    continue;
+                }
+                let small = Sampled::of(&dots, (holes[0].1 * STEP).max(0.8));
+                let ink = comb::legible(pal.bg, skin, pal);
+                for (k, ((p, mr), (label, going))) in holes.iter().zip(&agents).enumerate() {
+                    let color = if *going { ink } else { theme::lerp(skin, ink, 0.45) };
+                    let (i0, j0, wx, wy) = small.window(&dots[k]);
+                    let ground: Vec<f32> =
+                        (0..wx * wy).map(|n| small.ground(&dots, k, i0 + n % wx, j0 + n / wx)).collect();
+                    for ring in trace(&ground, wx, wy, small.pt(i0, j0), small.step) {
+                        out.push(Shape::Poly { points: ring.clone(), color: fade(color) });
+                        // And the hairline between two of them is the skin,
+                        // for the same reason it is the board outside (#140).
+                        out.push(Shape::Stroke {
+                            pieces: vec![closed(ring)],
+                            width: comb::BORDER,
+                            color: fade(skin),
+                        });
+                    }
+                    let (text, scale) = comb::sub_box(lone(REACH * mr), label);
+                    if !text.is_empty() {
+                        out.push(Shape::Text {
+                            text,
+                            scale,
+                            stroke: 1.0,
+                            angle: 0.0,
+                            center: *p,
+                            color: theme::with_alpha(comb::legible(skin, color, pal), letters),
+                        });
+                    }
+                }
+                continue;
+            }
             // The rows the honeycomb draws, in the room a circle gives
             // instead of a cell: the body is never smaller than the ball
             // alone, so a line that fits the ball cannot leave the body.
@@ -702,64 +791,6 @@ pub fn build_shapes(
                 };
                 let ink = theme::with_alpha(slot.color, slot_beat * letters);
                 out.extend(comb::row_shapes(Pt::new(at.x, at.y + dy), &rb, slot, ink));
-            }
-        }
-    }
-
-    // Subagents: a colony of small balls in the cell next door, the way they
-    // are a sub-grid of small hexes in the honeycomb (#88, #105). They run
-    // together with each other and with nothing else — their reach is their
-    // own size, and the session that spawned them is a whole cell away.
-    for cell in &comb.cells {
-        let Some(parent) = cell.subs else { continue };
-        let Some(chip) = model.chips.get(parent) else { continue };
-        // The colony takes its parent's breath (#144): the two sit in
-        // neighbouring cells with nothing drawn between them, and moving as
-        // one is the only thing that says whose agents these are.
-        let at = place(cell.center) + wander(&chip.info.session_id, t, r);
-        if !on_board(at) {
-            continue;
-        }
-        let agents: Vec<(String, bool)> =
-            chip.subs.iter().filter(|s| !s.anim.gone).map(|s| (s.info.label(), s.info.running)).collect();
-        if agents.is_empty() {
-            continue;
-        }
-        let grown = ease(comb::reveal(cell, t));
-        let seats = comb::sub_grid(at, r, agents.len());
-        let balls: Vec<Ball> =
-            seats.iter().map(|(p, mr)| Ball { at: *p, reach: REACH * mr * grown }).collect();
-        if balls.iter().all(|b| b.reach < 1.0) {
-            continue;
-        }
-        let field = Sampled::of(&balls, (seats[0].1 * STEP).max(0.8));
-        for (b, ((p, mr), (label, going))) in seats.iter().zip(&agents).enumerate() {
-            // Solid, not an outline: a subagent is a thing doing work, and
-            // what is around it is the empty part (#96). It wears the board's
-            // chip colour, and a finished one is that colour given back to
-            // the board (#110).
-            let color = if *going { pal.chip } else { theme::lerp(pal.bg, pal.chip, 0.45) };
-            let (i0, j0, wx, wy) = field.window(&balls[b]);
-            let ground: Vec<f32> =
-                (0..wx * wy).map(|k| field.ground(&balls, b, i0 + k % wx, j0 + k / wx)).collect();
-            for ring in trace(&ground, wx, wy, field.pt(i0, j0), field.step) {
-                out.push(Shape::Poly { points: ring.clone(), color: theme::with_alpha(color, grown) });
-                out.push(Shape::Stroke {
-                    pieces: vec![closed(ring)],
-                    width: comb::BORDER,
-                    color: theme::with_alpha(pal.bg, grown),
-                });
-            }
-            let (text, scale) = comb::sub_box(lone(REACH * mr), label);
-            if !text.is_empty() {
-                out.push(Shape::Text {
-                    text,
-                    scale,
-                    stroke: 1.0,
-                    angle: 0.0,
-                    center: *p,
-                    color: theme::with_alpha(pal.bg, ease(((grown - 0.6) / 0.4).clamp(0.0, 1.0))),
-                });
             }
         }
     }
@@ -985,6 +1016,46 @@ mod tests {
         let moved = sim.walked(&id, next) - next;
         assert!((moved - lean).len() < r * 0.02, "the body did not go with its seat");
         assert!(!sim.moving(), "and it was not sent moving by the move");
+    }
+
+    /// A colony is a cell of its session's cluster, so it is a ball of that
+    /// cluster's body (#145): run together with it, and walked and breathed
+    /// like any other member. On its own it was a clutch of specks in the
+    /// gap between two bodies, belonging to whichever the eye picked.
+    #[test]
+    fn a_colony_is_one_body_with_the_session_it_belongs_to() {
+        use crate::model::{Phase, SessionInfo, SubagentInfo};
+        let mut model = BoardModel::new();
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Working);
+        s.group = "warp-tab:1-1".into();
+        s.subagents = (0..3).map(|i| SubagentInfo::synthetic(i + 1, "Explore", "", true)).collect();
+        model.apply(vec![s], std::time::Instant::now());
+        model.settle();
+        let comb = comb::lay_out(&model, 980.0, 620.0);
+        let mut sim = Sim::default();
+        sim.settle(&model, &comb, 1.0e3);
+
+        let id = model.chips[0].info.session_id.clone();
+        let key = colony_key(&id);
+        let session = comb.cells.iter().find(|c| c.chip.is_some()).expect("the session");
+        let colony = comb.cells.iter().find(|c| c.subs.is_some()).expect("the colony");
+        // The walk knows it as a member of its own: it is pushed off its
+        // seat by the session next door, the way two sessions push.
+        let walked = sim.walked(&key, colony.center);
+        assert!((walked - colony.center).len() > 0.0, "the colony is not walked at all");
+        assert!(walked != sim.walked(&id, session.center), "the colony walks as its session");
+
+        let balls = [
+            Ball { at: sim.at(&id, session.center, 2.0, comb.r), reach: REACH * comb.r },
+            Ball { at: sim.at(&key, colony.center, 2.0, comb.r), reach: REACH * comb.r },
+        ];
+        let field = Sampled::of(&balls, comb.r * STEP);
+        let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
+        assert_eq!(
+            trace(&v, field.nx, field.ny, field.at, field.step).len(),
+            1,
+            "the colony came out a body of its own"
+        );
     }
 
     /// The board is never quite still (#144): every body goes on wandering
