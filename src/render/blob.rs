@@ -17,7 +17,7 @@ use gpui::Rgba;
 
 use crate::geom::Pt;
 use crate::model::BoardModel;
-use crate::render::comb::{self, Cell, Comb, Extras};
+use crate::render::comb::{self, Cell, Comb, Extras, colony_key, ease};
 use crate::render::scene::{Screen, Shape};
 use crate::theme::{self, Palette};
 
@@ -56,15 +56,6 @@ const TENSION: f32 = 0.28;
 /// hair instead: they overlap by less than a pixel rather than leaving the
 /// board showing through at the one place the body should look most solid.
 const BLEED: f32 = 0.03;
-
-/// What the walk and the wander know a colony by (#145).
-///
-/// Its parent's name marked as the colony's own: the two are cells of one
-/// body and push each other about like any other pair of mates, so they must
-/// not be the same thing to the walk.
-pub fn colony_key(session_id: &str) -> String {
-    format!("{session_id}~subs")
-}
 
 /// The session a cell answers for, and the key it is walked under: a session
 /// in its own cell, or the colony of subagents it has out next door (#88,
@@ -193,18 +184,6 @@ fn seed_of(key: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     key.hash(&mut h);
     h.finish()
-}
-
-/// How a body comes in (#143).
-///
-/// The wave walks a cell from nothing to arrived in a straight line (#92),
-/// and a ball grown to that line arrives at a dead stop — the drawn surface
-/// is a fixed fraction of the reach, so it swells at one rate throughout and
-/// then simply ceases. Smoothstep gives both ends back their ease: it leaves
-/// nothing gently and settles into its size rather than hitting it.
-pub fn ease(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
 }
 
 /// How big a ball on its own comes out: `(1 - d²)³ = LEVEL`.

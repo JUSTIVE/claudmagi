@@ -1049,6 +1049,129 @@ pub struct SlotInk {
     pub screen: Screen,
 }
 
+/// Smoothstep: nought to one with both ends eased (#143, #150).
+///
+/// The wave walks a cell from nothing to arrived in a straight line (#92),
+/// and a ball grown to that line arrives at a dead stop — the drawn surface
+/// is a fixed fraction of the reach, so it swells at one rate throughout and
+/// then simply ceases. Smoothstep gives both ends back their ease: it leaves
+/// nothing gently and settles into its size rather than hitting it.
+pub fn ease(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// What the walk and the wander know a colony by (#145).
+///
+/// Its parent's name marked as the colony's own: the two are cells of one
+/// body and push each other about like any other pair of mates, so they must
+/// not be the same thing to the walk.
+pub fn colony_key(session_id: &str) -> String {
+    format!("{session_id}~subs")
+}
+
+/// How long a cell takes to reach a seat it has just been given, and the
+/// furthest it will travel to one rather than simply being there (#150).
+///
+/// The seating is worked out from scratch every frame and a seat is a whole
+/// cell wide, so anything that changes one — a session arriving or ending, a
+/// flower re-centred on the screen (#138), a window dragged — moved the
+/// cells it displaced by a cell at a time, in a single frame.
+///
+/// The cap is the point of the second number. A cell shuffled over by a
+/// neighbour has a seat next door and gliding there reads as the shuffle it
+/// is; a cluster re-seated clear across the board has not moved, it is
+/// somewhere else, and a body gliding there would plough through every
+/// other body on the way — which in the metaball view means *merging* with
+/// them as it passes (#140). Past two cells it simply appears.
+const SLIDE: f32 = 0.35;
+const SLIDE_MAX: f32 = 3.6;
+
+/// Where a cell is while it is still on its way to its seat (#150).
+struct Slide {
+    seat: (i32, i32),
+    /// How far the cell still was from its seat when it set off, and when
+    /// that was. Kept as an offset rather than as a place, so a window
+    /// resized mid-glide does not drag the cell off the grid.
+    off: Pt,
+    since: std::time::Instant,
+}
+
+/// The cells that are still on their way (#150).
+///
+/// Owned by the board and run over the fresh seating every frame, before
+/// anything is drawn or pressed: what it rewrites is the cells' own centres,
+/// so the glide is not a drawing trick — the press, the drop-down and the
+/// hit test are on the moving cell, and the metaball walk reads the moving
+/// seat and carries its body along with it (#86, #142).
+#[derive(Default)]
+pub struct Slides {
+    at: std::collections::HashMap<String, Slide>,
+    moving: bool,
+}
+
+impl Slides {
+    pub fn settle(&mut self, comb: &mut Comb, model: &BoardModel, now: std::time::Instant) {
+        let r = comb.r;
+        let mut here: std::collections::HashSet<String> = std::collections::HashSet::new();
+        self.moving = false;
+        for cell in &mut comb.cells {
+            let Some(key) = cell_key(model, cell) else { continue };
+            let seat = (cell.q, cell.row);
+            let home = cell.center;
+            let slide = self
+                .at
+                .entry(key.clone())
+                .or_insert(Slide { seat, off: Pt::new(0.0, 0.0), since: now });
+            if slide.seat != seat {
+                // Where it is at this instant, which is where it sets off
+                // from. A cell that was already on its way carries whatever
+                // is left of that first.
+                let was = axial(slide.seat.0, slide.seat.1, r) + slide.off * slide.left(now);
+                let off = was - home;
+                // A seat on the other side of the board is not a move.
+                slide.off = if off.len() > r * SLIDE_MAX { Pt::new(0.0, 0.0) } else { off };
+                slide.seat = seat;
+                slide.since = now;
+            }
+            // What is left of the journey, if any: a cell that was given the
+            // seat it already had, and one that has arrived, are both simply
+            // at it, and the clock is told nothing is moving.
+            let shift = slide.off * slide.left(now);
+            if shift.len() > 0.01 {
+                cell.center = home + shift;
+                self.moving = true;
+            }
+            here.insert(key);
+        }
+        self.at.retain(|k, _| here.contains(k));
+    }
+
+    /// Whether anything is still on its way, which is what the frame clock
+    /// asks (#126).
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+}
+
+impl Slide {
+    /// How much of the journey is left, eased at both ends.
+    fn left(&self, now: std::time::Instant) -> f32 {
+        1.0 - ease(now.duration_since(self.since).as_secs_f32() / SLIDE)
+    }
+}
+
+/// What a cell is known by while it moves: the session sitting in it, or the
+/// colony of subagents next door (#145). Empty cells are the grid itself and
+/// do not go anywhere.
+fn cell_key(model: &BoardModel, cell: &Cell) -> Option<String> {
+    match (cell.chip, cell.subs) {
+        (Some(i), _) => model.chips.get(i).map(|c| c.info.session_id.clone()),
+        (None, Some(i)) => model.chips.get(i).map(|c| colony_key(&c.info.session_id)),
+        _ => None,
+    }
+}
+
 /// How long each ring of cells waits before it starts appearing, and how long
 /// one takes to arrive once it does (#92).
 const WAVE_STEP: f32 = 0.07;
@@ -1641,6 +1764,60 @@ mod tests {
                 assert!(has_free_neighbour(*at, &taken), "{n}: a session was walled in by its own cluster");
             }
         }
+    }
+
+    /// A seat the packing has just handed over is somewhere to *go* (#150).
+    /// The cell sets off from where it was and is drawn — and pressed — on
+    /// the way there. Except from clear across the board, where there is no
+    /// way there to draw.
+    #[test]
+    fn a_cell_glides_to_a_seat_it_has_just_been_given() {
+        use std::time::Duration;
+        let model = board(&[("a", 1)]);
+        let r = 90.0;
+        let seated = |q: i32, row: i32, r: f32| Comb {
+            cells: vec![Cell { center: axial(q, row, r), q, row, chip: Some(0), subs: None, wave: 0.0 }],
+            r,
+            height: 600.0,
+        };
+        let put = |slides: &mut Slides, q, row, r, at| {
+            let mut comb = seated(q, row, r);
+            slides.settle(&mut comb, &model, at);
+            comb.cells[0].center
+        };
+
+        let mut slides = Slides::default();
+        let t0 = std::time::Instant::now();
+        let (home, next) = (axial(0, 0, r), axial(0, 1, r));
+        assert_eq!(put(&mut slides, 0, 0, r, t0), home, "a cell that has not moved is where it sits");
+        assert!(!slides.moving());
+
+        // Given the seat next door, it is still where it was.
+        let off = put(&mut slides, 0, 1, r, t0);
+        assert!((off - home).len() < 0.01, "the cell jumped to its new seat instead of setting off for it");
+        assert!(slides.moving(), "the clock was not told the board is moving");
+
+        // Halfway there, it is somewhere between the two.
+        let half = put(&mut slides, 0, 1, r, t0 + Duration::from_secs_f32(SLIDE / 2.0));
+        let span = (next - home).len();
+        assert!((half - home).len() > span * 0.2, "it has not set off");
+        assert!((half - next).len() > span * 0.2, "it is already there");
+
+        // And it arrives, exactly, and stops asking for frames.
+        let done = put(&mut slides, 0, 1, r, t0 + Duration::from_secs_f32(SLIDE + 0.01));
+        assert!((done - next).len() < 0.01, "it never arrived");
+        assert!(!slides.moving(), "the board never came to rest");
+
+        // A window resized under a cell that kept its seat does not drag it.
+        let wide = put(&mut slides, 0, 1, 140.0, t0 + Duration::from_secs_f32(SLIDE + 0.02));
+        assert_eq!(wide, axial(0, 1, 140.0), "a resize left the cell trailing its seat");
+
+        // And a seat on the other side of the board is not a move at all:
+        // a body gliding there would run through every other body on the
+        // way (#140).
+        let far = put(&mut slides, 7, 7, 140.0, t0 + Duration::from_secs_f32(SLIDE + 0.03));
+        assert_eq!(far, axial(7, 7, 140.0), "a cell re-seated across the board set off through the others");
+        assert!(!slides.moving());
     }
 
     /// A colony answers to one session, so it must never sit where it is as

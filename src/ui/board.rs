@@ -115,6 +115,9 @@ pub struct Board {
     /// Where the metaball view's bodies actually are, which is a walk away
     /// from where they were seated (#142).
     pub(crate) blobs: Rc<RefCell<blob::Sim>>,
+    /// The cells still on their way to seats they were given this frame
+    /// (#150).
+    slides: comb::Slides,
     /// When the comb's first frame was painted, which is what its cells
     /// arrive on. Started there rather than when the view was chosen: a
     /// window that opens straight into the comb spends its first moments on
@@ -240,6 +243,7 @@ impl Board {
             window: (scene::DESIGN_W, scene::DESIGN_H),
             comb: None,
             blobs: Rc::new(RefCell::new(blob::Sim::default())),
+            slides: comb::Slides::default(),
             comb_since: None,
             palette: PaletteState::default(),
         }
@@ -531,6 +535,10 @@ impl Board {
         if self.model.moving(now) || self.model.blinking() {
             return true;
         }
+        // A cell on its way to a new seat (#150).
+        if self.slides.moving() {
+            return true;
+        }
         // The metaball view is still once its bodies have stopped moving as
         // well as arriving (#142).
         if self.settings.view == BoardView::Blob && self.blobs.borrow().moving() {
@@ -661,7 +669,13 @@ impl Render for Board {
             // over the board's bottom edge, and the middle of the screen is
             // the middle of what is left (#138).
             let seen = visible_height(&self.layout);
-            let comb = comb::lay_out(&self.model, self.layout.width, seen);
+            let mut comb = comb::lay_out(&self.model, self.layout.width, seen);
+            // A seat the packing has just handed over is somewhere to go,
+            // not somewhere to be: the cells that changed seats are moved
+            // back to where they were and let glide (#150). Before anything
+            // reads the seating, so the press and the walk are on the cell
+            // that is drawn.
+            self.slides.settle(&mut comb, &self.model, now);
             if self.settings.view == BoardView::Blob {
                 let since = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
                 self.blobs.borrow_mut().step(&self.model, &comb, since, now);
