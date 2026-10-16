@@ -151,11 +151,11 @@ fn main() {
             Some("dark") => theme::DARK,
             _ => theme::PALETTE,
         };
-        let comb = args.iter().position(|a| a == "--view").and_then(|k| args.get(k + 1)).is_some_and(|v| v == "comb");
-        let svg = if comb {
-            render_comb_svg(&sessions, w, h, palette)
-        } else {
-            render_svg(&sessions, w, h, demo, user_zoom, palette)
+        let view = args.iter().position(|a| a == "--view").and_then(|k| args.get(k + 1)).cloned();
+        let svg = match view.as_deref() {
+            Some("comb") => render_seated_svg(&sessions, w, h, palette, false),
+            Some("blob") => render_seated_svg(&sessions, w, h, palette, true),
+            _ => render_svg(&sessions, w, h, demo, user_zoom, palette),
         };
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
@@ -313,9 +313,15 @@ fn args_wave() -> Option<f32> {
     args.iter().position(|a| a == "--wave").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok())
 }
 
-/// The honeycomb view as a one-shot SVG, for looking at it without a window
-/// (#86).
-fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
+/// A seated view as a one-shot SVG, for looking at it without a window: the
+/// honeycomb (#86), or the same seating as metaballs (#140).
+fn render_seated_svg(
+    list: &[SessionInfo],
+    width: f32,
+    height: f32,
+    palette: theme::Palette,
+    blobs: bool,
+) -> String {
     let mut model = BoardModel::new();
     model.apply(list.to_vec(), Instant::now());
     model.settle();
@@ -323,7 +329,12 @@ fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme
     // A one-shot render wants the view as it settles, not mid-arrival; pass
     // `--wave <seconds>` to catch it partway (#92).
     let t = args_wave().unwrap_or(1.0e3);
-    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0), t);
+    let at = geom::Pt::new(0.0, 0.0);
+    let shapes = if blobs {
+        render::blob::build_shapes(&model, &comb, palette, 0.0, at, t)
+    } else {
+        render::comb::build_shapes(&model, &comb, palette, 0.0, at, t)
+    };
     render::svg::to_svg(&shapes, width, comb.height.max(height))
 }
 

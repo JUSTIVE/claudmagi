@@ -19,8 +19,8 @@ impl Board {
         if self.settings.view != view {
             self.settings.view = view;
             self.settings.save();
-            // The two views measure their content differently, so the old
-            // scroll means nothing in the new one (#86).
+            // The views measure their content differently, so the old scroll
+            // means nothing in the new one (#86).
             self.scroll_y = 0.0;
             // Opening the comb plays its arrival again, from its first
             // painted frame (#92, #93).

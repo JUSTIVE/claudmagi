@@ -20,6 +20,7 @@ use base_gpui::tooltip::{
 };
 
 use crate::made;
+use crate::render::blob;
 use crate::render::comb;
 use crate::settings::{BoardView, Settings};
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
@@ -613,9 +614,9 @@ impl Render for Board {
         if let Some(i) = self.hovered_ticket {
             self.tickets[i].hover = 1.0;
         }
-        // The comb lays the same sessions out on a hex grid and scrolls by
-        // its own height (#86).
-        if self.settings.view == BoardView::Comb {
+        // Both of the seated views lay the sessions out on the same hex grid
+        // and scroll by its height (#86, #140).
+        if self.settings.view.seated() {
             // The clock starts on the first frame with something to spread
             // out from. At launch the first session poll has not answered
             // yet, and a wave out of an empty grid is every cell at once:
@@ -663,6 +664,7 @@ impl Render for Board {
         // Seconds since the view opened: the cells spread out from the
         // clusters on this (#92).
         let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+        let view = self.settings.view;
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
@@ -818,7 +820,11 @@ impl Render for Board {
                         let origin = Pt::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y));
                         let shapes = match (&comb, &model) {
                             (Some(c), Some(m)) => {
-                                let mut out = comb::build_shapes(m, c, frame.palette, scroll_y, origin * (1.0 / zoom), comb_t);
+                                let at = origin * (1.0 / zoom);
+                                let mut out = match view {
+                                    BoardView::Blob => blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
+                                    _ => comb::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
+                                };
                                 for s in &mut out {
                                     s.scale(zoom);
                                 }

@@ -626,8 +626,22 @@ pub struct RowBox {
 pub fn row_box(r: f32, row: usize, label: &str, extras: Extras) -> RowBox {
     let dy = ROW_DY[row] * r;
     let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
+    let tall = font::height(scale).max(if row == 1 { r * 0.17 } else { r * 0.13 });
+    row_box_in(row_room(r, dy, tall), r, row, label, extras)
+}
+
+/// The same row, given the room it has instead of working it out from a
+/// hexagon (#140).
+///
+/// The blobs are round and merge into one another, so what a row has to play
+/// with is a chord of a circle rather than a slice of a cell — but what it
+/// does with the room, down to which marks come out of the label's share, is
+/// the same thing said in the same order.
+pub fn row_box_in(room: f32, r: f32, row: usize, label: &str, extras: Extras) -> RowBox {
+    let dy = ROW_DY[row] * r;
+    let scale = if row == 1 { r * 0.021 } else { r * 0.016 };
     let mark = if row == 1 { r * 0.17 } else { r * 0.13 };
-    let room = row_room(r, dy, font::height(scale).max(mark)) - ROW_PAD * 2.0;
+    let room = room - ROW_PAD * 2.0;
     let check = if extras.check { font::height(scale) * CHECK_H } else { 0.0 };
     let origin = if extras.origin { mark * crate::render::scene::ORIGIN_SIZE } else { 0.0 };
     // A second mark, after the label rather than before it: the row speaks
@@ -703,7 +717,223 @@ fn fit(label: &str, scale: f32, room: f32) -> String {
 }
 
 /// Where in a cell each row sits, as a fraction of the cell's radius.
-const ROW_DY: [f32; 3] = [-0.42, 0.0, 0.42];
+pub const ROW_DY: [f32; 3] = [-0.42, 0.0, 0.42];
+
+/// A colour made to read against whatever it is being drawn on (#140).
+///
+/// The comb draws straight onto the board, so that is what its colours have
+/// to clear (#86); the blobs put their rows on a body of their own. Which way
+/// to mix is the background's own question: against a dark body a colour has
+/// to go lighter and against the white board darker, and the palette's two
+/// ends are the only colours guaranteed to be there to go towards.
+pub fn legible(c: Rgba, on: Rgba, pal: Palette) -> Rgba {
+    let toward = if theme::contrast(pal.bg, on) > theme::contrast(pal.ink, on) { pal.bg } else { pal.ink };
+    // Laid on first: contrast is a question about two colours, and a
+    // see-through one does not answer it until it is standing on something
+    // (#139). Ink at half on the white board reads as grey and has to be
+    // measured as grey; on a dark body it reads as nothing at all.
+    theme::readable(theme::over(c, on), on, toward, READABLE)
+}
+
+/// A pull request's colour as something to paint with rather than write in
+/// (#139): laid on the board first, since a see-through colour is not the
+/// colour it was given as, and then made to hold a label drawn in the
+/// board's own colour.
+pub fn floor_color(c: Rgba, pal: Palette) -> Rgba {
+    legible(theme::over(c, pal.bg), pal.bg, pal)
+}
+
+/// What the whole cell speaks in, and the beat the session's own row keeps.
+///
+/// Colour and blink answer different questions (#100). The colour speaks for
+/// the whole cell: anything in here wants a person. The blink says who is
+/// waiting, and only the session's own asking moves the cell itself — a red
+/// check or an unstarted issue blinks on its own row, where the thing that
+/// needs doing actually is. (#90)
+pub fn body(info: &SessionInfo, pal: Palette, t: f32) -> (Rgba, f32) {
+    let needs = info.phase() == Phase::NeedsUser || info.prs.last().is_some_and(pr_needs_action);
+    let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
+    // Opaque, because the session's row is drawn on this same colour and a
+    // label has to read on top of it (#89).
+    let color = if needs {
+        theme::with_alpha(legible(pal.alarm, pal.bg, pal), beat)
+    } else {
+        match info.phase() {
+            Phase::Working => pal.ink,
+            Phase::Idle | Phase::NeedsUser => theme::lerp(pal.bg, pal.ink, 0.55),
+        }
+    };
+    (color, beat)
+}
+
+/// Whether a row is the one waiting, as a beat to draw it on.
+pub fn row_beat(info: &SessionInfo, row: usize, t: f32) -> f32 {
+    let waiting = match row {
+        0 => info.ticket.as_ref().is_some_and(ticket_needs_action),
+        2 => info.prs.last().is_some_and(pr_needs_action) || !info.prs_unanswered.is_empty(),
+        _ => false,
+    };
+    if waiting { theme::pulse_at(t) } else { 1.0 }
+}
+
+/// The three lines a session shows, top to bottom, in the colours they read
+/// in on `on` — the board for the comb, a blob's own body for the other view
+/// (#140).
+///
+/// Linear on top, the session in the middle, what the work produced at the
+/// bottom. Always in that order, so a column of them can be read down.
+pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3] {
+    let read = |c: Rgba| legible(c, on, pal);
+    [
+        info.ticket.as_ref().map(|t| SlotInk {
+            mark: logos::Mark::Linear,
+            label: t.key.clone(),
+            color: read(ticket_color(t, pal)),
+            check: false,
+            origin: None,
+            made: 0,
+            fill: None,
+        }),
+        Some(SlotInk {
+            mark: logos::Mark::Claude,
+            label: info.label(),
+            color: pal.bg,
+            check: false,
+            // Where this session is running, beside the mark that says what
+            // it is (#122).
+            origin: info.seat.as_ref().and_then(|s| logos::Mark::host(s.host)),
+            made: 0,
+            // The session's bed is the cell's own colour and is drawn for the
+            // whole cell, not for this row alone (#89).
+            fill: None,
+        }),
+        // The answered one if there is one, otherwise the number GitHub would
+        // not speak for, drawn quietly and blinking. With no pull request at
+        // all the line is the newest page's, under its own name: a cell with
+        // one thing to show shows it rather than leaving the line empty and
+        // the page unreachable (#137).
+        info.prs
+            .last()
+            .map(|p| SlotInk {
+                mark: logos::Mark::GitHub,
+                label: p.label(),
+                // The state is the floor now, so the letters stand on it in
+                // the board's own colour, the way the session's do (#139).
+                color: pal.bg,
+                check: p.signed_off(),
+                origin: None,
+                made: info.artifacts.len(),
+                fill: Some(floor_color(pr_color(p, pal), pal)),
+            })
+            .or_else(|| {
+                info.prs_unanswered.last().map(|id| SlotInk {
+                    mark: logos::Mark::GitHub,
+                    label: format!("#{}", id.number),
+                    color: theme::with_alpha(read(pal.ink), 0.5),
+                    check: false,
+                    origin: None,
+                    made: info.artifacts.len(),
+                    // Nothing to paint it with: a number GitHub would not
+                    // answer for has no state, and a floor would be the cell
+                    // claiming one. It stays the quiet, blinking line it was
+                    // (#112).
+                    fill: None,
+                })
+            })
+            .or_else(|| {
+                info.artifacts.last().map(|a| SlotInk {
+                    mark: logos::Mark::Artifact,
+                    label: a.label(),
+                    color: read(theme::lerp(pal.bg, pal.ink, 0.75)),
+                    check: false,
+                    origin: None,
+                    // The mark at the front is already the pages' own, so a
+                    // second one after the name would be saying it twice.
+                    made: 0,
+                    // What was asked for is the pull request's state as a
+                    // floor (#139); a page has no state to paint.
+                    fill: None,
+                })
+            }),
+    ]
+}
+
+/// One row's marks and letters, around the point it is centred on.
+///
+/// Both views lay the same line out the same way — mark, where it is running,
+/// the label, review's tick, the pages — and differ only in the room they
+/// have to do it in (#140).
+pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape> {
+    let RowBox { scale, mark, origin, label, check, made, tally, .. } = rb;
+    let (scale, mark, origin, check, made) = (*scale, *mark, *origin, *check, *made);
+    let text_w = font::measure(label, scale);
+    let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
+    let (tick, badge) = (span(check), span(origin));
+    let tally_w = font::measure(tally, scale);
+    let pages = span(made) + span(tally_w);
+    let left = at.x - (mark + MARK_GAP + badge + text_w + tick + pages) / 2.0;
+    let mut out = vec![Shape::Mark {
+        mark: slot.mark,
+        size: mark,
+        angle: 0.0,
+        center: Pt::new(left + mark / 2.0, at.y),
+        color,
+    }];
+    // The origin rides between the mark and the label, the way it does
+    // inside a chip on the other view (#122).
+    if let (Some(badge_mark), true) = (slot.origin, origin > 0.0) {
+        out.push(Shape::Mark {
+            mark: badge_mark,
+            size: origin,
+            angle: 0.0,
+            center: Pt::new(left + mark + MARK_GAP + origin / 2.0, at.y),
+            color,
+        });
+    }
+    out.push(Shape::Text {
+        text: label.clone(),
+        scale,
+        stroke: 1.0,
+        angle: 0.0,
+        center: Pt::new(left + mark + MARK_GAP + badge + text_w / 2.0, at.y),
+        color,
+    });
+    // Review's tick, after the number it signed off on (#116). The row has no
+    // fill to say it with, so it is said in a mark.
+    if check > 0.0 {
+        let tick_at = Pt::new(left + mark + MARK_GAP + badge + text_w + MARK_GAP + check / 2.0, at.y);
+        out.push(Shape::Stroke {
+            pieces: scene::check_mark(tick_at, check),
+            width: (check * 0.2).max(0.7),
+            color,
+        });
+    }
+    // The pages this session published, after everything the row was already
+    // saying (#137). A mark on its own means there is one; the count follows
+    // when there is more than one. Drawn in the row's own colour, because it
+    // belongs to the same line.
+    if made > 0.0 {
+        let pages_at = left + mark + MARK_GAP + badge + text_w + tick + MARK_GAP;
+        out.push(Shape::Mark {
+            mark: logos::Mark::Artifact,
+            size: made,
+            angle: 0.0,
+            center: Pt::new(pages_at + made / 2.0, at.y),
+            color,
+        });
+        if tally_w > 0.0 {
+            out.push(Shape::Text {
+                text: tally.clone(),
+                scale,
+                stroke: 1.0,
+                angle: 0.0,
+                center: Pt::new(pages_at + made + MARK_GAP + tally_w / 2.0, at.y),
+                color,
+            });
+        }
+    }
+    out
+}
 
 /// The row of a cell under a point, and whose cell it is. The caller knows
 /// whether that row has anything in it.
@@ -747,23 +977,24 @@ pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> 
 }
 
 /// What goes on one of a cell's three lines.
-struct SlotInk {
-    mark: logos::Mark,
-    label: String,
-    color: Rgba,
+#[derive(Clone, Debug)]
+pub struct SlotInk {
+    pub mark: logos::Mark,
+    pub label: String,
+    pub color: Rgba,
     /// Review has signed off on this pull request (#116). Only the GitHub
     /// row ever sets it.
-    check: bool,
+    pub check: bool,
     /// Where the session is running (#122). Only the middle row sets it:
     /// the issue and the pull request are not anywhere in particular.
-    origin: Option<logos::Mark>,
+    pub origin: Option<logos::Mark>,
     /// Pages this session published, told after the row's own label (#137).
-    made: usize,
+    pub made: usize,
     /// The colour the row is painted on, where the row says its state by
     /// being filled rather than by the colour of its own letters (#139).
     /// Opaque, because the label is drawn in the board's colour on top of
     /// it.
-    fill: Option<Rgba>,
+    pub fill: Option<Rgba>,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -881,131 +1112,20 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
 
         // Everything here is drawn straight onto the board, so every colour
         // is put through the floor first (#86).
-        let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
-        // The same, for a colour that is going to be painted rather than
-        // written with: a see-through colour is laid on the board first, so
-        // what the label has to read against is the mix, not the colour as
-        // it was given (#139).
-        let solid = |c: Rgba| read(theme::over(c, pal.bg));
-        // The border speaks for the whole cell: it goes to the alarm colour
-        // when anything in there is waiting on a person, which is the session
-        // asking outright or a pull request whose checks went red. An issue
-        // merely sitting in Todo is not an interruption and does not count.
-        // (#90)
-        let ticket = info.ticket.as_ref();
-        let pr = info.prs.last();
-        // GitHub is the problem when it will not answer for a pull request
-        // the transcript named: the board knows the number and nothing else
-        // (#112).
-        let unanswered = info.prs_unanswered.last();
-        // A row blinks when that row is the one waiting.
-        let row_beat = |row: usize| {
-            let waiting = match row {
-                0 => ticket.is_some_and(ticket_needs_action),
-                2 => pr.is_some_and(pr_needs_action) || unanswered.is_some(),
-                _ => false,
-            };
-            if waiting { theme::pulse_at(t) } else { 1.0 }
-        };
-        let needs = info.phase() == Phase::NeedsUser || pr.is_some_and(pr_needs_action);
-        // Colour and blink answer different questions (#100). The border's
-        // colour speaks for the whole cell: anything in here wants a person.
-        // The blink says who is waiting, and only the session's own asking
-        // moves the cell itself — a red check or an unstarted issue blinks on
-        // its own row, where the thing that needs doing actually is.
-        let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
-        // Opaque, because the session's row is filled with this same colour
-        // and a label has to read on top of it (#89).
-        let edge = if needs {
-            theme::with_alpha(read(pal.alarm), beat)
-        } else {
-            match info.phase() {
-                Phase::Working => pal.ink,
-                Phase::Idle | Phase::NeedsUser => theme::lerp(pal.bg, pal.ink, 0.55),
-            }
-        };
+        // The cell's own colour, which its border and the session's bed are
+        // drawn in, and the beat the session's row keeps (#90, #100). The
+        // comb draws straight onto the board, so every colour in here is the
+        // one that reads against the board (#86).
+        let (edge, beat) = body(info, pal, t);
         out.push(Shape::Stroke {
             pieces: vec![closed(corners(center, r, GAP))],
             width: WALL,
             color: fade(edge),
         });
-        // Linear on top, the session in the middle, its pull request at the
-        // bottom. Always in that order, so a column of cells can be read down.
-        let slots = [
-            ticket.map(|t| SlotInk {
-                mark: logos::Mark::Linear,
-                label: t.key.clone(),
-                color: read(ticket_color(t, pal)),
-                check: false,
-                origin: None,
-                made: 0,
-                fill: None,
-            }),
-            Some(SlotInk {
-                mark: logos::Mark::Claude,
-                label: info.label(),
-                color: pal.bg,
-                check: false,
-                // Where this session is running, beside the mark that says
-                // what it is (#122).
-                origin: info.seat.as_ref().and_then(|s| logos::Mark::host(s.host)),
-                made: 0,
-                // The session's bed is the cell's own colour and is drawn
-                // for the whole cell, not for this row alone (#89).
-                fill: None,
-            }),
-            // The answered one if there is one, otherwise the number GitHub
-            // would not speak for, drawn quietly and blinking. With no pull
-            // request at all the line is the newest page's, under its own
-            // name: a cell with one thing to show shows it rather than
-            // leaving the line empty and the page unreachable (#137).
-            pr.map(|p| SlotInk {
-                mark: logos::Mark::GitHub,
-                label: p.label(),
-                // The state is the floor now, so the letters stand on it in
-                // the board's own colour, the way the session's do (#139).
-                color: pal.bg,
-                check: p.signed_off(),
-                origin: None,
-                made: info.artifacts.len(),
-                fill: Some(solid(pr_color(p, pal))),
-            })
-            .or_else(|| {
-                unanswered.map(|id| SlotInk {
-                    mark: logos::Mark::GitHub,
-                    label: format!("#{}", id.number),
-                    color: theme::with_alpha(pal.ink, 0.5),
-                    check: false,
-                    origin: None,
-                    made: info.artifacts.len(),
-                    // Nothing to paint it with: a number GitHub would not
-                    // answer for has no state, and a floor would be the cell
-                    // claiming one. It stays the quiet, blinking line it was
-                    // (#112).
-                    fill: None,
-                })
-            })
-            .or_else(|| {
-                info.artifacts.last().map(|a| SlotInk {
-                    mark: logos::Mark::Artifact,
-                    label: a.label(),
-                    color: read(theme::lerp(pal.bg, pal.ink, 0.75)),
-                    check: false,
-                    origin: None,
-                    // The mark at the front is already the pages' own, so a
-                    // second one after the name would be saying it twice.
-                    made: 0,
-                    // What was asked for is the pull request's state as a
-                    // floor (#139); a page has no state to paint.
-                    fill: None,
-                })
-            }),
-        ];
-        for (row, slot) in slots.iter().enumerate() {
+        for (row, slot) in slots(info, pal, pal.bg).iter().enumerate() {
             let Some(slot) = slot else { continue };
             let extras = Extras { origin: slot.origin.is_some(), check: slot.check, made: slot.made };
-            let RowBox { dy, scale, mark, origin, label, check, made, tally, .. } =
-                row_box(r, row, &slot.label, extras);
+            let rb = row_box(r, row, &slot.label, extras);
             // The session's label lies on the bed, so it blinks with it;
             // the other two answer for themselves. A row that says its state
             // by being painted does not blink at all: the cell's own border
@@ -1017,14 +1137,8 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             } else if slot.fill.is_some() {
                 1.0
             } else {
-                row_beat(row)
+                row_beat(info, row, t)
             };
-            let text_w = font::measure(&label, scale);
-            let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
-            let (tick, badge) = (span(check), span(origin));
-            let tally_w = font::measure(&tally, scale);
-            let pages = span(made) + span(tally_w);
-            let left = center.x - (mark + MARK_GAP + badge + text_w + tick + pages) / 2.0;
             // The session wears the cell's own colour as a bed, so the middle
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
@@ -1034,66 +1148,8 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             if let Some(fill) = slot.fill {
                 out.push(Shape::Poly { points: output_bed(center, r), color: fade(fill) });
             }
-            out.push(Shape::Mark {
-                mark: slot.mark,
-                size: mark,
-                angle: 0.0,
-                center: Pt::new(left + mark / 2.0, center.y + dy),
-                color: fade(theme::with_alpha(slot.color, slot_beat)),
-            });
-            // The origin rides between the mark and the label, the way it
-            // does inside a chip on the other view (#122).
-            if let (Some(badge_mark), true) = (slot.origin, origin > 0.0) {
-                out.push(Shape::Mark {
-                    mark: badge_mark,
-                    size: origin,
-                    angle: 0.0,
-                    center: Pt::new(left + mark + MARK_GAP + origin / 2.0, center.y + dy),
-                    color: fade(theme::with_alpha(slot.color, slot_beat)),
-                });
-            }
-            out.push(Shape::Text {
-                text: label.clone(),
-                scale,
-                stroke: 1.0,
-                angle: 0.0,
-                center: Pt::new(left + mark + MARK_GAP + badge + text_w / 2.0, center.y + dy),
-                color: fade(theme::with_alpha(slot.color, slot_beat)),
-            });
-            // Review's tick, after the number it signed off on (#116). The
-            // row has no fill to say it with, so it is said in a mark.
-            if check > 0.0 {
-                let at = Pt::new(left + mark + MARK_GAP + badge + text_w + MARK_GAP + check / 2.0, center.y + dy);
-                out.push(Shape::Stroke {
-                    pieces: scene::check_mark(at, check),
-                    width: (check * 0.2).max(0.7),
-                    color: fade(theme::with_alpha(slot.color, slot_beat)),
-                });
-            }
-            // The pages this session published, after everything the row was
-            // already saying (#137). A mark on its own means there is one;
-            // the count follows when there is more than one. Drawn in the
-            // row's own colour, because it belongs to the same line.
-            if made > 0.0 {
-                let at = left + mark + MARK_GAP + badge + text_w + tick + MARK_GAP;
-                out.push(Shape::Mark {
-                    mark: logos::Mark::Artifact,
-                    size: made,
-                    angle: 0.0,
-                    center: Pt::new(at + made / 2.0, center.y + dy),
-                    color: fade(theme::with_alpha(slot.color, slot_beat)),
-                });
-                if tally_w > 0.0 {
-                    out.push(Shape::Text {
-                        text: tally.clone(),
-                        scale,
-                        stroke: 1.0,
-                        angle: 0.0,
-                        center: Pt::new(at + made + MARK_GAP + tally_w / 2.0, center.y + dy),
-                        color: fade(theme::with_alpha(slot.color, slot_beat)),
-                    });
-                }
-            }
+            let at = Pt::new(center.x, center.y + rb.dy);
+            out.extend(row_shapes(at, &rb, slot, fade(theme::with_alpha(slot.color, slot_beat))));
         }
 
         // A wall shared with a cell of the same cluster is drawn twice
