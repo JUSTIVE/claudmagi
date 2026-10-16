@@ -1061,6 +1061,20 @@ pub fn ease(x: f32) -> f32 {
     x * x * (3.0 - 2.0 * x)
 }
 
+/// Ease-in: slow to set off, and still gaining when it gets there (#151).
+///
+/// What a cell changing seats moves on. A cell is not travelling of its own
+/// accord — it was shoved over by a neighbour arriving or pulled along by
+/// one leaving — and this is what being shoved looks like: it hangs where
+/// it was, gives, and is in its new seat before it has finished picking up
+/// speed. Smoothstep, which eases the arrival too, reads as the cell
+/// *choosing* to go and settling in, which is a different story about the
+/// same two frames.
+pub fn ease_in(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x
+}
+
 /// What the walk and the wander know a colony by (#145).
 ///
 /// Its parent's name marked as the colony's own: the two are cells of one
@@ -1155,9 +1169,10 @@ impl Slides {
 }
 
 impl Slide {
-    /// How much of the journey is left, eased at both ends.
+    /// How much of the journey is left (#151): nothing of it has been done
+    /// at first, and the last of it goes fastest.
     fn left(&self, now: std::time::Instant) -> f32 {
-        1.0 - ease(now.duration_since(self.since).as_secs_f32() / SLIDE)
+        1.0 - ease_in(now.duration_since(self.since).as_secs_f32() / SLIDE)
     }
 }
 
@@ -1800,8 +1815,14 @@ mod tests {
         // Halfway there, it is somewhere between the two.
         let half = put(&mut slides, 0, 1, r, t0 + Duration::from_secs_f32(SLIDE / 2.0));
         let span = (next - home).len();
-        assert!((half - home).len() > span * 0.2, "it has not set off");
+        assert!((half - home).len() > span * 0.05, "it has not set off");
         assert!((half - next).len() > span * 0.2, "it is already there");
+        // And it eases *in* (#151): half the time is not half the way, it
+        // is the slow part. Smoothstep would stand exactly on the middle.
+        assert!(
+            (half - home).len() < (half - next).len(),
+            "half way through the time it is past half way there: that is not an ease-in"
+        );
 
         // And it arrives, exactly, and stops asking for frames.
         let done = put(&mut slides, 0, 1, r, t0 + Duration::from_secs_f32(SLIDE + 0.01));
