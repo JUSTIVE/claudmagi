@@ -36,7 +36,15 @@ const LEVEL: f32 = 0.5;
 /// How finely the surface is sampled, against the cell's radius. About thirty
 /// samples across a ball, which is enough that the polygon reads as a curve
 /// at the size a session is drawn.
-const STEP: f32 = 0.07;
+const STEP: f32 = 0.09;
+
+/// How hard the surface pulls itself together where two balls meet (#141),
+/// against the field they make between them.
+///
+/// Enough to groove the waist and cut a cusp where the seam comes out; not
+/// so much that it cuts the body in two, which is the thing to watch — the
+/// test for a cluster being one body is also the test for this number.
+const TENSION: f32 = 0.28;
 
 /// How far a ball's ground is let past the line where its pull falls behind
 /// the next ball's.
@@ -68,12 +76,210 @@ impl Ball {
     }
 }
 
+/// How a body comes in (#143).
+///
+/// The wave walks a cell from nothing to arrived in a straight line (#92),
+/// and a ball grown to that line arrives at a dead stop — the drawn surface
+/// is a fixed fraction of the reach, so it swells at one rate throughout and
+/// then simply ceases. Smoothstep gives both ends back their ease: it leaves
+/// nothing gently and settles into its size rather than hitting it.
+pub fn ease(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
 /// How big a ball on its own comes out: `(1 - d²)³ = LEVEL`.
 ///
 /// With the reach above this is `0.86 r`, which is the honeycomb cell's own
 /// inradius — a session alone takes up what its cell used to.
 pub fn lone(reach: f32) -> f32 {
     reach * (1.0 - LEVEL.cbrt()).max(0.0).sqrt()
+}
+
+/// How hard a ball is held to its seat, and how hard it is held back (#142).
+///
+/// The damping is the critical one for the stiffness, so a ball comes home
+/// without ringing: what this is for is to make an arrival shoulder its
+/// neighbours over and a departure let them back, not to set the board
+/// wobbling.
+const STIFF: f32 = 70.0;
+const DAMP: f32 = 16.7;
+
+/// How much of each other's room two balls of one cluster insist on, against
+/// the size they are drawn at, and how hard they insist.
+///
+/// A shade over touching, so a cluster settles a little puffed out rather
+/// than exactly on the lattice it was seated on — which is the whole of what
+/// is wanted here. The seats are a honeycomb and a honeycomb is the thing
+/// this view set out not to look like.
+const SNUG: f32 = 1.03;
+const PUSH: f32 = 90.0;
+
+/// How far a ball may ever get from its seat, against the cell's radius.
+///
+/// The seat is what the presses, the drop-down and the hit test are keyed to
+/// (#86), and the nearest cell of another cluster is only two away (#121). A
+/// ball that wandered would take its body out of the cell that answers for
+/// it and, worse, into somebody else's field.
+const DRIFT: f32 = 0.06;
+
+/// How slow counts as stopped, in design units a second.
+const ASLEEP: f32 = 0.6;
+
+/// Where a session's ball actually is, which is not quite where it was
+/// seated (#142).
+#[derive(Clone, Copy, Debug)]
+struct Bob {
+    at: Pt,
+    v: Pt,
+    /// The seat it was walking around last time, so a seat that moves can be
+    /// told from a ball that did.
+    seat: Pt,
+}
+
+/// The balls, walked (#142).
+///
+/// The seating says where a session belongs; this says where it is. They are
+/// not the same thing while the board is changing: a ball grows into a
+/// cluster and shoulders its neighbours over, a ball that goes lets them back
+/// in, and a cluster re-seated under a changed board (#138) slides across
+/// instead of jumping. It is held on a spring to its seat and damped to
+/// stillness, so the board is quiet again within half a second and the frame
+/// clock can stop (#126).
+#[derive(Default)]
+pub struct Sim {
+    bobs: std::collections::HashMap<String, Bob>,
+    last: Option<std::time::Instant>,
+    moving: bool,
+    /// What the board looked like when the walk last had something to do.
+    asleep: bool,
+    board: u64,
+}
+
+impl Sim {
+    /// One step, at whatever rate the board is painting.
+    pub fn step(&mut self, model: &BoardModel, comb: &Comb, t: f32, now: std::time::Instant) {
+        let dt = match self.last.replace(now) {
+            // A long frame is walked as a short one rather than as itself:
+            // a spring stepped with a big enough `dt` throws its ball across
+            // the board.
+            Some(then) => now.duration_since(then).as_secs_f32().min(1.0 / 20.0),
+            None => 0.0,
+        };
+        self.advance(model, comb, t, dt);
+    }
+
+    /// Walked to a standstill, for a still frame that has no clock (#86).
+    pub fn settle(&mut self, model: &BoardModel, comb: &Comb, t: f32) {
+        self.advance(model, comb, t, 0.0);
+        for _ in 0..600 {
+            self.advance(model, comb, t, 1.0 / 60.0);
+            if !self.moving {
+                break;
+            }
+        }
+    }
+
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+
+    /// Where this session's body is, or its seat if the walk has not met it.
+    pub fn at(&self, id: &str, seat: Pt) -> Pt {
+        self.bobs.get(id).map_or(seat, |b| b.at)
+    }
+
+    fn advance(&mut self, model: &BoardModel, comb: &Comb, t: f32, dt: f32) {
+        let r = comb.r;
+        // Who is on the board, where they are seated, and how big they are
+        // drawn just now: a ball grows into its size (#92), and what it
+        // takes up while it grows is what shoulders its neighbours.
+        let mut seats: Vec<(&str, Pt, f32, &str)> = Vec::new();
+        for cell in &comb.cells {
+            let Some(chip) = cell.chip.and_then(|i| model.chips.get(i)) else { continue };
+            let size = lone(REACH * r * ease(comb::reveal(cell, t)));
+            seats.push((chip.info.session_id.as_str(), cell.center, size, chip.info.group.as_str()));
+        }
+        // Who is here, where they sit and how big they are, to the pixel the
+        // drawing is cached on: anything else and the walk goes back to work.
+        let print = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for (id, seat, size, _) in &seats {
+                id.hash(&mut h);
+                for v in [seat.x, seat.y, *size] {
+                    ((v * 20.0).round() as i32).hash(&mut h);
+                }
+            }
+            h.finish()
+        };
+        if print != self.board {
+            self.board = print;
+            self.asleep = false;
+        }
+        self.bobs.retain(|id, _| seats.iter().any(|(s, ..)| s == id));
+        for (id, seat, ..) in &seats {
+            let bob = self
+                .bobs
+                .entry((*id).to_string())
+                .or_insert(Bob { at: *seat, v: Pt::new(0.0, 0.0), seat: *seat });
+            // The packing can move a seat out from under a body (#138). The
+            // body goes with it, keeping whatever lean it had, rather than
+            // setting off across the board to catch up: the rim between two
+            // clusters is one cell wide (#121), and a body crossing it would
+            // run into somebody else's on the way.
+            if bob.seat != *seat {
+                bob.at = bob.at + (*seat - bob.seat);
+                bob.seat = *seat;
+            }
+        }
+        // A walk that has come to rest is not walked at all. A ball creeping
+        // by a thousandth of a pixel is a ball whose body is tessellated
+        // again every frame, and that is paid for at the refresh rate (#38,
+        // #126): what wakes it is the board changing under it, not time
+        // passing.
+        if dt <= 0.0 || self.asleep {
+            self.moving = false;
+            return;
+        }
+
+        let mut fastest = 0.0f32;
+        let places: Vec<(String, Pt, f32, String)> =
+            seats.iter().map(|(id, seat, size, g)| ((*id).to_string(), *seat, *size, (*g).to_string())).collect();
+        let now: Vec<Pt> = places.iter().map(|(id, seat, ..)| self.at(id, *seat)).collect();
+        for (k, (id, seat, size, group)) in places.iter().enumerate() {
+            let here = now[k];
+            let mut f = (*seat - here) * STIFF;
+            // Only the balls of one body push each other: two clusters are a
+            // rim apart and never touch, and a push between them would be a
+            // force with nothing drawn to explain it.
+            for (j, (_, _, other_size, other_group)) in places.iter().enumerate() {
+                if j == k || other_group != group {
+                    continue;
+                }
+                let away = here - now[j];
+                let len = away.len();
+                let room = (size + other_size) * SNUG;
+                if len > 0.001 && len < room {
+                    f = f + away * ((room - len) * PUSH / len);
+                }
+            }
+            let Some(bob) = self.bobs.get_mut(id) else { continue };
+            f = f - bob.v * DAMP;
+            bob.v = bob.v + f * dt;
+            bob.at = bob.at + bob.v * dt;
+            // Never further out than the seat can answer for.
+            let off = bob.at - *seat;
+            let far = off.len();
+            if far > r * DRIFT {
+                bob.at = *seat + off * (r * DRIFT / far);
+                bob.v = bob.v * 0.5;
+            }
+            fastest = fastest.max(bob.v.len());
+        }
+        self.asleep = fastest <= ASLEEP;
+        self.moving = !self.asleep;
+    }
 }
 
 /// The field of one body, sampled on a lattice.
@@ -166,7 +372,32 @@ impl Sampled {
 
     /// The body itself: positive where the field is over the level.
     fn body(&self, i: usize, j: usize) -> f32 {
-        self.sum[j * self.nx + i] - LEVEL
+        let k = j * self.nx + i;
+        self.sum[k] - self.tension(k) - LEVEL
+    }
+
+    /// What the surface takes back where two balls meet (#141).
+    ///
+    /// Adding two fields together pushes the surface *out* where they
+    /// overlap, which is the one place a liquid would pull it in: a film
+    /// between two bubbles stands at the waist and drags the outside of both
+    /// into a groove, and where the film reaches the air the three surfaces
+    /// meet in a cusp. So the field gives some back exactly where the top two
+    /// pulls are alike — all of it where they are equal, none where one ball
+    /// has the place to itself.
+    ///
+    /// Only the surface moves. A sample deep inside a body is far above the
+    /// level and a nudge does not bring it down to it, so this shows up at
+    /// the waist and at the cusp and nowhere else, which is where surface
+    /// tension shows up too.
+    fn tension(&self, k: usize) -> f32 {
+        let (a, b) = (self.top[k], self.second[k]);
+        if b <= 0.0 {
+            return 0.0;
+        }
+        let share = (a - b) / (a + b);
+        let alike = (1.0 - share * share).max(0.0);
+        TENSION * alike * alike * (a + b)
     }
 
     /// Ball `b`'s own ground: inside the body, and nearer to `b` than to
@@ -281,7 +512,15 @@ fn closed(mut ring: Vec<Pt>) -> Vec<Pt> {
 
 /// Every shape of the metaball view, in design units. `t` is seconds since
 /// the view opened, which is what the bodies grow on.
-pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32, origin: Pt, t: f32) -> Vec<Shape> {
+pub fn build_shapes(
+    model: &BoardModel,
+    comb: &Comb,
+    pal: Palette,
+    scroll_y: f32,
+    origin: Pt,
+    t: f32,
+    sim: &Sim,
+) -> Vec<Shape> {
     let mut out = vec![Shape::Rect { x: 0.0, y: 0.0, w: 1.0e5, h: 1.0e5, color: pal.bg }];
     let r = comb.r;
     let step = (r * STEP).max(1.0);
@@ -304,7 +543,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             h: size,
             r: size / 2.0,
             angle: 0.0,
-            color: theme::with_alpha(pal.ink, 0.22 * comb::reveal(cell, t)),
+            color: theme::with_alpha(pal.ink, 0.22 * ease(comb::reveal(cell, t))),
             stroke: None,
         });
     }
@@ -327,17 +566,22 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
     }
 
     for cluster in &clusters {
-        let grown: Vec<f32> = cluster.iter().map(|(c, _)| comb::reveal(c, t)).collect();
+        let grown: Vec<f32> = cluster.iter().map(|(c, _)| ease(comb::reveal(c, t))).collect();
         // Growing the reach rather than the weight: a ball under the level
         // is not a small ball, it is no ball at all, so a weight that ramps
         // would have the body pop into existence halfway through its own
         // arrival (#92).
+        // Where the walk has put each of them, which is near its seat and not
+        // on it (#142).
         let balls: Vec<Ball> = cluster
             .iter()
             .zip(&grown)
-            .map(|((c, _), g)| Ball { at: place(c.center), reach: REACH * r * g })
+            .map(|((c, i), g)| {
+                let id = model.chips.get(*i).map_or("", |c| c.info.session_id.as_str());
+                Ball { at: place(sim.at(id, c.center)), reach: REACH * r * g }
+            })
             .collect();
-        if balls.iter().all(|b| b.reach < 1.0) || !cluster.iter().any(|(c, _)| on_board(place(c.center))) {
+        if balls.iter().all(|b| b.reach < 1.0) || !balls.iter().any(|b| on_board(b.at)) {
             continue;
         }
         let field = Sampled::of(&balls, step);
@@ -345,6 +589,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             let Some(c) = model.chips.get(*chip) else { continue };
             let info = &c.info;
             let fade = |col: Rgba| theme::with_alpha(col, *grown);
+            // The letters wait for a body big enough to hold them (#143).
+            // They are cut to the size the ball ends up (#94), so a row drawn
+            // at full width on a ball half grown hangs out of it on both
+            // sides.
+            let letters = ease(((grown - 0.6) / 0.4).clamp(0.0, 1.0));
             let (skin, beat) = comb::body(info, pal, t);
             let (i0, j0, wx, wy) = field.window(&balls[b]);
             let corner = field.pt(i0, j0);
@@ -366,7 +615,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 });
             }
 
-            let at = place(cell.center);
+            let at = balls[b].at;
             // The rows the honeycomb draws, in the room a circle gives
             // instead of a cell: the body is never smaller than the ball
             // alone, so a line that fits the ball cannot leave the body.
@@ -398,7 +647,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 } else {
                     comb::row_beat(info, row, t)
                 };
-                let ink = fade(theme::with_alpha(slot.color, slot_beat));
+                let ink = theme::with_alpha(slot.color, slot_beat * letters);
                 out.extend(comb::row_shapes(Pt::new(at.x, at.y + dy), &rb, slot, ink));
             }
         }
@@ -420,7 +669,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         if agents.is_empty() {
             continue;
         }
-        let grown = comb::reveal(cell, t);
+        let grown = ease(comb::reveal(cell, t));
         let seats = comb::sub_grid(at, r, agents.len());
         let balls: Vec<Ball> =
             seats.iter().map(|(p, mr)| Ball { at: *p, reach: REACH * mr * grown }).collect();
@@ -453,7 +702,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     stroke: 1.0,
                     angle: 0.0,
                     center: *p,
-                    color: theme::with_alpha(pal.bg, grown),
+                    color: theme::with_alpha(pal.bg, ease(((grown - 0.6) / 0.4).clamp(0.0, 1.0))),
                 });
             }
         }
@@ -522,6 +771,37 @@ mod tests {
         assert_eq!(one(r * 3.0), 2, "two clusters never touch");
     }
 
+    /// Where two bodies have run together the surface pulls itself in
+    /// (#141): the waist is drawn in from where the two fields added
+    /// together would leave it, which is the groove a film makes between two
+    /// bubbles and, where it comes out at the air, the cusp. It is a
+    /// narrowing and not a parting — the test above is the one that says so.
+    #[test]
+    fn the_waist_between_two_balls_is_drawn_in() {
+        let r = 90.0;
+        let apart = r * 1.7320508;
+        let balls =
+            [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
+        let field = Sampled::of(&balls, r * 0.01);
+        let i = ((apart / 2.0 - field.at.x) / field.step).round() as usize;
+        let j0 = ((0.0 - field.at.y) / field.step).round() as usize;
+        // How far down the waist's own line each surface holds out.
+        let half = |v: &dyn Fn(usize) -> f32| {
+            let mut j = j0;
+            while j + 1 < field.ny && v(j + 1) > 0.0 {
+                j += 1;
+            }
+            (j - j0) as f32 * field.step
+        };
+        let pulled = half(&|j| field.body(i, j));
+        let added = half(&|j| field.sum[j * field.nx + i] - LEVEL);
+        assert!(pulled > 0.0, "the waist was pinched through: the body came apart");
+        assert!(
+            pulled < added * 0.8,
+            "a waist of {pulled} against {added} of plain addition: the surface is not pulling"
+        );
+    }
+
     /// A body is divided between the balls that made it, with no ground
     /// left over and none claimed twice: that is what lets a run-together
     /// cluster still answer in colour which session a spot belongs to.
@@ -551,6 +831,100 @@ mod tests {
         // claimed twice is the hair the seams are grown by (`BLEED`).
         assert!(parts >= whole, "the parts come to {parts} of a body of {whole}: ground left over");
         assert!(parts - whole < whole * 0.03, "the parts come to {parts} of a body of {whole}: too much overlap");
+    }
+
+    fn board(groups: &[(&str, usize)]) -> BoardModel {
+        use crate::model::{Phase, SessionInfo};
+        let mut model = BoardModel::new();
+        let mut list = Vec::new();
+        let mut seq = 0;
+        for (group, n) in groups {
+            for _ in 0..*n {
+                seq += 1;
+                let mut s = SessionInfo::synthetic(seq, &format!("S-{seq}"), Phase::Working);
+                s.group = (*group).to_string();
+                list.push(s);
+            }
+        }
+        model.apply(list, std::time::Instant::now());
+        model.settle();
+        model
+    }
+
+    /// The walk has to come to a stop, or the board never stops painting
+    /// (#126). It stops a little off the seating it started from, which is
+    /// the point of walking at all (#142).
+    #[test]
+    fn the_balls_come_to_rest_a_little_off_their_seats() {
+        let model = board(&[("a", 3)]);
+        let comb = comb::lay_out(&model, 980.0, 620.0);
+        let mut sim = Sim::default();
+        sim.settle(&model, &comb, 1.0e3);
+        assert!(!sim.moving(), "the bodies never stopped moving");
+        let mut off: f32 = 0.0;
+        for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
+            let id = &model.chips[cell.chip.unwrap()].info.session_id;
+            let moved = (sim.at(id, cell.center) - cell.center).len();
+            assert!(moved <= comb.r * DRIFT + 0.01, "a ball sits {moved} from its seat");
+            off = off.max(moved);
+        }
+        assert!(off > comb.r * 0.01, "nothing moved at all: the balls are not pressing on each other");
+
+        // And however hard a body is shoved — by a neighbour growing into a
+        // full cluster, or by a frame the machine sat on — it does not leave
+        // the cell that answers for it.
+        for bob in sim.bobs.values_mut() {
+            bob.v = Pt::new(900.0, -900.0);
+        }
+        sim.advance(&model, &comb, 1.0e3, 1.0 / 30.0);
+        for cell in comb.cells.iter().filter(|c| c.chip.is_some()) {
+            let id = &model.chips[cell.chip.unwrap()].info.session_id;
+            let moved = (sim.at(id, cell.center) - cell.center).len();
+            assert!(moved <= comb.r * DRIFT + 0.01, "a shoved ball reached {moved} from its seat");
+        }
+    }
+
+    /// What the cap on that is for: the seat is what answers for a press
+    /// (#86) and the nearest cell of another cluster is two away (#121), so
+    /// the walk must not be able to carry two bodies into each other.
+    #[test]
+    fn no_amount_of_walking_runs_two_clusters_together() {
+        let r = 90.0;
+        // The nearest two cells of different clusters can be, with both of
+        // them walked as far towards each other as they are ever allowed.
+        let apart = r * 3.0 - 2.0 * r * DRIFT;
+        let balls =
+            [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
+        let field = Sampled::of(&balls, r * 0.02);
+        let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
+        assert_eq!(trace(&v, field.nx, field.ny, field.at, field.step).len(), 2, "two clusters ran together");
+    }
+
+    /// A seat that moves takes its body with it (#138, #142). Not by
+    /// sliding: the rim between two clusters is a single cell, and a body
+    /// crossing it to catch up would run into somebody else's on the way.
+    /// What the walk keeps is the lean the body had.
+    #[test]
+    fn a_body_goes_with_a_seat_that_moved_rather_than_after_it() {
+        let model = board(&[("a", 1)]);
+        let r = 90.0;
+        let seated = |at: Pt| Comb {
+            cells: vec![Cell { center: at, q: 0, row: 0, chip: Some(0), subs: None, wave: 0.0 }],
+            r,
+            height: 600.0,
+        };
+        let id = model.chips[0].info.session_id.clone();
+        let from = Pt::new(300.0, 300.0);
+        let next = Pt::new(300.0 + r * 1.7320508, 300.0);
+
+        let mut sim = Sim::default();
+        sim.settle(&model, &seated(from), 1.0e3);
+        let lean = sim.at(&id, from) - from;
+
+        sim.advance(&model, &seated(next), 1.0e3, 1.0 / 60.0);
+        let moved = sim.at(&id, next) - next;
+        assert!((moved - lean).len() < r * 0.02, "the body did not go with its seat");
+        assert!(!sim.moving(), "and it was not sent moving by the move");
     }
 
     /// What the view is laid out on: a ball alone takes up what its cell did,

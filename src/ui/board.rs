@@ -104,6 +104,9 @@ pub struct Board {
     pub(crate) window: (f32, f32),
     /// The hex grid, when the comb view is the one showing (#86).
     pub(crate) comb: Option<comb::Comb>,
+    /// Where the metaball view's bodies actually are, which is a walk away
+    /// from where they were seated (#142).
+    pub(crate) blobs: Rc<RefCell<blob::Sim>>,
     /// When the comb's first frame was painted, which is what its cells
     /// arrive on. Started there rather than when the view was chosen: a
     /// window that opens straight into the comb spends its first moments on
@@ -222,6 +225,7 @@ impl Board {
             content_bottom: 0.0,
             window: (scene::DESIGN_W, scene::DESIGN_H),
             comb: None,
+            blobs: Rc::new(RefCell::new(blob::Sim::default())),
             comb_since: None,
             palette: PaletteState::default(),
         }
@@ -513,6 +517,11 @@ impl Board {
         if self.model.moving(now) || self.model.blinking() {
             return true;
         }
+        // The metaball view is still once its bodies have stopped moving as
+        // well as arriving (#142).
+        if self.settings.view == BoardView::Blob && self.blobs.borrow().moving() {
+            return true;
+        }
         match (&self.comb, self.comb_since) {
             // The comb is still once its cells have all arrived.
             (Some(comb), Some(since)) => !comb::wave_over(comb, now.duration_since(since).as_secs_f32()),
@@ -630,7 +639,12 @@ impl Render for Board {
             // over the board's bottom edge, and the middle of the screen is
             // the middle of what is left (#138).
             let seen = visible_height(&self.layout);
-            self.comb = Some(comb::lay_out(&self.model, self.layout.width, seen));
+            let comb = comb::lay_out(&self.model, self.layout.width, seen);
+            if self.settings.view == BoardView::Blob {
+                let since = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
+                self.blobs.borrow_mut().step(&self.model, &comb, since, now);
+            }
+            self.comb = Some(comb);
         } else {
             self.comb = None;
             self.comb_since = None;
@@ -661,6 +675,7 @@ impl Render for Board {
         };
         let paths = self.paths.clone();
         let comb = self.comb.clone();
+        let blobs = self.blobs.clone();
         // Seconds since the view opened: the cells spread out from the
         // clusters on this (#92).
         let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
@@ -822,7 +837,9 @@ impl Render for Board {
                             (Some(c), Some(m)) => {
                                 let at = origin * (1.0 / zoom);
                                 let mut out = match view {
-                                    BoardView::Blob => blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
+                                    BoardView::Blob => {
+                                        blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, &blobs.borrow())
+                                    }
                                     _ => comb::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
                                 };
                                 for s in &mut out {

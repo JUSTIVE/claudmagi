@@ -331,7 +331,11 @@ fn render_seated_svg(
     let t = args_wave().unwrap_or(1.0e3);
     let at = geom::Pt::new(0.0, 0.0);
     let shapes = if blobs {
-        render::blob::build_shapes(&model, &comb, palette, 0.0, at, t)
+        // No clock in a still frame, so the balls are walked to a standstill
+        // before it is taken (#142).
+        let mut sim = render::blob::Sim::default();
+        sim.settle(&model, &comb, t);
+        render::blob::build_shapes(&model, &comb, palette, 0.0, at, t, &sim)
     } else {
         render::comb::build_shapes(&model, &comb, palette, 0.0, at, t)
     };
