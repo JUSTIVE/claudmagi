@@ -94,23 +94,91 @@ struct Member<'a> {
     colony: bool,
 }
 
+/// How much of its own size a ball gives in the softest direction, and how
+/// long the give takes to come round, in seconds (#147).
+///
+/// A ball on its own came out a *perfect* circle, which is the one shape a
+/// drop of anything never holds: the field is the same in every direction,
+/// so the level crossing is too. The reach is let out and taken in by
+/// direction instead, a little on the second harmonic and half as much on
+/// the fourth — an oval with the corners knocked off it rather than a
+/// flower — and both turn slowly, so the surface swims instead of sitting
+/// in one pose.
+const SQUISH: f32 = 0.03;
+const KNEAD: [f32; 2] = [11.0, 6.5];
+
 /// A ball of the field.
 #[derive(Clone, Copy, Debug)]
 pub struct Ball {
     pub at: Pt,
     pub reach: f32,
+    /// What takes it off being a circle (#147): the second and fourth
+    /// harmonics of its reach, each as the pair of numbers that carries
+    /// both how far it goes and which way it faces. All nought is a true
+    /// circle, which is what the little ones are and what the shape is
+    /// measured as.
+    pub give: [(f32, f32); 2],
 }
 
 impl Ball {
+    /// A ball with no give in it.
+    pub fn round(at: Pt, reach: f32) -> Ball {
+        Ball { at, reach, give: [(0.0, 0.0); 2] }
+    }
+
+    /// A ball that gives, each one in its own pose and on its own beat
+    /// (#147). The key is the cell's, the same one the walk and the wander
+    /// know it by (#142, #144).
+    pub fn soft(at: Pt, reach: f32, key: &str, t: f32) -> Ball {
+        let turn = std::f32::consts::TAU;
+        let seed = seed_of(key);
+        let pose = |k: usize, size: f32| {
+            let a = t / KNEAD[k] * turn + ((seed >> (24 * k as u32)) & 0xffff) as f32 / 65536.0 * turn;
+            (size * a.cos(), size * a.sin())
+        };
+        Ball { at, reach, give: [pose(0, SQUISH), pose(1, SQUISH / 2.0)] }
+    }
+
+    /// How far out the ball can possibly reach, which is what the lattice
+    /// has to cover: the give adds to the reach in the direction it faces.
+    fn farthest(&self) -> f32 {
+        let far: f32 = self.give.iter().map(|(c, s)| (c * c + s * s).sqrt()).sum();
+        self.reach * (1.0 + far)
+    }
+
     /// Wyvill's falloff: one at the centre, nought at the reach, and flat
     /// where it arrives, so two balls meet in a fillet rather than a crease.
     /// Compact support is the point of it — a ball past its reach costs
     /// nothing and, more to the point, says nothing.
+    ///
+    /// The reach is the give's, not the ball's: it is longer where the ball
+    /// is let out and shorter where it is taken in, and the surface follows
+    /// it (#147). Both harmonics are even, so the direction can be had from
+    /// the offset itself without taking its length — `cos 2θ` and `sin 2θ`
+    /// are the offset squared over the distance squared, and the fourth
+    /// follows from the second.
     pub fn pull(&self, p: Pt) -> f32 {
-        let d2 = ((p.x - self.at.x).powi(2) + (p.y - self.at.y).powi(2)) / (self.reach * self.reach);
-        let t = (1.0 - d2).max(0.0);
+        let (dx, dy) = (p.x - self.at.x, p.y - self.at.y);
+        let d2 = dx * dx + dy * dy;
+        if d2 <= f32::EPSILON {
+            return 1.0;
+        }
+        let [(c2, s2), (c4, s4)] = self.give;
+        let (cos2, sin2) = ((dx * dx - dy * dy) / d2, 2.0 * dx * dy / d2);
+        let (cos4, sin4) = (cos2 * cos2 - sin2 * sin2, 2.0 * sin2 * cos2);
+        let w = 1.0 + c2 * cos2 + s2 * sin2 + c4 * cos4 + s4 * sin4;
+        let reach = self.reach * w;
+        let t = (1.0 - d2 / (reach * reach)).max(0.0);
         t * t * t
     }
+}
+
+/// The number a key gives, which is what a phase is drawn from (#144, #147).
+fn seed_of(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
 }
 
 /// How a body comes in (#143).
@@ -196,10 +264,7 @@ const BREATH: [f32; 2] = [7.3, 9.7];
 /// together — a colony included (#145): it says whose it is by being part of
 /// that body, not by moving with it.
 pub fn wander(key: &str, t: f32, r: f32) -> Pt {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    key.hash(&mut h);
-    let seed = h.finish();
+    let seed = seed_of(key);
     let turn = std::f32::consts::TAU;
     let phase = |bits: u32| ((seed >> bits) & 0xffff) as f32 / 65536.0 * turn;
     let swing = |k: usize| (t / BREATH[k] * turn + phase(16 * k as u32)).sin();
@@ -390,8 +455,9 @@ impl Sampled {
     fn of(balls: &[Ball], step: f32) -> Sampled {
         let (mut lo, mut hi) = (Pt::new(f32::MAX, f32::MAX), Pt::new(f32::MIN, f32::MIN));
         for b in balls {
-            lo = Pt::new(lo.x.min(b.at.x - b.reach), lo.y.min(b.at.y - b.reach));
-            hi = Pt::new(hi.x.max(b.at.x + b.reach), hi.y.max(b.at.y + b.reach));
+            let far = b.farthest();
+            lo = Pt::new(lo.x.min(b.at.x - far), lo.y.min(b.at.y - far));
+            hi = Pt::new(hi.x.max(b.at.x + far), hi.y.max(b.at.y + far));
         }
         // A sample's worth of margin all round: the field is nought out
         // there, so every loop closes inside the lattice instead of being
@@ -406,8 +472,9 @@ impl Sampled {
         // can reach, so a body of seven costs seven discs rather than seven
         // passes over the whole box.
         for (b, ball) in balls.iter().enumerate() {
-            let (i0, i1) = s.span(ball.at.x - ball.reach, ball.at.x + ball.reach, s.at.x, s.nx);
-            let (j0, j1) = s.span(ball.at.y - ball.reach, ball.at.y + ball.reach, s.at.y, s.ny);
+            let far = ball.farthest();
+            let (i0, i1) = s.span(ball.at.x - far, ball.at.x + far, s.at.x, s.nx);
+            let (j0, j1) = s.span(ball.at.y - far, ball.at.y + far, s.at.y, s.ny);
             for j in j0..=j1 {
                 for i in i0..=i1 {
                     let v = ball.pull(s.pt(i, j));
@@ -448,8 +515,9 @@ impl Sampled {
     /// cluster for each of its members instead costs the square of the
     /// cluster, and that was the frame.
     fn window(&self, ball: &Ball) -> (usize, usize, usize, usize) {
-        let (i0, i1) = self.span(ball.at.x - ball.reach, ball.at.x + ball.reach, self.at.x, self.nx);
-        let (j0, j1) = self.span(ball.at.y - ball.reach, ball.at.y + ball.reach, self.at.y, self.ny);
+        let far = ball.farthest();
+        let (i0, i1) = self.span(ball.at.x - far, ball.at.x + far, self.at.x, self.nx);
+        let (j0, j1) = self.span(ball.at.y - far, ball.at.y + far, self.at.y, self.ny);
         // A sample's margin either side, so the loop closes inside the
         // window rather than against its edge.
         let (i0, j0) = (i0.saturating_sub(1), j0.saturating_sub(1));
@@ -668,7 +736,7 @@ pub fn build_shapes(
         let balls: Vec<Ball> = cluster
             .iter()
             .zip(&grown)
-            .map(|(m, g)| Ball { at: place(sim.at(&m.key, m.cell.center, t, r)), reach: REACH * r * g })
+            .map(|(m, g)| Ball::soft(place(sim.at(&m.key, m.cell.center, t, r)), REACH * r * g, &m.key, t))
             .collect();
         if balls.iter().all(|b| b.reach < 1.0) || !balls.iter().any(|b| on_board(b.at)) {
             continue;
@@ -723,7 +791,7 @@ pub fn build_shapes(
                 }
                 let holes = comb::sub_grid(at, r, agents.len());
                 let dots: Vec<Ball> =
-                    holes.iter().map(|(p, mr)| Ball { at: *p, reach: REACH * mr * grown }).collect();
+                    holes.iter().map(|(p, mr)| Ball::round(*p, REACH * mr * grown)).collect();
                 if dots.iter().all(|b| b.reach < 1.0) {
                     continue;
                 }
@@ -761,7 +829,10 @@ pub fn build_shapes(
             // The rows the honeycomb draws, in the room a circle gives
             // instead of a cell: the body is never smaller than the ball
             // alone, so a line that fits the ball cannot leave the body.
-            let reach = lone(REACH * r);
+            // Measured at the ball's tightest, since the surface gives by
+            // direction now and a line cut to the slack side hangs out of
+            // the taut one (#147).
+            let reach = lone(REACH * r) * (1.0 - SQUISH * 1.5);
             for (row, slot) in comb::slots(info, pal, skin).iter().enumerate() {
                 let Some(slot) = slot else { continue };
                 let extras = Extras { origin: slot.origin.is_some(), check: slot.check, made: slot.made };
@@ -803,7 +874,7 @@ mod tests {
     use super::*;
 
     fn circle(at: Pt, reach: f32) -> Vec<Vec<Pt>> {
-        let balls = [Ball { at, reach }];
+        let balls = [Ball::round(at, reach)];
         let field = Sampled::of(&balls, reach * 0.04);
         let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         trace(&v, field.nx, field.ny, field.at, field.step)
@@ -838,27 +909,66 @@ mod tests {
         assert!((area - round).abs() < round * 0.02, "area {area} against a circle's {round}");
     }
 
+    /// A drop of anything holds a shape, and a perfect circle is the one it
+    /// never holds (#147). The reach gives by direction and the give turns,
+    /// so the surface is a little off round and never twice the same.
+    #[test]
+    fn a_ball_on_its_own_is_not_quite_a_circle() {
+        let at = Pt::new(300.0, 200.0);
+        let reach = 190.0;
+        let want = lone(reach);
+        let mut strayed = 0.0f32;
+        for k in 0..40 {
+            let t = k as f32 * 0.37;
+            let balls = [Ball::soft(at, reach, "S-1", t)];
+            let field = Sampled::of(&balls, reach * 0.02);
+            let v: Vec<f32> =
+                (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
+            let rings = trace(&v, field.nx, field.ny, field.at, field.step);
+            assert_eq!(rings.len(), 1, "t={t}: a ball on its own came out in pieces");
+            for p in &rings[0] {
+                let d = ((p.x - at.x).powi(2) + (p.y - at.y).powi(2)).sqrt();
+                strayed = strayed.max((d - want).abs() / want);
+            }
+        }
+        assert!(strayed > 0.01, "the ball is still a circle: it strayed {strayed} from round");
+        // And not so far that the size the rows are cut to (`SQUISH`) is a
+        // lie: everything laid on a body is measured against its tightest.
+        assert!(strayed < SQUISH * 1.6, "the ball strayed {strayed} from round");
+    }
+
     /// The whole point of the form (#140): the seating puts cluster mates a
     /// cell apart and everybody else two, and the reach is chosen so that
     /// the first pair is one body and the second is two.
     #[test]
     fn mates_run_together_and_strangers_do_not() {
         let r = 90.0;
-        let one = |apart: f32| {
-            let balls =
-                [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
+        // `give` is the squish turned along the line between them (#147):
+        // negative is both of them at their shortest reach towards each
+        // other, positive is both at their longest.
+        let one = |apart: f32, give: f32| {
+            let g = [(give, 0.0), (give / 2.0, 0.0)];
+            let balls = [
+                Ball { at: Pt::new(0.0, 0.0), reach: REACH * r, give: g },
+                Ball { at: Pt::new(apart, 0.0), reach: REACH * r, give: g },
+            ];
             let field = Sampled::of(&balls, r * STEP);
             let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         trace(&v, field.nx, field.ny, field.at, field.step).len()
         };
         // Neighbours in the honeycomb: a cell's height apart (#132).
-        assert_eq!(one(r * 1.7320508), 1, "two sessions of one cluster are one body");
-        // And still one when both have walked (#142) and breathed (#144)
-        // as far apart as either is ever allowed to get.
-        assert_eq!(one(r * (1.7320508 + 2.0 * (DRIFT + WANDER))), 1, "a cluster came apart at full stretch");
+        assert_eq!(one(r * 1.7320508, 0.0), 1, "two sessions of one cluster are one body");
+        // And still one when both have walked (#142) and breathed (#144) as
+        // far apart as either is ever allowed to get, with the surface drawn
+        // in as far as it ever gives (#147).
+        assert_eq!(
+            one(r * (1.7320508 + 2.0 * (DRIFT + WANDER)), -SQUISH),
+            1,
+            "a cluster came apart at full stretch"
+        );
         // The nearest two cells of different clusters can ever be, the rim
         // between them being the thing that says they are different (#121).
-        assert_eq!(one(r * 3.0), 2, "two clusters never touch");
+        assert_eq!(one(r * 3.0, SQUISH), 2, "two clusters never touch");
     }
 
     /// Where two bodies have run together the surface pulls itself in
@@ -870,8 +980,7 @@ mod tests {
     fn the_waist_between_two_balls_is_drawn_in() {
         let r = 90.0;
         let apart = r * 1.7320508;
-        let balls =
-            [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
+        let balls = [Ball::round(Pt::new(0.0, 0.0), REACH * r), Ball::round(Pt::new(apart, 0.0), REACH * r)];
         let field = Sampled::of(&balls, r * 0.01);
         let i = ((apart / 2.0 - field.at.x) / field.step).round() as usize;
         let j0 = ((0.0 - field.at.y) / field.step).round() as usize;
@@ -898,10 +1007,7 @@ mod tests {
     #[test]
     fn a_body_is_divided_between_the_balls_that_made_it() {
         let r = 90.0;
-        let balls = [
-            Ball { at: Pt::new(0.0, 0.0), reach: REACH * r },
-            Ball { at: Pt::new(r * 1.7320508, 0.0), reach: REACH * r },
-        ];
+        let balls = [Ball::round(Pt::new(0.0, 0.0), REACH * r), Ball::round(Pt::new(r * 1.7320508, 0.0), REACH * r)];
         let field = Sampled::of(&balls, r * STEP);
         let body: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         let whole: f32 = trace(&body, field.nx, field.ny, field.at, field.step)
@@ -984,8 +1090,13 @@ mod tests {
         // them walked as far towards each other as they are ever allowed and
         // breathing in on top of that (#144).
         let apart = r * 3.0 - 2.0 * r * (DRIFT + WANDER);
-        let balls =
-            [Ball { at: Pt::new(0.0, 0.0), reach: REACH * r }, Ball { at: Pt::new(apart, 0.0), reach: REACH * r }];
+        // And both of them let out as far as the squish ever lets them, on
+        // the line between them (#147).
+        let g = [(SQUISH, 0.0), (SQUISH / 2.0, 0.0)];
+        let balls = [
+            Ball { at: Pt::new(0.0, 0.0), reach: REACH * r, give: g },
+            Ball { at: Pt::new(apart, 0.0), reach: REACH * r, give: g },
+        ];
         let field = Sampled::of(&balls, r * 0.02);
         let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
         assert_eq!(trace(&v, field.nx, field.ny, field.at, field.step).len(), 2, "two clusters ran together");
@@ -1046,8 +1157,8 @@ mod tests {
         assert!(walked != sim.walked(&id, session.center), "the colony walks as its session");
 
         let balls = [
-            Ball { at: sim.at(&id, session.center, 2.0, comb.r), reach: REACH * comb.r },
-            Ball { at: sim.at(&key, colony.center, 2.0, comb.r), reach: REACH * comb.r },
+            Ball::round(sim.at(&id, session.center, 2.0, comb.r), REACH * comb.r),
+            Ball::round(sim.at(&key, colony.center, 2.0, comb.r), REACH * comb.r),
         ];
         let field = Sampled::of(&balls, comb.r * STEP);
         let v: Vec<f32> = (0..field.nx * field.ny).map(|k| field.body(k % field.nx, k / field.nx)).collect();
