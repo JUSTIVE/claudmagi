@@ -568,6 +568,33 @@ pub fn session_bed(center: Pt, r: f32) -> Vec<Pt> {
 /// is where the hexagon starts tapering towards its points.
 const BED_H: f32 = 0.3;
 
+/// The floor the pull request's row is painted on: the cell from the top of
+/// that row down to its own bottom edge (#139).
+///
+/// The session's band is a slab through the middle because a band is all it
+/// can be — the cell goes on above and below it. The bottom row has nothing
+/// under it, so it takes the whole of what is left: the two sides come in as
+/// the hexagon does and the shape ends on the cell's own flat bottom, which
+/// is what makes it read as the cell being filled from below rather than as
+/// a second stripe.
+pub fn output_bed(center: Pt, r: f32) -> Vec<Pt> {
+    // Inside the wall by its own width, the same as the session's band, so
+    // the border stays the border.
+    let inner = (r - (GAP + WALL * 2.0) / SQRT3).max(1.0);
+    // Where the row's own band begins, which is the line `hit_slot` divides
+    // the cell on: what is painted is exactly what the press belongs to.
+    let top = (ROW_DY[1] + ROW_DY[2]) / 2.0 * r;
+    let bottom = inner * SQRT3 / 2.0;
+    // The sides fall away by `1 / sqrt(3)` for every step off the middle.
+    let half = |y: f32| (inner - y / SQRT3).max(0.0);
+    vec![
+        Pt::new(center.x + half(top), center.y + top),
+        Pt::new(center.x + half(bottom), center.y + bottom),
+        Pt::new(center.x - half(bottom), center.y + bottom),
+        Pt::new(center.x - half(top), center.y + top),
+    ]
+}
+
 /// Between a row's mark and its label.
 const MARK_GAP: f32 = 4.0;
 /// Kept clear inside the cell wall, so a label never touches its own border.
@@ -732,6 +759,11 @@ struct SlotInk {
     origin: Option<logos::Mark>,
     /// Pages this session published, told after the row's own label (#137).
     made: usize,
+    /// The colour the row is painted on, where the row says its state by
+    /// being filled rather than by the colour of its own letters (#139).
+    /// Opaque, because the label is drawn in the board's colour on top of
+    /// it.
+    fill: Option<Rgba>,
 }
 
 /// How long each ring of cells waits before it starts appearing, and how long
@@ -850,6 +882,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
         // Everything here is drawn straight onto the board, so every colour
         // is put through the floor first (#86).
         let read = |c: Rgba| theme::readable(c, pal.bg, pal.ink, READABLE);
+        // The same, for a colour that is going to be painted rather than
+        // written with: a see-through colour is laid on the board first, so
+        // what the label has to read against is the mix, not the colour as
+        // it was given (#139).
+        let solid = |c: Rgba| read(theme::over(c, pal.bg));
         // The border speaks for the whole cell: it goes to the alarm colour
         // when anything in there is waiting on a person, which is the session
         // asking outright or a pull request whose checks went red. An issue
@@ -892,21 +929,6 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             width: WALL,
             color: fade(edge),
         });
-        // A wall shared with a cell of the same cluster is drawn twice (#128).
-        // Adjacency is already what says two sessions belong together (#121);
-        // doubling the wall is that said in the drawing rather than left to
-        // be inferred from a gap.
-        for (face, (dq, drow)) in FACE_DIRS.into_iter().enumerate() {
-            let next = (cell.q + dq, cell.row + drow);
-            if mates.get(&next).is_some_and(|g| *g == info.group.as_str()) {
-                out.push(Shape::Stroke {
-                    pieces: vec![seam(center, r, face)],
-                    width: WALL,
-                    color: fade(edge),
-                });
-            }
-        }
-
         // Linear on top, the session in the middle, its pull request at the
         // bottom. Always in that order, so a column of cells can be read down.
         let slots = [
@@ -917,6 +939,7 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 check: false,
                 origin: None,
                 made: 0,
+                fill: None,
             }),
             Some(SlotInk {
                 mark: logos::Mark::Claude,
@@ -927,6 +950,9 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                 // what it is (#122).
                 origin: info.seat.as_ref().and_then(|s| logos::Mark::host(s.host)),
                 made: 0,
+                // The session's bed is the cell's own colour and is drawn
+                // for the whole cell, not for this row alone (#89).
+                fill: None,
             }),
             // The answered one if there is one, otherwise the number GitHub
             // would not speak for, drawn quietly and blinking. With no pull
@@ -936,10 +962,13 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             pr.map(|p| SlotInk {
                 mark: logos::Mark::GitHub,
                 label: p.label(),
-                color: read(pr_color(p, pal)),
+                // The state is the floor now, so the letters stand on it in
+                // the board's own colour, the way the session's do (#139).
+                color: pal.bg,
                 check: p.signed_off(),
                 origin: None,
                 made: info.artifacts.len(),
+                fill: Some(solid(pr_color(p, pal))),
             })
             .or_else(|| {
                 unanswered.map(|id| SlotInk {
@@ -949,6 +978,11 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     check: false,
                     origin: None,
                     made: info.artifacts.len(),
+                    // Nothing to paint it with: a number GitHub would not
+                    // answer for has no state, and a floor would be the cell
+                    // claiming one. It stays the quiet, blinking line it was
+                    // (#112).
+                    fill: None,
                 })
             })
             .or_else(|| {
@@ -961,6 +995,9 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
                     // The mark at the front is already the pages' own, so a
                     // second one after the name would be saying it twice.
                     made: 0,
+                    // What was asked for is the pull request's state as a
+                    // floor (#139); a page has no state to paint.
+                    fill: None,
                 })
             }),
         ];
@@ -970,8 +1007,18 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             let RowBox { dy, scale, mark, origin, label, check, made, tally, .. } =
                 row_box(r, row, &slot.label, extras);
             // The session's label lies on the bed, so it blinks with it;
-            // the other two answer for themselves.
-            let slot_beat = if row == 1 { beat } else { row_beat(row) };
+            // the other two answer for themselves. A row that says its state
+            // by being painted does not blink at all: the cell's own border
+            // is already going red and pulsing for a pull request that needs
+            // somebody (#90), and a floor fading in and out under letters
+            // drawn in the board's colour would take the letters with it.
+            let slot_beat = if row == 1 {
+                beat
+            } else if slot.fill.is_some() {
+                1.0
+            } else {
+                row_beat(row)
+            };
             let text_w = font::measure(&label, scale);
             let span = |w: f32| if w > 0.0 { w + MARK_GAP } else { 0.0 };
             let (tick, badge) = (span(check), span(origin));
@@ -982,6 +1029,10 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // row reads as the chip it is on the other view (#89).
             if row == 1 {
                 out.push(Shape::Poly { points: session_bed(center, r), color: fade(edge) });
+            }
+            // The pull request's state as the cell's floor (#139).
+            if let Some(fill) = slot.fill {
+                out.push(Shape::Poly { points: output_bed(center, r), color: fade(fill) });
             }
             out.push(Shape::Mark {
                 mark: slot.mark,
@@ -1045,6 +1096,23 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             }
         }
 
+        // A wall shared with a cell of the same cluster is drawn twice
+        // (#128). Adjacency is already what says two sessions belong together
+        // (#121); doubling the wall is that said in the drawing rather than
+        // left to be inferred from a gap.
+        //
+        // Last, after the rows: both beds reach the walls they are under, and
+        // a seam painted over is a cluster the eye has to infer again (#139).
+        for (face, (dq, drow)) in FACE_DIRS.into_iter().enumerate() {
+            let next = (cell.q + dq, cell.row + drow);
+            if mates.get(&next).is_some_and(|g| *g == info.group.as_str()) {
+                out.push(Shape::Stroke {
+                    pieces: vec![seam(center, r, face)],
+                    width: WALL,
+                    color: fade(edge),
+                });
+            }
+        }
     }
     out
 }
@@ -1555,6 +1623,77 @@ mod tests {
         }
     }
 
+    /// What is painted is what is pressed (#139): the floor starts on the
+    /// line `hit_slot` divides the cell on and runs to the cell's own bottom,
+    /// which is what makes it read as the cell filled from below rather than
+    /// as a second stripe.
+    #[test]
+    fn the_pull_request_floor_takes_the_bottom_of_the_cell() {
+        for r in [46.0f32, 70.0, 104.0] {
+            let center = Pt::new(300.0, 300.0);
+            let bed = output_bed(center, r);
+            assert_eq!(bed.len(), 4, "a trapezoid: the cell from one line down to its floor");
+            for p in &bed {
+                assert!(inside_hex(*p, center, r, GAP), "r={r}: the floor pokes out of its cell");
+            }
+            let dy: Vec<f32> = bed.iter().map(|p| p.y - center.y).collect();
+            let (top, low) = (dy.iter().cloned().fold(f32::MAX, f32::min), dy.iter().cloned().fold(f32::MIN, f32::max));
+            let press = (ROW_DY[1] + ROW_DY[2]) / 2.0 * r;
+            assert!((top - press).abs() < 0.01, "r={r}: the floor starts at {top}, the press at {press}");
+            // Down to the wall, with only the wall's own width left under it.
+            let wall = corners(center, r, GAP).iter().map(|p| p.y - center.y).fold(f32::MIN, f32::max);
+            assert!(wall - low < WALL * 2.0, "r={r}: the floor stops {} short of the bottom", wall - low);
+            // And as wide as the cell is down there: the bottom edge of the
+            // hexagon, not a rectangle's corner hanging over the sides.
+            let wide = bed.iter().filter(|p| (p.y - center.y - low).abs() < 0.01).count();
+            assert_eq!(wide, 2, "r={r}: the floor ends flat, the way the cell does");
+        }
+    }
+
+    /// The pull request says its state by what it is painted on rather than
+    /// by the colour of its own letters (#139), so the letters are the
+    /// board's colour and the floor has to hold them: a see-through colour
+    /// laid on the board is not the colour it was given as.
+    #[test]
+    fn a_pull_request_is_painted_on_the_floor_of_its_cell() {
+        use crate::pr::{Look, Pr};
+        let scene = |prs: Vec<Pr>, pal: Palette| {
+            let mut model = board(&[("warp-tab:1-1", 1)]);
+            model.chips[0].info.prs = prs;
+            let comb = lay_out(&model, 980.0, 620.0);
+            // Well past the arrival wave, so the cell is fully drawn (#92).
+            build_shapes(&model, &comb, pal, 0.0, Pt::new(0.0, 0.0), 3.0)
+        };
+        // The only four-sided fill in the scene: a cell's wall is a stroked
+        // hexagon, and the session's band and a subagent have six sides.
+        let floor = |shapes: &[Shape]| -> Option<Rgba> {
+            shapes.iter().find_map(|s| match s {
+                Shape::Poly { points, color } if points.len() == 4 => Some(*color),
+                _ => None,
+            })
+        };
+        for pal in [theme::PALETTE, theme::ORANGE, theme::DARK] {
+            for look in Look::ALL {
+                let shapes = scene(vec![Pr::synthetic(7, look)], pal);
+                let paint = floor(&shapes).unwrap_or_else(|| panic!("{look:?}: the row has no floor"));
+                assert_eq!(paint.a, 1.0, "{look:?}: the board shows through the floor");
+                assert!(
+                    theme::contrast(paint, pal.bg) >= READABLE - 0.01,
+                    "{look:?}: a label in the board's own colour would not read on this floor"
+                );
+                let label = shapes.iter().find_map(|s| match s {
+                    Shape::Text { text, color, .. } if text == "#7" => Some(*color),
+                    _ => None,
+                });
+                assert_eq!(label, Some(pal.bg), "{look:?}: the number stands on the floor");
+            }
+            // Nothing to paint it with: a cell whose bottom line is a page
+            // (#137) or a number GitHub would not answer for (#112) has no
+            // state to say, and says none.
+            assert!(floor(&scene(vec![], pal)).is_none(), "an empty row painted a floor anyway");
+        }
+    }
+
     /// The view opens out of its clusters: a session is there from the first
     /// frame, and the empty field arrives in rings behind it (#92).
     #[test]
@@ -1842,6 +1981,23 @@ mod tests {
         // nothing of one ever touches another (#121).
         assert_eq!(seams(&board(&[("a", 1), ("b", 1), ("c", 1), ("d", 1)]), 980.0), 0);
         assert_eq!(seams(&board(&[("a", 2), ("b", 2)]), 420.0), 4, "narrow boards too");
+
+        // And a seam is drawn after what it crosses (#139). Both beds reach
+        // the walls they lie under, so a seam drawn before them is a seam
+        // painted over, and the cluster goes back to being inferred from the
+        // gap it was given a drawing to replace.
+        let mut model = board(&[("a", 2)]);
+        for chip in &mut model.chips {
+            chip.info.prs = vec![crate::pr::Pr::synthetic(7, crate::pr::Look::Merged)];
+        }
+        let comb = lay_out(&model, 980.0, 900.0);
+        let shapes = build_shapes(&model, &comb, theme::PALETTE, 0.0, Pt::new(0.0, 0.0), 1.0e3);
+        let last = |f: &dyn Fn(&Shape) -> bool| shapes.iter().rposition(f).expect("drawn");
+        let seam = last(&|s: &Shape| {
+            matches!(s, Shape::Stroke { pieces, .. } if pieces.len() == 1 && pieces[0].len() == 2)
+        });
+        let bed = last(&|s: &Shape| matches!(s, Shape::Poly { points, .. } if points.len() == 4));
+        assert!(seam > bed, "a seam at {seam} is under the bed at {bed}");
     }
 
     /// Wall `i` of the drawing is the wall facing `FACE_DIRS[i]` (#128).

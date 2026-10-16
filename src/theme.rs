@@ -184,6 +184,16 @@ pub fn readable(colour: Rgba, on: Rgba, ink: Rgba, floor: f32) -> Rgba {
     lerp(colour, ink, hi)
 }
 
+/// What a see-through colour comes out as once it is laid on `bg`: the same
+/// thing to look at, but opaque.
+///
+/// A fill has to be opaque for anything drawn on top of it to be reckoned
+/// against, and `with_alpha(c, 1.0)` will not do it — alpha there multiplies,
+/// so it hands back exactly what it was given (#139).
+pub fn over(c: Rgba, bg: Rgba) -> Rgba {
+    lerp(bg, Rgba { a: 1.0, ..c }, c.a)
+}
+
 pub fn with_alpha(c: Rgba, a: f32) -> Rgba {
     Rgba { a: (c.a * a).clamp(0.0, 1.0), ..c }
 }
