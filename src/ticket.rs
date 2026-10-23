@@ -239,6 +239,13 @@ pub fn scan_transcript(path: &Path, since: u64) -> (Vec<String>, Vec<String>) {
         if !line.contains(NEEDLE) || !crate::pr::in_context(line, since) {
             continue;
         }
+        // And said by the session rather than handed to it: the instructions
+        // a repo loads into every session, and the blob of the request they
+        // were loaded in, are not this session's work (#152).
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if !crate::pr::spoken(&v) {
+            continue;
+        }
         let mut from = 0;
         while let Some(i) = line[from..].find(NEEDLE) {
             let at = from + i + NEEDLE.len();
@@ -431,6 +438,30 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same rule as the pull request side (#152): what a repo loads into
+    /// every session is not that session's work. A memory index linking an
+    /// issue would otherwise corroborate that key for every session in the
+    /// repo.
+    #[test]
+    fn an_issue_linked_in_the_instructions_is_not_the_session_s() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let line = |kind: &str, key: &str| {
+            let text =
+                serde_json::to_string(&format!("see https://linear.app/cookieplace/issue/{key}/some-slug")).unwrap();
+            format!(r#"{{"type":"{kind}","message":{{"role":"user","content":[{{"type":"text","text":{text}}}]}}}}"#)
+        };
+        let dir = std::env::temp_dir().join(format!("claudmagi-ticket-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.jsonl", NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, [line("api-request-blob", "PJM-1544"), line("assistant", "PJM-2654")].join("\n"))
+            .unwrap();
+        let (keys, spaces) = scan_transcript(&path, 0);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(keys, ["PJM-2654"], "the request blob handed the session somebody else's issue");
+        assert_eq!(spaces, ["cookieplace"]);
+    }
 
     #[test]
     fn the_app_link_drops_the_title_slug() {

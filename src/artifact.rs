@@ -120,6 +120,11 @@ pub fn scan_transcript(path: &Path, since: u64) -> Vec<Artifact> {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        // And one of the session's own turns: the request blob carries the
+        // whole prompt back into the transcript, pages and all (#152).
+        if !crate::pr::spoken(&v) {
+            continue;
+        }
         let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else {
             continue;
         };
@@ -296,9 +301,13 @@ impl Tracker {
 mod tests {
     use super::*;
 
+    /// A tool result as the transcript writes one: the record's own `type`
+    /// included, since that is what says the session was there (#152).
     fn result(text: &str) -> String {
         let text = serde_json::to_string(text).unwrap();
-        format!(r#"{{"message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":{text}}}]}}}}"#)
+        format!(
+            r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"t1","content":{text}}}]}}}}"#
+        )
     }
 
     fn scan(lines: &[String]) -> Vec<Artifact> {
@@ -311,6 +320,22 @@ mod tests {
         let out = scan_transcript(&path, 0);
         let _ = std::fs::remove_file(&path);
         out
+    }
+
+    /// The same rule the pull requests go by (#152): a record that is a copy
+    /// of what was handed to the session is not the session publishing
+    /// anything. The request blob replays whole blocks of the prompt back
+    /// into the transcript, and a page announced in there would be counted
+    /// as made here.
+    #[test]
+    fn a_page_in_a_copy_of_the_prompt_is_not_one_this_session_made() {
+        let said = "Published /tmp/box/report/index.html at https://claude.ai/artifact/Abc123 (Version 1, version id 1-1)";
+        assert_eq!(scan(&[result(said)]).len(), 1, "a tool result is the session's own doing");
+        let copy = format!(
+            r#"{{"type":"api-request-blob","sessionId":"s","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":{}}}]}}}}"#,
+            serde_json::to_string(said).unwrap()
+        );
+        assert!(scan(&[copy]).is_empty(), "a page was read out of a copy of the request");
     }
 
     /// The announcing line is the whole source, so the shape of that line is
@@ -371,7 +396,7 @@ mod tests {
     /// file to read a title out of.
     #[test]
     fn a_title_the_call_asked_for_is_the_page_s_name() {
-        let use_line = r#"{"message":{"content":[{"type":"tool_use","id":"t1","name":"Artifact","input":{"title":"주간 리포트","type_url":"https://claude.ai/artifact/Type1"}}]}}"#;
+        let use_line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Artifact","input":{"title":"주간 리포트","type_url":"https://claude.ai/artifact/Type1"}}]}}"#;
         let found = scan(&[
             use_line.to_string(),
             result("Created a new Artifact at https://claude.ai/artifact/Typed1 (version 1-2) from the Artifact type https://claude.ai/artifact/Type1 (release 3-4)."),

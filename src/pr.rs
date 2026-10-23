@@ -292,6 +292,11 @@ pub fn scan_transcript(path: &Path, repo: &str, since: u64) -> Vec<u32> {
             continue;
         }
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        // And something the session itself said or did, rather than a copy of
+        // what was handed to it (#152).
+        if !spoken(&v) {
+            continue;
+        }
         let Some(blocks) = v.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) else {
             continue;
         };
@@ -335,6 +340,27 @@ pub fn line_millis(line: &str) -> Option<u64> {
 /// timestamp are kept: only a line that can be dated can be ruled out.
 pub fn in_context(line: &str, since: u64) -> bool {
     since == 0 || line_millis(line).is_none_or(|at| at >= since)
+}
+
+/// Whether a transcript record is one of the session's own turns (#152).
+///
+/// A transcript holds a great deal more than the conversation. Among two
+/// dozen kinds of record there are the files attached as instructions, the
+/// title, the mode, the queue — and `api-request-blob`, which is every
+/// request exactly as it was sent: system prompt, `CLAUDE.md`, `AGENTS.md`,
+/// the memory index, all of it, a hundred times over in one transcript.
+///
+/// That record carries a `user` message with a content array like any turn,
+/// so it walked straight through the shape gate here. A repo whose
+/// instructions link a pull request was handing that pull request to **every
+/// session in the repo**, and through its title the issue key with it (#56,
+/// #57) — which is the loudest thing a cell can say about work nobody is
+/// doing.
+///
+/// Only `user` and `assistant` are turns. Tool results are `user` records, so
+/// what a command printed still counts: the session ran it.
+pub fn spoken(v: &serde_json::Value) -> bool {
+    matches!(v.get("type").and_then(|t| t.as_str()), Some("user") | Some("assistant"))
 }
 
 /// Last `bytes` of a file, starting at a line boundary. Shared with the
@@ -587,6 +613,56 @@ impl Tracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a transcript and scans it, the way the board does.
+    fn scan(lines: &[String]) -> Vec<u32> {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!("claudmagi-pr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{}.jsonl", NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let out = scan_transcript(&path, "cookieplace/crepe", 0);
+        let _ = std::fs::remove_file(&path);
+        out
+    }
+
+    /// A transcript is a great deal more than its conversation (#152). The
+    /// instructions a repo loads into every session are in it, and so is a
+    /// blob of every request exactly as it was sent — instructions and all.
+    /// A pull request linked in a `CLAUDE.md` or a memory index was being
+    /// read as the work of *every session in that repo*, which is how a
+    /// dozen cells came to be carrying one stranger's pull request.
+    #[test]
+    fn a_pull_request_linked_in_the_instructions_is_nobody_s_work() {
+        let link = |n: u32| format!("https://github.com/cookieplace/crepe/pull/{n}");
+        let said = |role: &str, text: String| {
+            let text = serde_json::to_string(&text).unwrap();
+            format!(r#"{{"type":"{role}","message":{{"content":[{{"type":"text","text":{text}}}]}}}}"#)
+        };
+        // What the session itself did.
+        let mine = said("assistant", format!("opened {}", link(10154)));
+        // The whole request as it was sent, with the repo's instructions
+        // inside it. A `user` message with a content array, like any turn.
+        let blob = {
+            let text = serde_json::to_string(&format!(
+                "<system-reminder>\nContents of /x/CLAUDE.md:\n- [PJM-1544]({})\n</system-reminder>",
+                link(7295)
+            ))
+            .unwrap();
+            format!(r#"{{"type":"api-request-blob","sessionId":"s","message":{{"role":"user","content":[{{"type":"text","text":{text}}}]}}}}"#)
+        };
+        // And the record that names the files that were loaded.
+        let attached = format!(
+            r#"{{"type":"attachment","attachment":{{"type":"instructions","files":["/x/CLAUDE.md"]}},"rendered":"see {}"}}"#,
+            link(7295)
+        );
+
+        assert_eq!(scan(&[mine.clone()]), vec![10154]);
+        assert_eq!(scan(&[blob.clone()]), Vec::<u32>::new(), "the request blob handed the session somebody else's work");
+        assert_eq!(scan(&[attached.clone()]), Vec::<u32>::new(), "the instructions handed the session somebody else's work");
+        assert_eq!(scan(&[blob, attached, mine]), vec![10154], "one real turn among the furniture");
+    }
 
     /// The list is the whole set, in one order: what GitHub answered for and
     /// what it would not, newest number at the top (#134).
