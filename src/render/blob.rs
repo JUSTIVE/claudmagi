@@ -872,7 +872,15 @@ pub fn build_shapes(
                         if pal.screened {
                             out.push(Shape::poly(ring.clone(), fade(pal.bg)));
                         }
-                        out.push(Shape::Poly { points: ring, color: fade(bed), screen: weave });
+                        out.push(Shape::Poly { points: ring.clone(), color: fade(bed), screen: weave });
+                        // Ruled across while it waits on a reviewer (#153).
+                        if slot.waiting {
+                            out.push(Shape::Poly {
+                                points: ring,
+                                color: fade(comb::pending_rule(pal)),
+                                screen: comb::PENDING,
+                            });
+                        }
                     }
                 }
                 let slot_beat = if row == 1 {

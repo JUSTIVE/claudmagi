@@ -132,6 +132,16 @@ impl Pr {
         self.approved || matches!(self.state, State::Merged)
     }
 
+    /// Review has been asked for and has not answered yet (#153).
+    ///
+    /// A draft has not asked (`Look::Draft` is exactly that), a merged one
+    /// has its answer (#117), and a closed one will never get one. What is
+    /// left — an open pull request nobody has signed off, red checks or not
+    /// — is the only kind that is waiting on a person who is not here.
+    pub fn awaiting_review(&self) -> bool {
+        !self.signed_off() && matches!(self.state, State::Open)
+    }
+
     /// CI is still working. Drawn as a border rather than a look of its own,
     /// so it can sit on top of whatever the PR already is (#62). A landed or
     /// abandoned PR is never busy, whatever a stale rollup says.

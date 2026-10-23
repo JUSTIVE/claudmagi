@@ -829,6 +829,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             made: 0,
             fill: None,
             screen: Screen::Solid,
+            waiting: false,
         }),
         Some(SlotInk {
             mark: logos::Mark::Claude,
@@ -843,6 +844,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             // whole cell, not for this row alone (#89).
             fill: None,
             screen: Screen::Solid,
+            waiting: false,
         }),
         // The answered one if there is one, otherwise the number GitHub would
         // not speak for, drawn quietly and blinking. With no pull request at
@@ -862,6 +864,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                 made: info.artifacts.len(),
                 fill: Some(floor_color(pr_color(p, pal), pal)),
                 screen: pr_screen(p),
+                waiting: p.awaiting_review(),
             })
             .or_else(|| {
                 info.prs_unanswered.last().map(|id| SlotInk {
@@ -877,6 +880,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // (#112).
                     fill: None,
                     screen: Screen::Solid,
+                    waiting: false,
                 })
             })
             .or_else(|| {
@@ -893,6 +897,7 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // floor (#139); a page has no state to paint.
                     fill: None,
                     screen: Screen::Solid,
+                    waiting: false,
                 })
             }),
     ]
@@ -1047,6 +1052,10 @@ pub struct SlotInk {
     /// The same statement for a board that prints rather than paints (#146,
     /// #149): the weave the floor is laid down with.
     pub screen: Screen,
+    /// The floor is waiting on a reviewer (#153). Ruled across in the
+    /// board's own colour, which is the same word the cell itself wears
+    /// when it is waiting on a person (#149).
+    pub waiting: bool,
 }
 
 /// Smoothstep: nought to one with both ends eased (#143, #150).
@@ -1082,6 +1091,27 @@ pub fn ease_in(x: f32) -> f32 {
 /// not be the same thing to the walk.
 pub fn colony_key(session_id: &str) -> String {
     format!("{session_id}~subs")
+}
+
+/// The rule drawn across a floor that is still waiting on a reviewer (#153).
+///
+/// Laid in one of the two colours the board already has rather than in a
+/// colour of its own: what the floor is painted with says which state the
+/// pull request is in (#139) and has to stay readable underneath, and the
+/// stripe is the same word the printing board gives a cell that is waiting
+/// on a person (#149).
+///
+/// It is always the ink, never the board's colour: a floor carries its
+/// label in the board's own colour (#139), and a rule drawn in that takes
+/// the letters' surround away so that they come apart. On a board that
+/// paints, the ink goes on at under half weight — enough to read as a rule
+/// over any floor colour without burying it. On one that prints there is no
+/// such thing as half an ink (#146), so it goes on whole, and a floor that
+/// is waiting comes out plainly darker than one that is not.
+pub const PENDING: Screen = Screen::Slash { width: 2.0, gap: 5.0 };
+
+pub fn pending_rule(pal: Palette) -> Rgba {
+    if pal.screened { pal.ink } else { theme::with_alpha(pal.ink, 0.45) }
 }
 
 /// How long a cell takes to reach a seat it has just been given, and the
@@ -1337,6 +1367,16 @@ pub fn build_shapes(model: &BoardModel, comb: &Comb, pal: Palette, scroll_y: f32
             // The pull request's state as the cell's floor (#139).
             if let Some(fill) = slot.fill {
                 out.push(Shape::poly(output_bed(center, r), fade(fill)));
+                // And ruled across while it waits on a reviewer (#153): the
+                // lines are cut out of the floor in the board's own colour,
+                // so the state it was painted with is still there to read.
+                if slot.waiting {
+                    out.push(Shape::Poly {
+                        points: output_bed(center, r),
+                        color: fade(pending_rule(pal)),
+                        screen: PENDING,
+                    });
+                }
             }
             let at = Pt::new(center.x, center.y + rb.dy);
             out.extend(row_shapes(at, &rb, slot, fade(theme::with_alpha(slot.color, slot_beat))));
@@ -2075,6 +2115,51 @@ mod tests {
             // (#137) or a number GitHub would not answer for (#112) has no
             // state to say, and says none.
             assert!(floor(&scene(vec![], pal)).is_none(), "an empty row painted a floor anyway");
+        }
+    }
+
+    /// Review is a gate rather than a state (#116), and the cell says which
+    /// side of it a pull request is on without being asked (#153): a floor
+    /// still waiting on a reviewer is ruled across, one that has been signed
+    /// off is left plain, and the ones nobody is reviewing — a draft that
+    /// has not asked, a landed one, an abandoned one — are left plain too.
+    #[test]
+    fn a_floor_waiting_on_a_reviewer_is_ruled_across() {
+        use crate::pr::{Look, Pr};
+        let scene = |pr: Pr, pal: Palette| {
+            let mut model = board(&[("warp-tab:1-1", 1)]);
+            model.chips[0].info.prs = vec![pr];
+            let comb = lay_out(&model, 980.0, 620.0);
+            build_shapes(&model, &comb, pal, 0.0, Pt::new(0.0, 0.0), 3.0)
+        };
+        // The floor is the only four-sided fill in a cell, ruled or not.
+        let rule = |shapes: &[Shape]| -> Option<Rgba> {
+            shapes.iter().find_map(|s| match s {
+                Shape::Poly { points, color, screen } if points.len() == 4 && *screen != Screen::Solid => {
+                    Some(*color)
+                }
+                _ => None,
+            })
+        };
+        for pal in [theme::PALETTE, theme::ORANGE, theme::DARK] {
+            let waiting = rule(&scene(Pr::synthetic(7, Look::Open), pal));
+            assert!(waiting.is_some(), "an open pull request nobody has signed off is waiting on one");
+            assert!(
+                rule(&scene(Pr::synthetic(7, Look::Failing), pal)).is_some(),
+                "red checks are not an excuse from review"
+            );
+            assert!(
+                rule(&scene(Pr { approved: true, ..Pr::synthetic(7, Look::Open) }, pal)).is_none(),
+                "signed off and ruled anyway"
+            );
+            for calm in [Look::Draft, Look::Merged, Look::Closed] {
+                assert!(rule(&scene(Pr::synthetic(7, calm), pal)).is_none(), "{calm:?}: nobody is reviewing this");
+            }
+            // Drawn in the ink, never in the colour the floor's own letters
+            // are drawn in: a rule in that takes their surround away.
+            let ink = waiting.unwrap();
+            assert_ne!((ink.r, ink.g, ink.b), (pal.bg.r, pal.bg.g, pal.bg.b), "the rule is the letters' colour");
+            assert_eq!((ink.r, ink.g, ink.b), (pal.ink.r, pal.ink.g, pal.ink.b));
         }
     }
 
