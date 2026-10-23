@@ -178,11 +178,36 @@ fn phase_of(raw: &Raw) -> Phase {
 /// and the lane gets its GitHub node like any other.
 fn pr_of(raw: &Raw, repo: &str) -> Option<crate::pr::PrRef> {
     let detail = raw.external_metadata.post_turn_summary.as_ref()?.status_detail.as_deref()?;
-    let number = detail.split('#').skip(1).find_map(|rest| {
-        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-        digits.parse::<u32>().ok().filter(|n| *n > 0)
-    })?;
-    Some(crate::pr::PrRef { repo: repo.to_string(), number })
+    Some(crate::pr::PrRef { repo: repo.to_string(), number: numbered(detail)? })
+}
+
+/// The pull request a sentence names, if it names one (#154).
+///
+/// A number is not a pull request for having a hash in front of it. These
+/// summaries are prose and count all sorts of things out loud: "poll #307
+/// done; no new critical/high cards" is a watch on its three hundred and
+/// seventh round, and reading that as a pull request opened number 307 of
+/// whichever repository the session happened to be in — a real one, merged
+/// years ago, by somebody else, on a cell nobody could explain.
+///
+/// So the sentence has to say what the number is. A link says it outright;
+/// otherwise the word before the hash has to be the one that means this.
+fn numbered(detail: &str) -> Option<u32> {
+    let digits = |s: &str| {
+        s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u32>().ok().filter(|n| *n > 0)
+    };
+    const LINK: &str = "/pull/";
+    if let Some(at) = detail.find(LINK) {
+        if let Some(n) = digits(&detail[at + LINK.len()..]) {
+            return Some(n);
+        }
+    }
+    detail.match_indices('#').find_map(|(at, _)| {
+        let said = detail[..at].trim_end().to_ascii_lowercase();
+        let word: String = said.chars().rev().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let word: String = word.chars().rev().collect();
+        matches!(word.as_str(), "pr" | "pull" | "request").then(|| digits(&detail[at + 1..]))?
+    })
 }
 
 fn repo_of(raw: &Raw) -> Option<String> {
@@ -578,6 +603,22 @@ mod tests {
 
         // Nothing invented where there is nothing to read.
         assert!(parse(&body(&row("no pull request here", repo)), NOW)[0].prs_unanswered.is_empty());
+        // A number is not a pull request for having a hash in front of it
+        // (#154). This one is a watch counting its own rounds, and the repo
+        // it is working in has a pull request 307 somebody merged years ago.
+        assert!(
+            parse(&body(&row("poll #307 done; no new critical/high cards", repo)), NOW)[0]
+                .prs_unanswered
+                .is_empty(),
+            "a sentence counting something else was read as naming a pull request"
+        );
+        // A link says it outright, hash or no hash.
+        assert_eq!(
+            parse(&body(&row("merged https://github.com/cookieplace/crepe/pull/9312 just now", repo)), NOW)[0]
+                .prs_unanswered,
+            vec![crate::pr::PrRef { repo: "cookieplace/crepe".into(), number: 9312 }],
+            "a link to one is the plainest naming there is"
+        );
         assert!(
             parse(&body(&row("PR #9312 passed", "")), NOW)[0].prs_unanswered.is_empty(),
             "a number without a repository is not a pull request anyone can open"
