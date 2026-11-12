@@ -776,7 +776,11 @@ impl BoardModel {
                         Some(w) => format!("needs you: {w}"),
                         None => "waiting for your answer".into(),
                     },
-                    Phase::Idle => "idle".into(),
+                    // A session's own word for itself where it has one: a
+                    // cloud session is never idle at a prompt, it has
+                    // finished, and the service says whether it finished
+                    // with something to show (#155).
+                    Phase::Idle => info.state.clone().unwrap_or_else(|| "idle".into()),
                 });
                 if let Some(tty) = &info.tty {
                     parts.push(tty.clone());

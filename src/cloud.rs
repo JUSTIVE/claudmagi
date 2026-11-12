@@ -68,6 +68,11 @@ struct Raw {
     /// `idle` between turns; anything else is a turn in flight.
     #[serde(default)]
     worker_status: Option<String>,
+    /// What the service itself makes of the session (#155): `working`,
+    /// `blocked`, `failed`, `review_ready` or `completed`. This is the
+    /// answer the board was guessing at out of `unread` and the summary.
+    #[serde(default)]
+    status_bucket: Option<String>,
     #[serde(default)]
     unread: bool,
     /// Set when the session was started by a schedule rather than by a
@@ -112,6 +117,11 @@ struct RawSummary {
     needs_action: Option<String>,
     #[serde(default)]
     status_detail: Option<String>,
+    /// The same five words as `status_bucket`, said by the last turn about
+    /// itself. `status_bucket` is the live answer and this one is the last
+    /// turn's, so this is read second (#155).
+    #[serde(default)]
+    status_category: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,27 +156,70 @@ fn label_of(raw: &Raw) -> String {
 
 /// What a cloud session is doing, in the board's own vocabulary.
 ///
-/// `worker_status` answers it outright while a turn is in flight. Between
-/// turns the question is whether anyone is being waited on, and two things
-/// say so: the summary naming an action, or a finished session the person
-/// has not opened. The second is the common one — cloud work finishes while
-/// nobody is looking, which is exactly what a board is for.
+/// `worker_status` answers it outright while a turn is in flight. For the
+/// rest, the service says what it makes of the session and the board says
+/// it back (#155). It was working the answer out instead, from whether the
+/// person had opened the session and whether the summary named an action,
+/// and that is a different question with a different answer: of eighteen
+/// live sessions it put eight of them wrong — three that had finished with
+/// something to show were called idle, three that were merely unopened were
+/// called waiting, and the two that had *failed* could not be told from
+/// either, because the board had no way to say so.
+///
+/// Mapping five words onto three:
+///
+/// - `working` is a turn in flight.
+/// - `blocked` is the board's own meaning of waiting on a person: it has
+///   asked something and stopped.
+/// - `failed` wants a person just as much — it stopped badly, and nobody
+///   else is going to pick it up.
+/// - `review_ready` finished with something to show, so it wants a person
+///   until one has looked and is simply done afterwards.
+/// - `completed` finished with nothing to review. The service draws that
+///   line itself, which is the whole reason to take its word for it: being
+///   unopened is not the same as wanting somebody.
+///
+/// A word nobody here has heard of falls through to the old reckoning
+/// rather than blanking the cell, the way an unknown `status` does (#136).
 fn phase_of(raw: &Raw) -> Phase {
     let worker = raw.worker_status.as_deref().unwrap_or("idle");
     if worker != "idle" {
         return Phase::Working;
     }
-    let needs = raw
-        .external_metadata
-        .post_turn_summary
-        .as_ref()
-        .and_then(|s| s.needs_action.as_deref())
+    let summary = raw.external_metadata.post_turn_summary.as_ref();
+    let said = raw
+        .status_bucket
+        .as_deref()
+        .or_else(|| summary.and_then(|s| s.status_category.as_deref()))
         .unwrap_or("")
         .trim();
+    match said {
+        "working" => return Phase::Working,
+        "blocked" | "failed" => return Phase::NeedsUser,
+        "review_ready" => return if raw.unread { Phase::NeedsUser } else { Phase::Idle },
+        "completed" => return Phase::Idle,
+        _ => {}
+    }
+    let needs = summary.and_then(|s| s.needs_action.as_deref()).unwrap_or("").trim();
     if !needs.is_empty() || raw.unread {
         return Phase::NeedsUser;
     }
     Phase::Idle
+}
+
+/// What the session says it is waiting for, in its own words (#155).
+///
+/// The board prints this after "needs you:" in the hovered detail (#115).
+/// Every cloud session was printing `dialog open` there — the placeholder
+/// `set_phase` writes for a local session sitting on a prompt — which is
+/// not only wrong but unanswerable: there is no dialog, and the session is
+/// not on this machine. The summary says what it actually stopped on.
+fn stopped_on(raw: &Raw) -> Option<String> {
+    let summary = raw.external_metadata.post_turn_summary.as_ref();
+    let pick = |s: Option<&str>| s.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    pick(summary.and_then(|s| s.status_detail.as_deref()))
+        .or_else(|| pick(summary.and_then(|s| s.needs_action.as_deref())))
+        .or_else(|| pick(raw.status_bucket.as_deref()))
 }
 
 /// The pull request the last turn named, if it named one.
@@ -296,6 +349,15 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
             parked_job: None,
         };
         info.set_phase(phase);
+        // The service's own word for the session, kept where the board keeps
+        // a session's own word for itself, and its own sentence where the
+        // board prints what a session is waiting for (#155).
+        info.state = raw.status_bucket.clone();
+        if phase == Phase::NeedsUser {
+            if let Some(said) = stopped_on(&raw) {
+                info.waiting_for = Some(said);
+            }
+        }
         out.push(info);
     }
     out.sort_by(|a, b| a.started_at.cmp(&b.started_at).then_with(|| a.session_id.cmp(&b.session_id)));
@@ -392,6 +454,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::BoardModel;
 
     const NOW: u64 = 1_790_000_000;
 
@@ -482,6 +545,75 @@ mod tests {
             "a summary naming an action is the same thing said out loud"
         );
         assert_eq!(phase(r#""worker_status":"idle","unread":false"#), Phase::Idle);
+    }
+
+    /// The service says what it makes of each session, in five words, and
+    /// the board says them back rather than working them out again (#155).
+    #[test]
+    fn the_service_s_own_word_decides_the_phase() {
+        let row = |extra: &str| {
+            format!(
+                r#"{{"id":"cse_1","title":"t","connection_status":"connected","last_event_at":"{}",{extra}}}"#,
+                at(60)
+            )
+        };
+        let phase = |extra: &str| parse(&body(&row(extra)), NOW)[0].phase();
+
+        assert_eq!(phase(r#""status_bucket":"working","unread":false"#), Phase::Working);
+        assert_eq!(phase(r#""status_bucket":"blocked","unread":false"#), Phase::NeedsUser);
+        assert_eq!(
+            phase(r#""status_bucket":"failed","unread":false"#),
+            Phase::NeedsUser,
+            "a run that stopped badly wants a person as much as one that asked a question"
+        );
+        assert_eq!(
+            phase(r#""status_bucket":"completed","unread":true"#),
+            Phase::Idle,
+            "unopened is not the same as wanting somebody, and the service draws that line itself"
+        );
+        assert_eq!(
+            phase(r#""status_bucket":"review_ready","unread":true"#),
+            Phase::NeedsUser,
+            "finished with something to show, and nobody has looked"
+        );
+        assert_eq!(phase(r#""status_bucket":"review_ready","unread":false"#), Phase::Idle, "looked at: just done");
+
+        // A turn in flight is the one thing the board can see for itself.
+        assert_eq!(phase(r#""status_bucket":"blocked","worker_status":"running""#), Phase::Working);
+        // The live word first, the last turn's word when there is no live one.
+        assert_eq!(
+            phase(r#""unread":false,"external_metadata":{"post_turn_summary":{"status_category":"failed"}}"#),
+            Phase::NeedsUser
+        );
+        // And a word nobody here has heard of leaves the old reckoning in
+        // place rather than blanking the cell (#136).
+        assert_eq!(phase(r#""status_bucket":"hibernating","unread":true"#), Phase::NeedsUser);
+        assert_eq!(phase(r#""status_bucket":"hibernating","unread":false"#), Phase::Idle);
+
+        // What it stopped on, in its own words: the board prints this after
+        // "needs you:" and was printing `dialog open` for every one of them.
+        let said = &parse(
+            &body(&row(
+                r#""status_bucket":"blocked","external_metadata":{"post_turn_summary":{"status_detail":"need the report link"}}"#,
+            )),
+            NOW,
+        )[0];
+        assert_eq!(said.waiting_for.as_deref(), Some("need the report link"));
+        assert_eq!(said.state.as_deref(), Some("blocked"), "the service's own word is kept");
+        // With nothing said, the word itself is still better than a dialog
+        // that does not exist.
+        let bare = &parse(&body(&row(r#""status_bucket":"failed""#)), NOW)[0];
+        assert_eq!(bare.waiting_for.as_deref(), Some("failed"));
+
+        // And a finished one says which kind of finished it is, where the
+        // board would otherwise call a session that is not on this machine
+        // and not at a prompt "idle".
+        let done = parse(&body(&row(r#""status_bucket":"review_ready","unread":false"#)), NOW);
+        let mut model = BoardModel::new();
+        model.apply(done, std::time::Instant::now());
+        model.settle();
+        model.hovered = Some(crate::model::Target::Session(0));
+        assert!(model.detail().contains("review_ready"), "the detail line said: {}", model.detail());
     }
 
     /// A board is for what is going on now. The cloud remembers every
