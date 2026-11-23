@@ -169,8 +169,24 @@ impl Board {
             } else {
                 label
             };
+            let expanded = self.dev_expanded.contains(&info.session_id);
             let mut row = div().flex().items_center().gap_1().child(phase_mark(phase, 8.)).child(label);
             if info.synthetic {
+                // The detail rows (pull request, Linear, host) are some thirty
+                // controls a session, and laying out every one of them for a
+                // sandbox of sixty took 35 ms a frame: they open per session,
+                // on this (#180).
+                let sid = info.session_id.clone();
+                row = row.child(
+                    button(SharedString::from(format!("more-{i}")), if expanded { "▾" } else { "▸" }, expanded).on_click(
+                        cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if !this.dev_expanded.remove(&sid) {
+                                this.dev_expanded.insert(sid.clone());
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
                 for p in Phase::ALL {
                     let sb = sandbox.clone();
                     let sid = info.session_id.clone();
@@ -209,7 +225,7 @@ impl Board {
             // Link nodes get their own row: five PR states plus "none" is more
             // than the session row can hold, and cycling through them to reach
             // one was tedious (#58).
-            if info.synthetic {
+            if info.synthetic && expanded {
                 // The letters shape the newest, which is the one a cell
                 // draws, so the row answers for that one too (#134).
                 let look = info.prs.last().map(|p| p.look());

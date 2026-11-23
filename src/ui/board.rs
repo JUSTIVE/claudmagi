@@ -75,6 +75,8 @@ pub struct Board {
     pub(crate) mode: Mode,
     pub(crate) settings: Settings,
     pub(crate) dev: PanelState,
+    /// The sandbox sessions whose detail rows the test panel shows (#180).
+    pub(crate) dev_expanded: std::collections::HashSet<String>,
     pub(crate) settings_panel: PanelState,
     /// The list down the right-hand side (#103).
     pub(crate) list_panel: PanelState,
@@ -226,6 +228,7 @@ impl Board {
             layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0, settings.zoom),
             settings,
             dev: PanelState::default(),
+            dev_expanded: Default::default(),
             settings_panel: PanelState::default(),
             list_panel: PanelState::default(),
             lanes: Rc::new(Vec::new()),
@@ -822,7 +825,9 @@ impl Render for Board {
                 // The start screen's tiles are elements of their own, which
                 // take their own hover and press (#176).
                 let off_board = Self::on_chrome(ev.position, window) || this.settings.view == BoardView::Tiles;
+                let before = (this.model.hovered, this.hovered_pr, this.hovered_ticket);
                 this.hover_at(m, off_board);
+                let changed = (this.model.hovered, this.hovered_pr, this.hovered_ticket) != before;
                 // The window server moves the window itself, in step with the
                 // cursor; moving it by hand from deltas lagged and jumped.
                 // Only once the pointer has really moved: a press with a pixel
@@ -836,7 +841,13 @@ impl Render for Board {
                     this.drag_pending = false;
                     window.start_window_move();
                 }
-                cx.notify();
+                // Only when what is under the pointer changed: the pointer is
+                // read nowhere else, and a redraw for every pixel it moved
+                // rebuilt the whole window at the display's rate — half a core
+                // with sixty sessions in the sandbox (#180).
+                if changed {
+                    cx.notify();
+                }
             }))
             .on_mouse_down(
                 MouseButton::Left,
