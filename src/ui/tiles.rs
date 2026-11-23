@@ -432,10 +432,28 @@ impl Board {
                 let state = info.phase().label().to_lowercase();
                 let (big, small) = back_lines(info, chip);
                 let back_name = name.clone();
+                // Everything the two faces show: with it the tile keeps its
+                // last drawing while it slides, instead of every slide of
+                // every tile redrawing the whole screen (#182).
+                let shows = (
+                    &name,
+                    &state,
+                    &corner,
+                    &big,
+                    &small,
+                    [fill, ink].map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits)),
+                );
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    shows.hash(&mut h);
+                    h.finish()
+                };
                 Some(
                     tile(SharedString::from(format!("s-{}", info.session_id)), TileSize::Medium)
                         .metrics(UNIT, GAP)
                         .color(theme::hsla(fill))
+                        .content_key(key)
                         .front(move |_, _| face(ink, corner, String::new(), Vec::new(), name, Some(state)))
                         .back(move |_, _| face(ink, None, big, small, back_name, None))
                         .period(PERIOD)

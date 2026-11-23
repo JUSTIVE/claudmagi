@@ -76,9 +76,10 @@ pub struct Board {
     pub(crate) mode: Mode,
     pub(crate) settings: Settings,
     pub(crate) dev: PanelState,
-    /// The start screen and the panels, each a view of its own drawn from
-    /// the last frame until `touch` says what they show has changed (#181):
-    /// the frame clock and the pointer redraw the board, not them.
+    /// The start screen and the panels, each a view of its own (#181). The
+    /// panels are cached: drawn from the last frame until `touch` says what
+    /// they show has changed, so the frame clock and the pointer redraw the
+    /// board, not them. The start screen is not (#182, see `render`).
     tiles_view: Entity<TilesView>,
     panels_view: Entity<PanelsView>,
     /// The sandbox sessions whose detail rows the test panel shows (#180).
@@ -966,7 +967,12 @@ impl Render for Board {
                 )
                 .size_full(),
             )
-            .when(tiles_view, |d| d.child(self.tiles_view.clone().cached(below_bar())))
+            // Its own view, but not a cached one (#182): a live tile asks for
+            // frames while it slides, which redraws every view above it, and
+            // gpui redraws everything under a cached view it redraws — the
+            // tiles' own cached bodies included. Uncached, a slide redraws
+            // the one tile and puts the page together around the rest.
+            .when(tiles_view, |d| d.child(div().absolute().top_0().left_0().right_0().bottom(px(STATUS_H)).child(self.tiles_view.clone())))
             .child(
                 div()
                     .absolute()
@@ -1182,9 +1188,8 @@ fn below_bar() -> StyleRefinement {
     StyleRefinement::default().absolute().top_0().left_0().right_0().bottom(px(STATUS_H))
 }
 
-/// The start screen as a view of its own (#181): gpui-metro's tiles ask
-/// their own frames while they turn and slide, and the board's clock and
-/// hover leave it as it was drawn.
+/// The start screen as a view of its own (#181). Not cached (#182): its
+/// live tiles cache their own bodies, which a cached parent would defeat.
 pub(crate) struct TilesView {
     board: WeakEntity<Board>,
 }

@@ -24,7 +24,7 @@ base-gpui = { git = "https://github.com/LukeTandjung/base-gpui" }
 # Metro chrome for the panels and the status bar, and the tiles view
 # (#156, #157). It pins the same Zed rev as the patch below; cargo treats
 # two revs of one repo as two gpui crates, so bump them together.
-gpui-metro = { git = "https://github.com/JUSTIVE/gpui-metro", rev = "c77aa6d206c217d58381929d8a828446e1e01dba" }
+gpui-metro = { git = "https://github.com/JUSTIVE/gpui-metro", rev = "9ffae4560ee243b99a28074cfe45abc312f0505e" }
 lyon = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
