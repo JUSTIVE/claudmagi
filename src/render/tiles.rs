@@ -49,12 +49,10 @@ const PAD: f32 = 9.0;
 /// How far a tile travels in on its turnstile, and what it takes to arrive.
 const TURN: f32 = 44.0;
 
-/// A working tile peeks once a period, for `PEEK_HOLD` seconds, taking
-/// `PEEK_MOVE` to slide up and as long to drop back (#157). Long enough
-/// apart that the front, where the rows are pressed, is what is there.
-const PEEK_PERIOD: f32 = 13.0;
-const PEEK_MOVE: f32 = 0.55;
-const PEEK_HOLD: f32 = 2.6;
+/// A live tile's cycle, front to back to front, and how long each slide
+/// takes: gpui-metro's own numbers (`Tile::period`, `PEEK_SLIDE_SECS`).
+const PEEK_PERIOD: f32 = 12.0;
+const PEEK_SLIDE: f32 = 0.9;
 
 /// Cap heights, in board pixels, of the tile's type ramp.
 const CAP_TITLE: f32 = 30.0;
@@ -131,44 +129,50 @@ pub fn lay_out(model: &BoardModel, width: f32, _height: f32) -> Comb {
     comb
 }
 
-/// How far up a working tile's back is at `t`, from 0 (all front) to 1
-/// (peeked). Every tile keeps its own clock, so a screen of them does not
-/// flip in step.
+/// How far a tile has turned to its back at `t`, from 0 (front) to 1
+/// (back) — gpui-metro's live tile, cycle for cycle (#157): it rests on each
+/// face for half the period and takes `PEEK_SLIDE` to slide between them.
+/// Every tile keeps its own clock, so a screen of them never turns in step.
 pub fn peek(info: &SessionInfo, t: f32) -> f32 {
-    if info.phase() != Phase::Working {
-        return 0.0;
-    }
     let mut h: u32 = 2_166_136_261;
     for b in info.session_id.bytes() {
         h = (h ^ b as u32).wrapping_mul(16_777_619);
     }
-    // The first peek waits a whole period, so the view opens on fronts.
-    if t < PEEK_PERIOD {
-        return 0.0;
-    }
-    let offset = (h % 1000) as f32 / 1000.0 * PEEK_PERIOD;
-    // The peek is the last stretch of each tile's period.
-    let at = (t + offset).rem_euclid(PEEK_PERIOD) - (PEEK_PERIOD - (2.0 * PEEK_MOVE + PEEK_HOLD));
-    if at < 0.0 {
-        return 0.0;
-    }
-    let out = if at < PEEK_MOVE {
-        at / PEEK_MOVE
-    } else if at < PEEK_MOVE + PEEK_HOLD {
+    // Half a period or more of front first, so the view opens on fronts.
+    let offset = (h % 1000) as f32 / 1000.0 * 0.5 * PEEK_PERIOD;
+    let cycle = ((t - offset).max(0.0) / PEEK_PERIOD).fract();
+    let slide = PEEK_SLIDE / PEEK_PERIOD;
+    let k = if cycle < 0.5 - slide {
+        0.0
+    } else if cycle < 0.5 {
+        ease_in_out((cycle - (0.5 - slide)) / slide)
+    } else if cycle < 1.0 - slide {
         1.0
     } else {
-        1.0 - (at - PEEK_MOVE - PEEK_HOLD) / PEEK_MOVE
+        1.0 - ease_in_out((cycle - (1.0 - slide)) / slide)
     };
-    ease_out(out.clamp(0.0, 1.0))
+    if t < offset { 0.0 } else { k }
 }
 
-/// Whether any tile is mid-peek, which is when the frame clock has to run
-/// at full rate. A tile that is all front or all back is still.
+/// Whether the tile is mostly turned to its back, which is when a press on
+/// it cannot be meant for one of the front's rows.
+pub fn on_back(info: &SessionInfo, t: f32) -> bool {
+    peek(info, t) > 0.5
+}
+
+/// Whether any tile is mid-slide, which is when the frame clock has to run
+/// at full rate. A tile resting on either face is still.
 pub fn peeking(model: &BoardModel, t: f32) -> bool {
     model.live().any(|c| {
         let k = peek(&c.info, t);
         k > 0.0 && k < 1.0
     })
+}
+
+/// gpui-metro's `ease_in_out_cubic`, which its tiles slide on.
+fn ease_in_out(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x < 0.5 { 4.0 * x * x * x } else { 1.0 - (-2.0 * x + 2.0).powi(3) / 2.0 }
 }
 
 /// Metro's hard exponential ease-out (gpui-metro `ease_out_expo`).
@@ -265,7 +269,9 @@ pub fn build_shapes(
     out
 }
 
-/// One session as a medium live tile.
+/// One session as a medium live tile: a front with the session's three
+/// rows, and a back that says what it is up to, the two sliding past each
+/// other inside the tile.
 #[allow(clippy::too_many_arguments)]
 fn session_tile(
     info: &SessionInfo,
@@ -277,38 +283,63 @@ fn session_tile(
     t: f32,
     fade: &dyn Fn(Rgba) -> Rgba,
 ) -> Vec<Shape> {
-    let mut out = Vec::new();
     let s = side();
     let fill = tile_fill(info, pal, accent);
     // A board that prints has one ink (#146): every tile is that ink, and
     // the state is said by the weave of a band across its top instead.
     let (fill, band) = if pal.screened { (pal.ink, Some(comb::body_screen(info))) } else { (fill, None) };
-    out.push(Shape::poly(square(left, top, s, s), fade(fill)));
-    if let Some(screen) = band.filter(|b| *b != Screen::Solid) {
-        out.push(Shape::Poly { points: square(left, top, s, 5.0), color: fade(pal.bg), screen });
-    }
+    let mut out = vec![Shape::poly(square(left, top, s, s), fade(fill))];
     // White on the accent, which is what Metro sets on it whatever the
     // accent is; everything else is worked out against its own fill.
     let ink = if fill == accent && !pal.screened { WHITE } else { comb::legible(WHITE, fill, pal) };
-    let soft = theme::with_alpha(ink, 0.72);
     // A session waiting on a person says so in the alarm colour, across the
     // top of the tile and in the corner, keeping time with the wait (#90).
     let waits = comb::wants_a_person(info) && !pal.screened;
     let alarm = comb::legible(pal.alarm, fill, pal);
+
+    // Both faces, each laid out as if it were the only one, then slid past
+    // each other and cut to the tile.
+    let k = peek(info, t);
+    let front = if k < 1.0 { front_face(info, chip, left, top, pal, fill, ink, alarm, waits, t) } else { Vec::new() };
+    let back = if k > 0.0 { back_face(info, chip, left, top, ink) } else { Vec::new() };
+    let (lo, hi) = (top, top + s);
+    out.extend(slid(front, -k * s, lo, hi).into_iter().map(|sh| faded(sh, fade)));
+    out.extend(slid(back, (1.0 - k) * s, lo, hi).into_iter().map(|sh| faded(sh, fade)));
+
+    // What stays put whichever face is up: the state, across the top.
+    if let Some(screen) = band.filter(|b| *b != Screen::Solid) {
+        out.push(Shape::Poly { points: square(left, top, s, 5.0), color: fade(pal.bg), screen });
+    }
     if waits {
         let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
         out.push(Shape::poly(square(left, top, s, 5.0), fade(theme::with_alpha(alarm, beat))));
     }
-    let lift = peek(info, t);
-    // Where the back has come up to; the front's rows below it are behind it.
-    let back_top = top + s - lift * s * (1.0 - TILE_BANDS[0]);
-    let shown = |y: f32, cap: f32| lift <= 0.0 || y + cap / 2.0 < back_top;
+    out
+}
 
+/// The front: the issue across the top with the count in the corner, the
+/// name in the middle, and what the work produced on its floor (#139).
+#[allow(clippy::too_many_arguments)]
+fn front_face(
+    info: &SessionInfo,
+    chip: &crate::model::ChipState,
+    left: f32,
+    top: f32,
+    pal: Palette,
+    fill: Rgba,
+    ink: Rgba,
+    alarm: Rgba,
+    waits: bool,
+    t: f32,
+) -> Vec<Shape> {
+    let mut out = Vec::new();
+    let s = side();
+    let soft = theme::with_alpha(ink, 0.72);
     let slots = comb::slots(info, pal, fill);
     let band_mid = |from: f32, to: f32| top + (from + to) / 2.0 * s;
 
-    // Top: the issue, and the count Metro puts in a tile's corner — the
-    // subagents running — or a `!` keeping time with a session that waits.
+    // The count Metro puts in a tile's corner: the subagents running, or a
+    // `!` keeping time with a session that waits.
     let running = chip.subs.iter().filter(|x| !x.anim.gone && x.info.running).count();
     let corner = if info.phase() == Phase::NeedsUser {
         (theme::pulse_at(t) > 0.9).then(|| "!".to_string())
@@ -319,71 +350,177 @@ fn session_tile(
     let y0 = band_mid(0.0, TILE_BANDS[0]);
     if let Some(c) = corner {
         let w = font::measure(&c, scale_for(CAP_COUNT));
-        let color = if waits { alarm } else { ink };
-        out.push(text_left(c, CAP_COUNT, left + s - PAD - w, y0, fade(color)));
+        out.push(text_left(c, CAP_COUNT, left + s - PAD - w, y0, if waits { alarm } else { ink }));
     }
     if let Some(slot) = &slots[0] {
-        out.extend(row(slot, 0, left + PAD, y0, s - 2.0 * PAD - corner_w, CAP_SMALL, fade(soft)));
+        out.extend(row(slot, 0, left + PAD, y0, s - 2.0 * PAD - corner_w, CAP_SMALL, soft));
     }
 
-    // Middle: the name, and under it what the session is doing.
     let y1 = band_mid(TILE_BANDS[0], TILE_BANDS[1]) - CAP_NAME * 0.45;
-    if let Some(slot) = &slots[1]
-        && shown(y1, CAP_NAME)
-    {
-        out.extend(row(slot, 1, left + PAD, y1, s - 2.0 * PAD, CAP_NAME, fade(ink)));
+    if let Some(slot) = &slots[1] {
+        out.extend(row(slot, 1, left + PAD, y1, s - 2.0 * PAD, CAP_NAME, ink));
     }
-    let doing = info.phase().label().to_lowercase();
-    let y1b = y1 + CAP_NAME * 1.25;
-    if shown(y1b, CAP_SMALL) {
-        out.push(text_left(doing, CAP_SMALL, left + PAD, y1b, fade(soft)));
-    }
+    out.push(text_left(info.phase().label().to_lowercase(), CAP_SMALL, left + PAD, y1 + CAP_NAME * 1.25, soft));
 
-    // Bottom: what the work produced, on its state as a floor (#139).
     if let Some(slot) = &slots[2] {
         let y2 = band_mid(TILE_BANDS[1], 1.0);
         let floor_top = top + TILE_BANDS[1] * s + 4.0;
         if let Some(floor) = slot.fill {
             let pts = square(left, floor_top, s, top + s - floor_top);
-            out.push(Shape::Poly { points: pts.clone(), color: fade(floor), screen: slot.screen });
+            out.push(Shape::Poly { points: pts.clone(), color: floor, screen: slot.screen });
             if slot.waiting {
-                out.push(Shape::Poly { points: pts, color: fade(comb::pending_rule(pal)), screen: comb::PENDING });
+                out.push(Shape::Poly { points: pts, color: comb::pending_rule(pal), screen: comb::PENDING });
             }
         }
-        if shown(y2, CAP_SMALL) {
-            let on = slot.fill.unwrap_or(fill);
-            let color = if slot.fill.is_some() { comb::legible(slot.color, on, pal) } else { slot.color };
-            let beat = if slot.fill.is_some() { 1.0 } else { comb::row_beat(info, 2, t) };
-            out.extend(row(slot, 2, left + PAD, y2, s - 2.0 * PAD, CAP_SMALL, fade(theme::with_alpha(color, beat))));
-        }
-    }
-
-    // The back: where the session is running, and how many are helping.
-    if lift > 0.0 {
-        let back = theme::lerp(fill, pal.ink, 0.28);
-        let back_ink = comb::legible(WHITE, back, pal);
-        out.push(Shape::poly(square(left, back_top, s, top + s - back_top), fade(back)));
-        let lines = [
-            (comb::fit(&info.short_cwd(), scale_for(CAP_NAME), s - 2.0 * PAD), CAP_NAME, 1.0),
-            (
-                match chip.subs.iter().filter(|x| !x.anim.gone).count() {
-                    0 => "on its own".to_string(),
-                    1 => "1 subagent".to_string(),
-                    n => format!("{n} subagents"),
-                },
-                CAP_SMALL,
-                0.72,
-            ),
-        ];
-        let mut y = back_top + PAD + CAP_NAME / 2.0;
-        for (text, cap, a) in lines {
-            if y + cap / 2.0 <= top + s - 2.0 {
-                out.push(text_left(text, cap, left + PAD, y, fade(theme::with_alpha(back_ink, a))));
-            }
-            y += cap + 8.0;
-        }
+        let on = slot.fill.unwrap_or(fill);
+        let color = if slot.fill.is_some() { comb::legible(slot.color, on, pal) } else { slot.color };
+        let beat = if slot.fill.is_some() { 1.0 } else { comb::row_beat(info, 2, t) };
+        out.extend(row(slot, 2, left + PAD, y2, s - 2.0 * PAD, CAP_SMALL, theme::with_alpha(color, beat)));
     }
     out
+}
+
+/// The back: what the session is up to, in a few short lines, over its name
+/// at the bottom-left where Metro keeps a tile's title.
+///
+/// Waiting, it says what for. Working, it says what its subagents are on,
+/// or where it is working when it is on its own. Idle, where it is and how
+/// long it has been running.
+fn back_face(info: &SessionInfo, chip: &crate::model::ChipState, left: f32, top: f32, ink: Rgba) -> Vec<Shape> {
+    let s = side();
+    let room = s - 2.0 * PAD;
+    let soft = theme::with_alpha(ink, 0.72);
+    let fit = |text: &str, cap: f32| comb::fit(text, scale_for(cap), room);
+    let mut lines: Vec<(String, f32, Rgba)> = Vec::new();
+    let place = info.short_cwd();
+    match info.phase() {
+        Phase::NeedsUser => {
+            lines.push(("needs you".into(), CAP_NAME, ink));
+            if let Some(why) = &info.waiting_for {
+                lines.push((why.to_lowercase(), CAP_SMALL, soft));
+            }
+            lines.push((place, CAP_SMALL, soft));
+        }
+        Phase::Working => {
+            let busy: Vec<String> = chip
+                .subs
+                .iter()
+                .filter(|x| !x.anim.gone && x.info.running)
+                .map(|x| {
+                    let what = x.info.description.trim();
+                    if what.is_empty() { x.info.label().to_lowercase() } else { what.to_lowercase() }
+                })
+                .collect();
+            if busy.is_empty() {
+                lines.push((place, CAP_NAME, ink));
+                lines.push(("on its own".into(), CAP_SMALL, soft));
+            } else {
+                lines.push((format!("{} at work", busy.len()), CAP_NAME, ink));
+                lines.extend(busy.into_iter().take(3).map(|b| (b, CAP_SMALL, soft)));
+            }
+        }
+        Phase::Idle => {
+            lines.push((place, CAP_NAME, ink));
+            if let Some(up) = running_for(info.started_at) {
+                lines.push((format!("up {up}"), CAP_SMALL, soft));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut y = top + PAD + CAP_NAME / 2.0;
+    for (text, cap, color) in lines {
+        out.push(text_left(fit(&text, cap), cap, left + PAD, y, color));
+        y += cap + if cap > CAP_SMALL { 9.0 } else { 6.0 };
+    }
+    // The title, bottom-left, the way Metro labels a tile.
+    out.push(text_left(fit(&info.label(), CAP_SMALL), CAP_SMALL, left + PAD, top + s - PAD - CAP_SMALL / 2.0, ink));
+    out
+}
+
+/// How long ago `started` was, short: `40m`, `3h 05m`, `2d`. `started` is
+/// whatever the session file said, seconds or milliseconds.
+fn running_for(started: u64) -> Option<String> {
+    if started == 0 {
+        return None;
+    }
+    let started = if started > 100_000_000_000 { started / 1000 } else { started };
+    // Before 2001 is not a start time anybody wrote down; the sandbox's
+    // sessions carry a placeholder, and "up 20780d" is nobody's uptime.
+    if started < 1_000_000_000 {
+        return None;
+    }
+    let secs = crate::usage::now_secs().checked_sub(started)?;
+    let (m, h, d) = (secs / 60, secs / 3600, secs / 86_400);
+    Some(if d > 0 {
+        format!("{d}d")
+    } else if h > 0 {
+        format!("{h}h {:02}m", m % 60)
+    } else {
+        format!("{m}m")
+    })
+}
+
+/// A face moved by `dy` and cut to the band `lo..hi`: what is wholly out of
+/// the band goes, a fill is cut at its edges, and a line of letters or a
+/// mark that straddles an edge goes as a whole — the slide is quick enough
+/// that a word is either on the tile or past it.
+fn slid(shapes: Vec<Shape>, dy: f32, lo: f32, hi: f32) -> Vec<Shape> {
+    if dy == 0.0 {
+        return shapes;
+    }
+    let inside = |y: f32, half: f32| y - half >= lo && y + half <= hi;
+    shapes
+        .into_iter()
+        .filter_map(|mut sh| {
+            match &mut sh {
+                Shape::Text { center, scale, .. } => {
+                    center.y += dy;
+                    inside(center.y, font::height(*scale) / 2.0).then_some(())?;
+                }
+                Shape::Mark { center, size, .. } => {
+                    center.y += dy;
+                    inside(center.y, *size / 2.0).then_some(())?;
+                }
+                Shape::Poly { points, .. } => {
+                    for p in points.iter_mut() {
+                        p.y = (p.y + dy).clamp(lo, hi);
+                    }
+                    let (a, b) = points.iter().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.y), b.max(p.y)));
+                    (b - a > 0.5).then_some(())?;
+                }
+                Shape::Stroke { pieces, .. } => {
+                    for p in pieces.iter_mut().flatten() {
+                        p.y += dy;
+                    }
+                    pieces.iter().flatten().all(|p| p.y >= lo && p.y <= hi).then_some(())?;
+                }
+                Shape::Rect { y, h, .. } => {
+                    let (a, b) = ((*y + dy).max(lo), (*y + dy + *h).min(hi));
+                    (b > a).then_some(())?;
+                    *y = a;
+                    *h = b - a;
+                }
+                Shape::RoundedRect { center, h, .. } => {
+                    center.y += dy;
+                    inside(center.y, *h / 2.0).then_some(())?;
+                }
+            }
+            Some(sh)
+        })
+        .collect()
+}
+
+/// A shape with the tile's arrival fade laid over its colour.
+fn faded(mut sh: Shape, fade: &dyn Fn(Rgba) -> Rgba) -> Shape {
+    match &mut sh {
+        Shape::Text { color, .. }
+        | Shape::Mark { color, .. }
+        | Shape::Poly { color, .. }
+        | Shape::Stroke { color, .. }
+        | Shape::Rect { color, .. }
+        | Shape::RoundedRect { color, .. } => *color = fade(*color),
+    }
+    sh
 }
 
 /// One of a tile's rows, set from its left edge: the comb's own row
@@ -495,14 +632,30 @@ mod tests {
     }
 
     #[test]
-    fn a_working_tile_peeks_now_and_then_and_an_idle_one_never_does() {
-        let working = SessionInfo::synthetic(1, "W", Phase::Working);
-        let idle = SessionInfo::synthetic(2, "I", Phase::Idle);
-        let samples: Vec<f32> = (0..2000).map(|k| peek(&working, k as f32 * 0.02)).collect();
-        assert!(samples.iter().take((PEEK_PERIOD / 0.02) as usize - 1).all(|k| *k == 0.0), "opens on its front");
-        assert!(samples.iter().any(|k| *k > 0.99), "peeks all the way");
-        let up = samples.iter().filter(|k| **k > 0.5).count() as f32 / samples.len() as f32;
-        assert!(up < 0.35, "mostly front: back for {up}");
-        assert!((0..2000).all(|k| peek(&idle, k as f32 * 0.02) == 0.0));
+    fn every_tile_is_live_resting_on_each_face_and_never_in_step() {
+        let a = SessionInfo::synthetic(1, "A", Phase::Working);
+        let b = SessionInfo::synthetic(2, "B", Phase::Idle);
+        let step = 0.02;
+        let ks = |info: &SessionInfo| (0..3000).map(|k| peek(info, k as f32 * step)).collect::<Vec<f32>>();
+        let (ka, kb) = (ks(&a), ks(&b));
+        assert_eq!(ka[0], 0.0, "opens on its front");
+        for k in [&ka, &kb] {
+            let back = k.iter().filter(|x| **x >= 1.0).count() as f32 / k.len() as f32;
+            let front = k.iter().filter(|x| **x <= 0.0).count() as f32 / k.len() as f32;
+            assert!(back > 0.3 && front > 0.3, "rests on both faces: back {back}, front {front}");
+            let moving = k.iter().filter(|x| **x > 0.0 && **x < 1.0).count() as f32 * step;
+            assert!(moving < 60.0 * 2.0 * PEEK_SLIDE / PEEK_PERIOD + 1.0, "slides are quick: {moving}s moving");
+        }
+        assert!(ka.iter().zip(&kb).any(|(x, y)| (x - y).abs() > 0.5), "two tiles turn on their own clocks");
+    }
+
+    #[test]
+    fn a_slid_face_is_cut_to_the_tile() {
+        let text = Shape::Text { text: "x".into(), scale: 2.0, stroke: 1.0, angle: 0.0, center: Pt::new(0.0, 50.0), color: WHITE };
+        let fill = Shape::poly(square(0.0, 0.0, 100.0, 100.0), WHITE);
+        let out = slid(vec![text, fill], -60.0, 0.0, 100.0);
+        assert_eq!(out.len(), 1, "the line that left the top is gone");
+        let Shape::Poly { points, .. } = &out[0] else { panic!() };
+        assert!(points.iter().all(|p| p.y >= 0.0 && p.y <= 40.0), "the fill is cut at the edge");
     }
 }

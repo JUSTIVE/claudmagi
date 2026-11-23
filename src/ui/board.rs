@@ -383,7 +383,7 @@ impl Board {
     fn pr_menu_at(&self, m: Pt) -> Option<String> {
         let comb = self.comb.as_ref()?;
         let (i, slot) = comb::hit_slot(comb, m + Pt::new(0.0, self.scroll_y))?;
-        if slot != comb::Slot::Output {
+        if slot != comb::Slot::Output || self.tile_on_back(i) {
             return None;
         }
         let info = &self.model.chips.get(i)?.info;
@@ -583,6 +583,11 @@ impl Board {
         let Some((i, slot)) = comb::hit_slot(comb, m + Pt::new(0.0, self.scroll_y)) else {
             return self.activate(target, cx);
         };
+        // A live tile turned to its back shows none of its rows, so a press
+        // on it is a press on the session (#157).
+        if self.tile_on_back(i) {
+            return self.activate(Target::Session(i), cx);
+        }
         let Some(info) = self.model.chips.get(i).map(|c| c.info.clone()) else { return };
         match slot {
             comb::Slot::Ticket => match &info.ticket {
@@ -599,6 +604,15 @@ impl Board {
             },
             comb::Slot::Session => self.activate(Target::Session(i), cx),
         }
+    }
+
+    /// Whether session `i`'s live tile is showing its back right now (#157).
+    fn tile_on_back(&self, i: usize) -> bool {
+        self.settings.view == BoardView::Tiles
+            && self.comb_since.is_some_and(|since| {
+                let t = Instant::now().duration_since(since).as_secs_f32();
+                self.model.chips.get(i).is_some_and(|c| tiles::on_back(&c.info, t))
+            })
     }
 
     /// Jumps to the session's terminal (chip click / test panel). Subagent
