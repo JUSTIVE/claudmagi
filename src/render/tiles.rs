@@ -180,21 +180,20 @@ fn ease_out(x: f32) -> f32 {
     if x >= 1.0 { 1.0 } else { 1.0 - 2f32.powf(-10.0 * x) }
 }
 
-/// What a session's tile is painted with: the accent while it works, the
-/// board's own chip colour while it waits on a person, and the board's grey
-/// while it idles.
+/// What a session's tile is painted with: the accent while it waits on a
+/// person, the board's own chip colour while it works (black on the white
+/// board, the way a working chip is out on the circuit), and the board's
+/// grey while it idles (#161).
 ///
-/// Waiting is not the alarm colour: the accent is the user's to pick and the
-/// default one is orange, a step from the alarm's red, so a screen of
-/// working tiles and one waiting tile came out the same colour. The chip
-/// colour is the opposite of the board, whatever the accent, and the alarm
-/// goes on as a bar across its top instead.
+/// The accent is the loudest thing on the screen, so it goes to the tile
+/// that wants you: a screen of busy sessions is a screen of quiet black
+/// tiles, and the one that needs an answer is the one in colour.
 pub fn tile_fill(info: &SessionInfo, pal: Palette, accent: Rgba) -> Rgba {
     if comb::wants_a_person(info) {
-        return pal.chip;
+        return accent;
     }
     match info.phase() {
-        Phase::Working => accent,
+        Phase::Working => pal.chip,
         Phase::Idle | Phase::NeedsUser => theme::lerp(pal.bg, pal.ink, 0.32),
     }
 }
@@ -259,7 +258,7 @@ pub fn build_shapes(
 
         if let Some(parent) = cell.subs {
             if let Some(chip) = model.chips.get(parent) {
-                out.extend(colony(chip, left, top, pal, accent, fade));
+                out.extend(colony(chip, left, top, pal, fade));
             }
             continue;
         }
@@ -292,15 +291,11 @@ fn session_tile(
     // White on the accent, which is what Metro sets on it whatever the
     // accent is; everything else is worked out against its own fill.
     let ink = if fill == accent && !pal.screened { WHITE } else { comb::legible(WHITE, fill, pal) };
-    // A session waiting on a person says so in the alarm colour, across the
-    // top of the tile and in the corner, keeping time with the wait (#90).
-    let waits = comb::wants_a_person(info) && !pal.screened;
-    let alarm = comb::legible(pal.alarm, fill, pal);
 
     // Both faces, each laid out as if it were the only one, then slid past
     // each other and cut to the tile.
     let k = peek(info, t);
-    let front = if k < 1.0 { front_face(info, chip, left, top, pal, fill, ink, alarm, waits, t) } else { Vec::new() };
+    let front = if k < 1.0 { front_face(info, chip, left, top, pal, fill, ink, t) } else { Vec::new() };
     let back = if k > 0.0 { back_face(info, chip, left, top, ink) } else { Vec::new() };
     let (lo, hi) = (top, top + s);
     out.extend(slid(front, -k * s, lo, hi).into_iter().map(|sh| faded(sh, fade)));
@@ -309,10 +304,6 @@ fn session_tile(
     // What stays put whichever face is up: the state, across the top.
     if let Some(screen) = band.filter(|b| *b != Screen::Solid) {
         out.push(Shape::Poly { points: square(left, top, s, 5.0), color: fade(pal.bg), screen });
-    }
-    if waits {
-        let beat = if info.phase() == Phase::NeedsUser { theme::pulse_at(t) } else { 1.0 };
-        out.push(Shape::poly(square(left, top, s, 5.0), fade(theme::with_alpha(alarm, beat))));
     }
     out
 }
@@ -328,8 +319,6 @@ fn front_face(
     pal: Palette,
     fill: Rgba,
     ink: Rgba,
-    alarm: Rgba,
-    waits: bool,
     t: f32,
 ) -> Vec<Shape> {
     let mut out = Vec::new();
@@ -350,7 +339,7 @@ fn front_face(
     let y0 = band_mid(0.0, TILE_BANDS[0]);
     if let Some(c) = corner {
         let w = font::measure(&c, scale_for(CAP_COUNT));
-        out.push(text_left(c, CAP_COUNT, left + s - PAD - w, y0, if waits { alarm } else { ink }));
+        out.push(text_left(c, CAP_COUNT, left + s - PAD - w, y0, ink));
     }
     if let Some(slot) = &slots[0] {
         out.extend(row(slot, 0, left + PAD, y0, s - 2.0 * PAD - corner_w, CAP_SMALL, soft));
@@ -544,14 +533,15 @@ fn colony(
     left: f32,
     top: f32,
     pal: Palette,
-    accent: Rgba,
     fade: impl Fn(Rgba) -> Rgba,
 ) -> Vec<Shape> {
     let mut out = Vec::new();
     let agents: Vec<(String, bool)> =
         chip.subs.iter().filter(|x| !x.anim.gone).map(|x| (x.info.label().to_lowercase(), x.info.running)).collect();
     let n = agents.len();
-    let base = if pal.screened { pal.ink } else { accent };
+    // Working subagents are working tiles: the chip colour, like their
+    // session's (#161).
+    let base = if pal.screened { pal.ink } else { pal.chip };
     for (k, (name, running)) in agents.iter().take(4).enumerate() {
         let (q, r) = ((k % 2) as f32, (k / 2) as f32);
         let (x, y) = (left + q * PITCH, top + r * PITCH);
@@ -560,7 +550,7 @@ fn colony(
         // A finished one is the accent given back to the board.
         let fill = if going { base } else { theme::lerp(pal.bg, base, 0.45) };
         out.push(Shape::poly(square(x, y, TILE, TILE), fade(fill)));
-        let ink = if going && !pal.screened { WHITE } else { comb::legible(WHITE, fill, pal) };
+        let ink = comb::legible(WHITE, fill, pal);
         if over {
             let label = format!("+{}", n - 3);
             out.push(text_left(label, CAP_COUNT, x + 7.0, y + TILE / 2.0, fade(ink)));
