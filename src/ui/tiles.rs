@@ -164,12 +164,16 @@ pub fn columns(groups: &[(String, Vec<Kind>)]) -> usize {
     if groups.iter().any(|(_, k)| worth(k) > 2) { WIDE } else { NARROW }
 }
 
+/// The most groups — pieces of work — a row holds, however wide the
+/// window (#178).
+const MAX_PER_ROW: usize = 4;
+
 /// How many groups `columns` small tiles wide stand side by side in `room`
-/// design px: as many as fit, and always one.
+/// design px: as many as fit, never more than `MAX_PER_ROW`, and always one.
 pub fn groups_per_row(room: f32, columns: usize) -> usize {
     let group = columns as f32 * UNIT + columns.saturating_sub(1) as f32 * GAP;
     let gap = gpui_metro::tile::GROUP_GAP;
-    (((room + gap) / (group + gap)).floor() as usize).max(1)
+    (((room + gap) / (group + gap)).floor() as usize).clamp(1, MAX_PER_ROW)
 }
 
 /// `text` cut to `n` characters, with an ellipsis if it was longer.
@@ -668,6 +672,7 @@ mod tests {
         assert_eq!(groups_per_row(136.0 * 3.0 + 56.0 * 2.0, NARROW), 3, "three fit exactly");
         assert_eq!(groups_per_row(136.0 * 3.0 + 56.0 * 2.0 - 1.0, NARROW), 2);
         assert_eq!(groups_per_row(20.0, WIDE), 1, "never none, however narrow");
+        assert_eq!(groups_per_row(10_000.0, NARROW), MAX_PER_ROW, "four pieces of work a row at most");
     }
 
     #[test]
