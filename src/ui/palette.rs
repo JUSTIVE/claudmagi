@@ -526,7 +526,18 @@ impl Board {
         let theme = self.palette();
         let (ink, card_rgba) = (theme.ink, card_bg(theme));
         let at = |a: f32| theme::hsla(theme::with_alpha(ink, a));
-        let (accent, card, edge) = (theme::hsla(theme.packet), theme::hsla(card_rgba), at(0.35));
+        // The card keeps the board's colours, so its node rows read the way
+        // the board does; Metro gives it the face, the square sheet and the
+        // accent rule (the packet colour on the orange board, where an orange
+        // accent would vanish).
+        let metro_accent = gpui_metro::Theme::palette(cx).accent;
+        let accent = if self.settings.theme == crate::settings::BoardTheme::Orange {
+            theme::hsla(theme.packet)
+        } else {
+            metro_accent
+        };
+        let ui_font = gpui_metro::Theme::font(cx);
+        let (card, edge) = (theme::hsla(card_rgba), at(0.35));
         let (rule, sel_bg, hover_bg) = (at(0.15), at(0.13), at(0.06));
 
         let mut list = div().flex().flex_col();
@@ -541,6 +552,8 @@ impl Board {
                     .px_3()
                     .py_0p5()
                     .cursor_pointer()
+                    .border_l_2()
+                    .border_color(if on { accent } else { gpui::transparent_black() })
                     .when(on, |d| d.bg(sel_bg))
                     .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
                     // A row that came along with a hit is stepped in behind
@@ -609,16 +622,15 @@ impl Board {
                     .w(px(card_w))
                     .flex()
                     .flex_col()
-                    .rounded_lg()
                     .border_1()
                     .border_color(edge)
                     .bg(card)
-                    .shadow_lg()
-                    .font_family(theme::UI_FONT)
+                    .font_family(ui_font)
                     .text_size(px(11.))
                     .text_color(at(0.85))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(div().h(px(2.)).bg(accent))
                     .child(
                         div()
                             .flex()

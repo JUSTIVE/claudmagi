@@ -904,6 +904,7 @@ dependencies = [
  "dirs",
  "env_logger",
  "gpui",
+ "gpui-metro",
  "gpui_platform",
  "libc",
  "log",
@@ -2217,6 +2218,15 @@ dependencies = [
  "zed-font-kit",
  "zed-scap",
  "ztracing",
+]
+
+[[package]]
+name = "gpui-metro"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "unicode-segmentation",
 ]
 
 [[package]]

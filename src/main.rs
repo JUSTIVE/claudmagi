@@ -266,10 +266,12 @@ fn main() {
 
     // The search's chips draw their marks through this (#79).
     Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(logos::Logos)
+        // gpui-metro's glyphs first, the marks behind them (#79).
+        .with_assets(gpui_metro::Assets::with_fallback(logos::Logos))
         .run(|cx: &mut App| {
         base_gpui::init(cx);
         ui::register_fonts(cx);
+        ui::metro::init(&settings::Settings::load(), cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.set_menus(vec![Menu {

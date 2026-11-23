@@ -11,9 +11,11 @@
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::model::Target;
-use crate::theme::{self, PALETTE};
+use gpui_metro::{Icon, TextStyle, Theme, round_button, text};
+
 use crate::ui::board::{Board, STATUS_H};
-use crate::ui::panel::{Which, c, dim};
+use crate::ui::metro::{BODY, PAD, SMALL, phase_mark};
+use crate::ui::panel::{Which, hint};
 
 pub const PANEL_W: f32 = 330.0;
 
@@ -23,6 +25,9 @@ impl Board {
     }
 
     pub(crate) fn render_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Theme::palette(cx);
+        let fg = p.foreground;
+        let dim = move |a: f32| fg.opacity(a);
         let rows: Vec<(usize, crate::model::SessionInfo)> =
             self.model.live().enumerate().map(|(i, chip)| (i, chip.info.clone())).collect();
         let subs: Vec<Vec<crate::model::SubagentInfo>> = self
@@ -32,7 +37,7 @@ impl Board {
             .collect();
         let total = rows.len();
 
-        let mut list = div().flex().flex_col().gap_2().px_3().py_2();
+        let mut list = div().flex().flex_col().gap_3().px(px(PAD)).py_2();
         for ((i, info), subs) in rows.into_iter().zip(subs) {
             let phase = info.phase();
             let mut block = div().flex().flex_col().gap_0p5();
@@ -46,15 +51,18 @@ impl Board {
                     .items_center()
                     .gap_2()
                     .cursor_pointer()
-                    .hover(|s| s.bg(dim(0.08)))
+                    .hover(move |s| s.bg(dim(0.08)))
+                    .child(phase_mark(phase, 10.))
                     .child(
                         div()
                             .flex_1()
                             .overflow_hidden()
-                            .text_color(c(crate::ui::devtools::phase_color(phase)))
+                            .whitespace_nowrap()
+                            .text_ellipsis()
+                            .text_size(px(BODY + 2.))
                             .child(info.label()),
                     )
-                    .child(div().flex_none().text_size(px(10.)).text_color(dim(0.4)).child(phase.label()))
+                    .child(div().flex_none().text_size(px(SMALL)).text_color(dim(0.4)).child(phase.label()))
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if let Some(at) = this.model.chips.iter().position(|c| c.info.session_id == session_id) {
                             this.activate(Target::Session(at), cx);
@@ -62,7 +70,7 @@ impl Board {
                     })),
             );
             block = block.child(
-                div().text_size(px(10.)).text_color(dim(0.4)).overflow_hidden().child(info.short_cwd()),
+                div().text_size(px(SMALL)).text_color(dim(0.4)).overflow_hidden().child(info.short_cwd()),
             );
 
             // Its issue.
@@ -78,8 +86,8 @@ impl Board {
                         .gap_2()
                         .pl_2()
                         .cursor_pointer()
-                        .hover(|s| s.bg(dim(0.08)))
-                        .text_size(px(10.))
+                        .hover(move |s| s.bg(dim(0.08)))
+                        .text_size(px(SMALL))
                         .child(div().flex_1().overflow_hidden().text_color(dim(0.75)).child(t.label()))
                         .child(div().flex_none().text_color(dim(0.4)).child(state))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -108,8 +116,8 @@ impl Board {
                         .gap_2()
                         .pl_2()
                         .cursor_pointer()
-                        .hover(|s| s.bg(dim(0.08)))
-                        .text_size(px(10.))
+                        .hover(move |s| s.bg(dim(0.08)))
+                        .text_size(px(SMALL))
                         .child(div().flex_1().overflow_hidden().text_color(dim(0.75)).child(pr.label()))
                         .child(div().flex_none().text_color(dim(0.4)).child(state))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -131,8 +139,8 @@ impl Board {
                         .gap_2()
                         .pl_2()
                         .cursor_pointer()
-                        .hover(|s| s.bg(dim(0.08)))
-                        .text_size(px(10.))
+                        .hover(move |s| s.bg(dim(0.08)))
+                        .text_size(px(SMALL))
                         .child(div().flex_1().overflow_hidden().text_color(dim(0.75)).child(a.label()))
                         .child(div().flex_none().text_color(dim(0.4)).child(state))
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -149,7 +157,7 @@ impl Board {
                         .items_center()
                         .gap_2()
                         .pl_2()
-                        .text_size(px(10.))
+                        .text_size(px(SMALL))
                         .child(
                             div()
                                 .flex_1()
@@ -178,50 +186,46 @@ impl Board {
             .w(px(PANEL_W.min(self.window.0 - 36.0).max(200.0)))
             .flex()
             .flex_col()
-            .border_l_1()
-            .border_color(c(theme::with_alpha(PALETTE.text_on, 0.45)))
-            .bg(c(theme::with_alpha(PALETTE.chip, 0.96)))
-            .font_family(theme::UI_FONT)
-            .text_size(px(11.))
-            .text_color(dim(0.85))
+            .bg(p.chrome)
+            .border_l_2()
+            .border_color(p.accent)
+            .font_family(Theme::font(cx))
+            .text_size(px(BODY))
+            .text_color(p.foreground)
             .overflow_hidden()
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .justify_between()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(dim(0.12))
-                    .child(div().text_color(c(PALETTE.text_on)).child("SESSIONS"))
-                    .child(div().text_size(px(10.)).text_color(dim(0.45)).child(format!("{total}")))
+                    .pl(px(PAD))
+                    .pr(px(8.))
+                    .pt(px(8.))
+                    .pb(px(6.))
                     .child(
                         div()
-                            .id("list-close")
-                            .px_1p5()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(dim(0.12)))
-                            .child("\u{00d7}")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.panel_mut(Which::List).open = false;
-                                cx.notify();
-                            })),
-                    ),
+                            .flex()
+                            .flex_col()
+                            .child(text(TextStyle::AppTitle, "CLAUDMAGI"))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_baseline()
+                                    .gap(px(10.))
+                                    .child(div().ml(px(-2.)).child(text(TextStyle::Title2, "sessions")))
+                                    .child(div().text_color(p.accent).child(format!("{total}"))),
+                            ),
+                    )
+                    .child(round_button("list-close", Icon::Close).diameter(28.).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.panel_mut(Which::List).open = false;
+                            cx.notify();
+                        },
+                    ))),
             )
             .child(div().flex_1().overflow_hidden().child(list))
-            .child(
-                div()
-                    .px_3()
-                    .py_1p5()
-                    .border_t_1()
-                    .border_color(dim(0.12))
-                    .text_size(px(10.))
-                    .text_color(dim(0.45))
-                    .child("\u{2318}L toggles this panel"),
-            )
+            .child(hint("\u{2318}L toggles this panel"))
     }
 }

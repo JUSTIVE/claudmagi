@@ -1,7 +1,9 @@
 # claudmagi
 
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
-and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts.
+and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts. The
+chrome around the board (panels, status bar, search) is dressed in Windows Phone Metro by
+[gpui-metro](../gpui-metro): flat square sheets, an accent colour, light lower-case titles.
 
 Every running `claude` process becomes a chip riding on a trace, with Claude's mark inside it ahead of the name, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
@@ -10,6 +12,12 @@ trace goes slack and the chip pulls out of its socket. Click a chip to jump to t
 Warp tab that hosts that session.
 
 ## Install
+
+gpui-metro is a path dependency on a sibling checkout, so clone it next to this
+repo first (`../gpui-metro`). It pins the same Zed gpui revision as the
+`[patch.crates-io]` here; cargo treats two revisions of one repo as two gpui
+crates, so bump them together. gpui is built with `runtime_shaders`, so the
+build does not need Xcode's Metal Toolchain.
 
 ```sh
 tools/bundle.sh          # release build → claudmagi.app → /Applications
@@ -53,7 +61,7 @@ cargo run --release
 - `⌘K` searches everything on the board at once: session names, Linear issue keys, pull request numbers, and the paths and titles behind them. Picking a row does what clicking that node does — jump to the Warp tab, open the PR, open the issue in Linear.app. Letters may be scattered across a candidate, but an unbroken run of them is worth far more than the same letters spread out, so `pjm-20` puts the tickets that carry it whole on top. A hit brings its whole lane with it — find a pull request by its number and its issue and its session come along under it, stepped in behind the hit — since the number is often all anyone remembers and the work around it is what was wanted. Each row is drawn as the node itself, in the body the board would give it and carrying the mark of whose thing it is — Claude, GitHub, Linear — at one chip size for every kind, so a merged pull request, a chip waiting on you and an issue nobody has started read the same in the list as they do on the board. `↑↓` moves, `⏎` opens, `esc` or a click on the board closes.
 - **Two views**, switched in the settings panel. `CIRCUIT` is the board above. `COMB` lays the same sessions out as a vertically scrolling honeycomb: every cell is drawn, empty ones in grey, and the panes of one Warp tab cluster into a flower with a ring of empty cells around it. A cell carries its Linear issue, its session and its pull request, in that order top to bottom, with subagents as a sub-grid of small hexes along its floor. Cells are outlines only, and they stand apart with a gap between them. `claudmagi --svg out.svg --view comb` renders it without a window.
 - `⌘L` opens a list down the right-hand side: every session the board is drawing, in board order, with its issue, its pull requests and its subagents underneath. Every line clicks through to the same place its node on the board does (#103).
-- `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: view, background (white / orange / dark) and UI size. Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
+- `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: view, background (white / orange / dark), Metro accent (the twenty Windows Phone accents, orange by default) and UI size (a slider plus presets). The panels take the dark Metro ground on the dark board and the light one otherwise; the status bar keeps the board's own ink so it reads on all three, with the accent filling whatever is switched on (ink on the orange board, where an orange accent would vanish). Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
 - Sessions are grouped by where they run with a wide gap between groups: panes of the same Warp tab stay together, otherwise each Warp pane, other terminals, and the Claude desktop app form their own groups. The pane → tab map is read from Warp's own state database (`warp.sqlite` under `~/Library/Group Containers/2BBY89MBSN.dev.warp`, via the system `sqlite3`, read-only, every 5s), so it needs no Warp setting; Warp Control (`warpctrl pane list`) is the fallback when that database is missing. Groups are separated by three empty rows with no traces in them. Inside a group a session keeps its lane for life: when one ends, the others stay put and the next new session takes the freed lane. When a session joins a group in the middle of the board, nothing jumps: its new trace draws in from the left and the traces below slide down with their chips aboard. Chips never sit in the left 20% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
 - The status bar shows your Claude plan usage (the `/usage` numbers: 5-hour and 7-day utilization with the time to reset), read once a minute from Anthropic's usage endpoint with the login Claude Code keeps in the keychain. Nothing is shown when there is no Claude Code login. `claudmagi --usage` prints the same numbers.
 - Scroll to pan when there are more lanes than fit.
@@ -102,6 +110,7 @@ and the app itself as the way back.
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths (tessellations cached by geometry), or serialised to SVG for headless checks. |
 | UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `host/`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
+| UI | `ui/metro.rs` | Settings → gpui-metro theme (mode from the board, accent by name), and the panel-scale Metro pieces (`chip`, `section`, `hint`, `phase_mark`). |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
 | Data | `pr.rs`, `ticket.rs` | What a session links out to: the GitHub PR (transcript → `gh`) and the Linear issue (name, PR title tag, or transcript links). |
 | Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims + the launch `PATH` fix. |

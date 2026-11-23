@@ -9,7 +9,8 @@ use crate::ticket;
 use crate::theme::{self, PALETTE, Rgba};
 use crate::sources;
 use crate::ui::board::{Board, Mode};
-use crate::ui::panel::{Which, button, c, dim, section};
+use crate::ui::metro::{SMALL, phase_mark};
+use crate::ui::panel::{Which, button, hint, section};
 
 pub const PANEL_W: f32 = 330.0;
 
@@ -27,6 +28,9 @@ impl Board {
     }
 
     pub(crate) fn render_devtools(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        // Panel text is Metro foreground at a strength, on either ground.
+        let fg = gpui_metro::Theme::palette(cx).foreground;
+        let dim = move |a: f32| fg.opacity(a);
         let mode = self.mode;
         let sandbox = self.sandbox.clone();
         let auto = sandbox.auto();
@@ -37,17 +41,17 @@ impl Board {
             .map(|(i, chip)| (i, chip.info.clone()))
             .collect();
 
-        let mut panel = self.panel_chrome(Which::Dev, "TEST TOOLS", PANEL_W, cx)
+        let mut panel = self.panel_chrome(Which::Dev, "test tools", PANEL_W, cx)
             // Data source.
             .child(
                 section("SOURCE").child(
                     div()
                         .flex()
                         .gap_1()
-                        .child(button("mode-live", "LIVE", mode == Mode::Live).on_click(cx.listener(
+                        .child(button("mode-live", "live", mode == Mode::Live).on_click(cx.listener(
                             |this, _: &ClickEvent, _, cx| this.set_mode(Mode::Live, cx),
                         )))
-                        .child(button("mode-sandbox", "SANDBOX", mode == Mode::Sandbox).on_click(
+                        .child(button("mode-sandbox", "sandbox", mode == Mode::Sandbox).on_click(
                             cx.listener(|this, _: &ClickEvent, _, cx| this.set_mode(Mode::Sandbox, cx)),
                         )),
                 ),
@@ -70,18 +74,18 @@ impl Board {
                             .flex()
                             .flex_wrap()
                             .gap_1()
-                            .child(add("add-working", "+ WORKING", Phase::Working))
-                            .child(add("add-needs", "+ NEEDS INPUT", Phase::NeedsUser))
-                            .child(add("add-idle", "+ IDLE", Phase::Idle)),
+                            .child(add("add-working", "+ working", Phase::Working))
+                            .child(add("add-needs", "+ needs input", Phase::NeedsUser))
+                            .child(add("add-idle", "+ idle", Phase::Idle)),
                     )
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap_1()
-                            .child(button("fill-8", "FILL ×8", false).on_click(move |_, _, _| sb_fill.fill(8)))
-                            .child(button("clear-all", "CLEAR", false).on_click(move |_, _, _| sb_clear.clear()))
-                            .child(button("auto-churn", "AUTO CHURN", auto).on_click(move |_, _, _| {
+                            .child(button("fill-8", "fill ×8", false).on_click(move |_, _, _| sb_fill.fill(8)))
+                            .child(button("clear-all", "clear", false).on_click(move |_, _, _| sb_clear.clear()))
+                            .child(button("auto-churn", "auto churn", auto).on_click(move |_, _, _| {
                                 sb_auto.set_auto(!sb_auto.auto());
                             })),
                     )
@@ -91,7 +95,7 @@ impl Board {
                     .child({
                         let rate = sandbox.rate();
                         let mut row = div().flex().items_center().flex_wrap().gap_1().child(
-                            div().w(px(40.)).flex_none().text_size(px(10.)).text_color(dim(0.55)).child("RATE"),
+                            div().w(px(40.)).flex_none().text_size(px(SMALL)).text_color(dim(0.55)).child("rate"),
                         );
                         for r in sources::CHURN_RATES {
                             let sb = sandbox.clone();
@@ -112,7 +116,7 @@ impl Board {
                     .child({
                         let groups = sandbox.groups();
                         let mut row = div().flex().items_center().flex_wrap().gap_1().child(
-                            div().w(px(40.)).flex_none().text_size(px(10.)).text_color(dim(0.55)).child("GROW"),
+                            div().w(px(40.)).flex_none().text_size(px(SMALL)).text_color(dim(0.55)).child("grow"),
                         );
                         for (group, n) in groups {
                             let sb = sandbox.clone();
@@ -148,7 +152,8 @@ impl Board {
                 .id(SharedString::from(format!("label-{i}")))
                 .flex_1()
                 .overflow_hidden()
-                .text_color(c(phase_color(phase)))
+                .whitespace_nowrap()
+                .text_ellipsis()
                 .child({
                     let mut line = format!("{} · {}", info.label(), phase.label());
                     if let Some(t) = &info.ticket {
@@ -162,11 +167,11 @@ impl Board {
             let label = if info.synthetic {
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
-                label.cursor_pointer().hover(|s| s.bg(dim(0.08))).on_click(move |_, _, _| sb.cycle(&sid))
+                label.cursor_pointer().hover(move |s| s.bg(dim(0.08))).on_click(move |_, _, _| sb.cycle(&sid))
             } else {
                 label
             };
-            let mut row = div().flex().items_center().gap_1().child(label);
+            let mut row = div().flex().items_center().gap_1().child(phase_mark(phase, 8.)).child(label);
             if info.synthetic {
                 for p in Phase::ALL {
                     let sb = sandbox.clone();
@@ -179,7 +184,7 @@ impl Board {
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
                 row = row.child(
-                    button(SharedString::from(format!("add-sub-{i}")), "+SUB", false)
+                    button(SharedString::from(format!("add-sub-{i}")), "+sub", false)
                         .on_click(move |_, _, _| {
                             sb.add_sub(&sid, true);
                         }),
@@ -192,7 +197,7 @@ impl Board {
             } else {
                 let sid = info.session_id.clone();
                 row = row.child(
-                    button(SharedString::from(format!("focus-{i}")), "→ WARP", false).on_click(cx.listener(
+                    button(SharedString::from(format!("focus-{i}")), "→ warp", false).on_click(cx.listener(
                         move |this, _: &ClickEvent, _, cx| {
                             if let Some(idx) = this.model.chips.iter().position(|c| c.info.session_id == sid) {
                                 this.activate(crate::model::Target::Session(idx), cx);
@@ -226,7 +231,7 @@ impl Board {
                     div()
                         .w(px(56.))
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(px(SMALL))
                         .text_color(dim(0.55))
                         .child(match (head, chain) {
                             (None, _) => "PR".to_string(),
@@ -307,7 +312,7 @@ impl Board {
                     div()
                         .w(px(56.))
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(px(SMALL))
                         .text_color(dim(0.55))
                         .child(match &info.ticket {
                             Some(t) => t.label(),
@@ -342,9 +347,9 @@ impl Board {
                     div()
                         .w(px(56.))
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(px(SMALL))
                         .text_color(dim(0.55))
-                        .child("HOST"),
+                        .child("host"),
                 );
                 let sb = sandbox.clone();
                 let sid = info.session_id.clone();
@@ -370,12 +375,14 @@ impl Board {
             // Subagents, indented under their session.
             for (j, sub) in info.subagents.iter().enumerate() {
                 let sub_phase = sub.phase();
-                let mut sub_row = div().flex().items_center().gap_1().pl_3().child(
+                let mut sub_row = div().flex().items_center().gap_1().pl_3().child(phase_mark(sub_phase, 5.)).child(
                     div()
                         .flex_1()
                         .overflow_hidden()
-                        .text_size(px(10.))
-                        .text_color(c(theme::with_alpha(phase_color(sub_phase), 0.85)))
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(SMALL))
+                        .text_color(dim(0.6))
                         .child(format!(
                             "└ {} · {} · {}",
                             sub.label(),
@@ -390,7 +397,7 @@ impl Board {
                     sub_row = sub_row.child(
                         button(
                             SharedString::from(format!("sub-toggle-{i}-{j}")),
-                            if running { "DONE" } else { "RUN" },
+                            if running { "done" } else { "run" },
                             false,
                         )
                         .on_click(move |_, _, _| sb.set_sub_running(&aid, !running)),
@@ -406,8 +413,8 @@ impl Board {
             }
         }
         let title: &'static str = match mode {
-            Mode::Sandbox => "SESSIONS · click a name to cycle · +SUB adds a subagent",
-            Mode::Live => "SESSIONS",
+            Mode::Sandbox => "sessions · click a name to cycle · +sub adds a subagent",
+            Mode::Live => "sessions",
         };
         let count = if mode == Mode::Sandbox { sandbox.len() } else { self.model.live().count() };
         // In live mode this was only ever a list, and the list has a panel of
@@ -416,20 +423,11 @@ impl Board {
         if mode == Mode::Sandbox {
             panel = panel.child(
             section(title)
-                .child(div().text_color(dim(0.45)).text_size(px(10.)).child(format!("{count} total")))
+                .child(div().text_color(dim(0.45)).text_size(px(SMALL)).child(format!("{count} total")))
                 .child(list),
             );
         }
 
-        panel.child(
-            div()
-                .px_3()
-                .py_1p5()
-                .border_t_1()
-                .border_color(dim(0.12))
-                .text_size(px(10.))
-                .text_color(dim(0.45))
-                .child("T toggles this panel · ⌘L lists the sessions · Esc closes"),
-        )
+        panel.child(hint("T toggles this panel · ⌘L lists the sessions · Esc closes"))
     }
 }

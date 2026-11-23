@@ -500,7 +500,6 @@ impl Board {
                                         .px(px(TIP_PAD))
                                         .py(px(4.))
                                         .max_w(px(TIP_MAX))
-                                        .rounded_sm()
                                         .border_1()
                                         .border_color(theme::hsla(theme::with_alpha(
                                             self.palette().ink,
@@ -721,6 +720,16 @@ impl Render for Board {
         let zoom = self.layout.zoom;
 
         let ink = theme::hsla(palette.ink);
+        // The status bar stays on the board's ground and in its ink, so it
+        // reads on all three boards; Metro gives it the type, the square
+        // controls and the accent that fills whatever is switched on. On
+        // the orange board an orange accent would vanish, so ink fills there.
+        let metro = gpui_metro::Theme::palette(cx);
+        let ui_font = gpui_metro::Theme::font(cx);
+        let on_orange = self.settings.theme == crate::settings::BoardTheme::Orange;
+        let fill = if on_orange { ink } else { metro.accent };
+        let fill_ink = if on_orange { theme::hsla(palette.bg) } else { metro.accent_ink };
+        let status_colors = (ink, fill, fill_ink);
         let summary = self.model.summary();
         let detail = self.model.detail();
         let mode_tag = match self.mode {
@@ -903,10 +912,10 @@ impl Render for Board {
                     .justify_between()
                     .gap_4()
                     .bg(theme::hsla(palette.bg))
-                    .border_t_1()
-                    .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
-                    .font_family(theme::UI_FONT)
-                    .text_size(px(11.))
+                    .border_t_2()
+                    .border_color(fill)
+                    .font_family(ui_font)
+                    .text_size(px(crate::ui::metro::BODY))
                     .text_color(ink)
                     .child(
                         div()
@@ -917,12 +926,7 @@ impl Render for Board {
                             .child(summary)
                             .when_some(mode_tag, |d, tag| {
                                 d.child(
-                                    div()
-                                        .px_1p5()
-                                        .rounded_sm()
-                                        .bg(theme::hsla(palette.ink))
-                                        .text_color(theme::hsla(palette.bg))
-                                        .child(tag),
+                                    div().px_1p5().bg(fill).text_color(fill_ink).child(tag),
                                 )
                             })
                             // The board looks right when Warp's tabs are
@@ -934,7 +938,6 @@ impl Render for Board {
                                     div()
                                         .id("source-note")
                                         .px_1p5()
-                                        .rounded_sm()
                                         .bg(theme::hsla(palette.alarm))
                                         .text_color(theme::hsla(palette.on_alarm))
                                         .cursor_pointer()
@@ -961,19 +964,15 @@ impl Render for Board {
                                         .items_center()
                                         .gap_2()
                                         .px_2()
-                                        .py_0p5()
-                                        .rounded_sm()
-                                        .border_1()
-                                        .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.35)))
-                                        .child(usage_meter("5H", u.five_hour, secs, palette, stale))
-                                        .child(usage_meter("7D", u.seven_day, secs, palette, stale)),
+                                        .child(usage_meter("5H", u.five_hour, secs, palette, fill, stale))
+                                        .child(usage_meter("7D", u.seven_day, secs, palette, fill, stale)),
                                 )
                             })
                             .child(status_button(
                                 "settings-toggle",
-                                "SETTINGS",
+                                "settings",
                                 settings_open,
-                                palette,
+                                status_colors,
                                 cx.listener(|this, _, _, cx| {
                                     this.toggle_settings();
                                     cx.notify();
@@ -981,9 +980,9 @@ impl Render for Board {
                             ))
                             .child(status_button(
                                 "dev-toggle",
-                                "TEST",
+                                "test",
                                 dev_open,
-                                palette,
+                                status_colors,
                                 cx.listener(|this, _, _, cx| {
                                     this.toggle_devtools();
                                     cx.notify();
@@ -1047,6 +1046,7 @@ fn usage_meter(
     w: usage::Window,
     now: u64,
     palette: Palette,
+    fill: gpui::Hsla,
     stale: bool,
 ) -> gpui::Div {
     const TRACK_W: f32 = 44.0;
@@ -1064,15 +1064,9 @@ fn usage_meter(
                 .flex_none()
                 .w(px(TRACK_W))
                 .h(px(4.))
-                .rounded_full()
                 .bg(ink(0.18))
-                .child(
-                    div()
-                        .w(px(TRACK_W * frac))
-                        .h_full()
-                        .rounded_full()
-                        .bg(theme::hsla(theme::with_alpha(palette.packet, fade))),
-                ),
+                // A Metro progress bar: square, the accent filling it.
+                .child(div().w(px(TRACK_W * frac)).h_full().bg(fill.opacity(fade))),
         )
         .child(
             div()
@@ -1094,24 +1088,26 @@ fn usage_meter(
 /// Preferences app, and Settings still answers to them.
 const PRIVACY_ALL_FILES: &str = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
 
+/// A flat Metro button for the status bar: a 2 px ink border, filled while
+/// its panel is open and while it is pressed. `colors` is (ink, fill, the ink
+/// that reads on the fill).
 fn status_button(
     id: &'static str,
     label: impl Into<SharedString>,
     active: bool,
-    palette: Palette,
+    colors: (gpui::Hsla, gpui::Hsla, gpui::Hsla),
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<gpui::Div> {
+    let (ink, fill, fill_ink) = colors;
     div()
         .id(id)
         .flex_none()
         .px_2()
-        .py_0p5()
-        .rounded_sm()
-        .border_1()
-        .border_color(theme::hsla(theme::with_alpha(palette.ink, 0.6)))
+        .border_2()
+        .border_color(if active { fill } else { ink })
         .cursor_pointer()
-        .when(active, |d| d.bg(theme::hsla(palette.ink)).text_color(theme::hsla(palette.bg)))
-        .hover(move |s| s.bg(theme::hsla(theme::with_alpha(palette.ink, 0.15))))
+        .when(active, |d| d.bg(fill).text_color(fill_ink))
+        .active(move |s| s.bg(fill).border_color(fill).text_color(fill_ink))
         .child(label.into())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(on_click)

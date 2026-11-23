@@ -77,6 +77,13 @@ impl Board {
 
         let theme = self.palette();
         let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
+        // The accent rule along the card's top; ink on the orange board,
+        // where an orange accent would vanish.
+        let rule = if self.settings.theme == crate::settings::BoardTheme::Orange {
+            ink(1.0)
+        } else {
+            gpui_metro::Theme::palette(cx).accent
+        };
         let mut list = div().flex().flex_col().py(px(PAD));
         for (k, row) in rows.into_iter().enumerate() {
             let body = match row.look {
@@ -152,18 +159,18 @@ impl Board {
             .w(px(MAX_W.min(self.window.0 - 2.0 * EDGE).max(160.0)))
             .flex()
             .flex_col()
-            .rounded_lg()
+            // A Metro sheet: square and flat, an accent rule along the top.
             .border_1()
             .border_color(ink(0.35))
             .bg(theme::hsla(card_bg(theme)))
-            .shadow_lg()
-            .font_family(theme::UI_FONT)
+            .font_family(gpui_metro::Theme::font(cx))
             .text_size(px(11.))
             .text_color(ink(0.85))
             // The board closes the list on any press that reaches it, so the
             // card has to keep its own presses to itself.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .child(div().h(px(2.)).bg(rule))
             .child(list);
 
         Some(
