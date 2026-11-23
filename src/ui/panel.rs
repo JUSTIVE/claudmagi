@@ -56,14 +56,14 @@ impl Board {
         width: f32,
         body: impl IntoElement,
         cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let (close_id, scroll_id): (&'static str, &'static str) = match which {
-            Which::Dev => ("dev-close", "dev-scroll"),
-            Which::Settings => ("settings-close", "settings-scroll"),
-            Which::List => ("list-close", "list-scroll"),
+    ) -> gpui::AnyElement {
+        let (close_id, scroll_id, enter_id): (&'static str, &'static str, &'static str) = match which {
+            Which::Dev => ("dev-close", "dev-scroll", "dev-enter"),
+            Which::Settings => ("settings-close", "settings-scroll", "settings-enter"),
+            Which::List => ("list-close", "list-scroll", "list-enter"),
         };
         let p = gpui_metro::Theme::palette(cx);
-        div()
+        let panel = div()
             // A panel wider than the window would push its own close button
             // off the screen (#83).
             .w(px(width.min(self.window.0 - 36.0).max(180.0)))
@@ -71,10 +71,8 @@ impl Board {
             .flex_none()
             .flex()
             .flex_col()
-            // Metro: a flat sheet of chrome, square, an accent rule on top.
+            // Metro: a flat sheet of chrome, square, with no rule of its own.
             .bg(p.chrome)
-            .border_t_2()
-            .border_color(p.accent)
             .font_family(gpui_metro::Theme::font(cx))
             .text_size(px(BODY))
             .text_color(p.foreground)
@@ -105,6 +103,7 @@ impl Board {
                     ))),
             )
             // The body takes the rest of the height and scrolls in it.
-            .child(div().id(scroll_id).flex_1().min_h_0().overflow_y_scroll().child(body))
+            .child(div().id(scroll_id).flex_1().min_h_0().overflow_y_scroll().child(body));
+        crate::ui::metro::slide_in(enter_id, panel, false, cx)
     }
 }

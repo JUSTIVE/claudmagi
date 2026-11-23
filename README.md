@@ -3,7 +3,7 @@
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
 and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts. The
 chrome around the board (panels, status bar, search) is dressed in Windows Phone Metro by
-[gpui-metro](https://github.com/JUSTIVE/gpui-metro): flat square sheets, an accent colour, light lower-case titles.
+[gpui-metro](https://github.com/JUSTIVE/gpui-metro): flat square sheets that slide in from the edge, an accent colour, light lower-case titles.
 
 Every running `claude` process becomes a chip riding on a trace, with Claude's mark inside it ahead of the name, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a

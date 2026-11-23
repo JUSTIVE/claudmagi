@@ -183,7 +183,7 @@ impl Board {
 
         // Docked down the right edge rather than in the bottom corner: a list
         // wants height, and the board has more of it than it has width.
-        div()
+        let panel = div()
             .absolute()
             .top_0()
             .right_0()
@@ -192,8 +192,6 @@ impl Board {
             .flex()
             .flex_col()
             .bg(p.chrome)
-            .border_l_2()
-            .border_color(p.accent)
             .font_family(Theme::font(cx))
             .text_size(px(BODY))
             .text_color(p.foreground)
@@ -231,6 +229,8 @@ impl Board {
                     ))),
             )
             .child(div().flex_1().overflow_hidden().child(list))
-            .child(hint("\u{2318}L toggles this panel"))
+            .child(hint("\u{2318}L toggles this panel"));
+        // In from the right edge it is pinned to, like the other panels (#164).
+        crate::ui::metro::slide_in("list-enter", panel, true, cx)
     }
 }

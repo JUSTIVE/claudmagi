@@ -10,8 +10,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ClickEvent, ElementId, IntoElement, ParentElement, RenderOnce, SharedString, Window, div,
-    prelude::*, px,
+    AnimationExt, AnyElement, App, ClickEvent, ElementId, IntoElement, ParentElement, RenderOnce, SharedString,
+    Window, div, prelude::*, px,
 };
 use gpui_metro::{Accent, Mode, Theme};
 
@@ -60,6 +60,25 @@ pub fn sync(settings: &Settings, cx: &mut App) {
 }
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// A panel's entrance from the right edge it docks on (#164): Metro's
+/// standard one, 40 px of travel and a fade on its hard exponential
+/// ease-out over 350 ms (gpui-metro `motion::ENTER`). It plays each time the
+/// panel opens, since a closed panel is not drawn and its animation starts
+/// over. `docked` is for an element pinned with `right`, which is moved by
+/// that; one in the flow is moved by `left`. Still where motion is reduced.
+pub fn slide_in(id: impl Into<ElementId>, el: gpui::Div, docked: bool, cx: &App) -> AnyElement {
+    if Theme::get(cx).reduced_motion {
+        return el.into_any_element();
+    }
+    let curve = gpui_metro::motion::ease_out_expo;
+    el.with_animation(id, gpui::Animation::new(gpui_metro::motion::ENTER).with_easing(curve), move |el, t| {
+        let travel = 40.0 * (1.0 - t);
+        let el = el.opacity(t);
+        if docked { el.right(px(-travel)) } else { el.left(px(travel)) }
+    })
+    .into_any_element()
+}
 
 /// A small flat Metro button: 2 px border, filled with the accent while it
 /// is the chosen one and while it is pressed.
