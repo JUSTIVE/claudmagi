@@ -12,8 +12,6 @@ use crate::ui::board::{Board, Mode};
 use crate::ui::metro::{SMALL, phase_mark};
 use crate::ui::panel::{Which, button, hint, section};
 
-pub const PANEL_W: f32 = 330.0;
-
 pub(crate) fn phase_color(phase: Phase) -> Rgba {
     match phase {
         Phase::Working => PALETTE.text_on,
@@ -429,6 +427,6 @@ impl Board {
         }
 
         let body = panel.child(hint("T toggles this panel · ⌘L lists the sessions · Esc closes"));
-        self.panel_chrome(Which::Dev, "test tools", PANEL_W, body, cx)
+        self.flyout(Which::Dev, "test tools", body, cx)
     }
 }

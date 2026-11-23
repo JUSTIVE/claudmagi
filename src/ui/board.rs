@@ -783,7 +783,6 @@ impl Render for Board {
         let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
         let palette_open = self.palette.open;
-        let list_open = self.list_panel.open;
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
 
@@ -1027,22 +1026,18 @@ impl Render for Board {
                             )),
                     ),
             )
-            // A panel docks down the right edge, top to the status bar (#25,
-            // #158, #159), and scrolls when the window is short. Only one of
-            // the panels is ever open (#163), so nothing shares the edge.
-            .when(dev_open || settings_open, |d| {
-                let mut dock = div().absolute().right_0().top_0().bottom(px(STATUS_H)).flex();
-                if settings_open {
-                    dock = dock.child(self.render_settings(cx));
-                }
-                if dev_open {
-                    dock = dock.child(self.render_devtools(cx));
-                }
-                d.child(dock)
+            // The panels are settings flyouts down the right edge (#175), over
+            // everything but the status bar, whose buttons open and close
+            // them. Only one is ever open (#163); each is drawn every frame
+            // so the one just closed can slide away while the next comes in.
+            .child({
+                let settings = self.render_settings(cx).into_any_element();
+                let dev = self.render_devtools(cx).into_any_element();
+                let list = self.render_list(cx).into_any_element();
+                div().absolute().top_0().left_0().right_0().bottom(px(STATUS_H)).child(settings).child(dev).child(list)
             })
             // The search sits over the board, near the top, where a palette
             // is looked for (#71).
-            .when(list_open, |d| d.child(self.render_list(cx)))
             .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
             // The connectors these hang on are the board's, not the comb's:
             // in the comb view they would sit over the honeycomb at

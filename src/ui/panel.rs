@@ -1,9 +1,9 @@
-//! Shared chrome for the docked panels (test tools, settings): a flat Metro
-//! sheet with the app title over a light lower-case page title and a round
-//! close glyph, and the small widgets the panels are built from.
+//! Shared chrome for the panels (test tools, settings, the session list):
+//! gpui-metro's settings flyout (#175), and the small widgets the panels are
+//! built from.
 
-use gpui::{ClickEvent, Context, MouseButton, div, prelude::*, px};
-use gpui_metro::{Icon, TextStyle, round_button, text};
+use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
+use gpui_metro::{SettingsFlyout, settings_flyout};
 
 use crate::ui::board::Board;
 use crate::ui::metro::{BODY, PAD};
@@ -44,66 +44,33 @@ impl Board {
         }
     }
 
-    /// A docked panel: `CLAUDMAGI` over the panel's lower-case title, with a
-    /// round close glyph. The board lays the open panels out side by side in
-    /// the left edge, side by side and top to bottom, so they never
-    /// overlap (#25, #158). The header stays put and `body` scrolls under it
-    /// when the window is too short for it.
-    pub(crate) fn panel_chrome(
+    /// A panel as gpui-metro's settings flyout (#175): full height down the
+    /// right edge under an accent header with a back button and the panel's
+    /// lower-case title, the body scrolling under it. It is drawn every frame
+    /// with whether it is open, so it slides in on open and back out on
+    /// close by itself; a press outside it closes it and stops there (light
+    /// dismiss), as the back button does.
+    pub(crate) fn flyout(
         &mut self,
         which: Which,
-        title: &'static str,
-        width: f32,
+        title: impl Into<SharedString>,
         body: impl IntoElement,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let (close_id, scroll_id, enter_id): (&'static str, &'static str, &'static str) = match which {
-            Which::Dev => ("dev-close", "dev-scroll", "dev-enter"),
-            Which::Settings => ("settings-close", "settings-scroll", "settings-enter"),
-            Which::List => ("list-close", "list-scroll", "list-enter"),
+    ) -> SettingsFlyout {
+        let id = match which {
+            Which::Dev => "dev-flyout",
+            Which::Settings => "settings-flyout",
+            Which::List => "list-flyout",
         };
-        let p = gpui_metro::Theme::palette(cx);
-        let panel = div()
-            // A panel wider than the window would push its own close button
-            // off the screen (#83).
-            .w(px(width.min(self.window.0 - 36.0).max(180.0)))
-            .h_full()
-            .flex_none()
-            .flex()
-            .flex_col()
-            // Metro: a flat sheet of chrome, square, with no rule of its own.
-            .bg(p.chrome)
-            .font_family(gpui_metro::Theme::font(cx))
-            .text_size(px(BODY))
-            .text_color(p.foreground)
-            // Keep clicks and wheel events off the board underneath.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .pl(px(PAD))
-                    .pr(px(8.))
-                    .pt(px(8.))
-                    .pb(px(10.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(text(TextStyle::AppTitle, "CLAUDMAGI"))
-                            .child(div().ml(px(-2.)).child(text(TextStyle::Title2, title).lowercase())),
-                    )
-                    .child(round_button(close_id, Icon::Close).diameter(28.).on_click(cx.listener(
-                        move |this, _: &ClickEvent, _, cx| {
-                            this.panel_mut(which).open = false;
-                            cx.notify();
-                        },
-                    ))),
-            )
-            // The body takes the rest of the height and scrolls in it.
-            .child(div().id(scroll_id).flex_1().min_h_0().overflow_y_scroll().child(body));
-        crate::ui::metro::slide_in(enter_id, panel, false, cx)
+        let open = self.panel_mut(which).open;
+        settings_flyout(id, open)
+            .title(title)
+            // The sections carry the panels' own side margin; the flyout
+            // brings Metro's, so one of them goes.
+            .child(div().mx(px(-PAD)).text_size(px(BODY)).child(body))
+            .on_dismiss(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.panel_mut(which).open = false;
+                cx.notify();
+            }))
     }
 }

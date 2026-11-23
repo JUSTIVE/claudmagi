@@ -11,20 +11,13 @@
 use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
 
 use crate::model::Target;
-use gpui_metro::{Icon, TextStyle, Theme, round_button, text};
+use gpui_metro::Theme;
 
-use crate::ui::board::{Board, STATUS_H};
+use crate::ui::board::Board;
 use crate::ui::metro::{BODY, PAD, SMALL, phase_mark};
 use crate::ui::panel::{Which, hint};
 
-pub const PANEL_W: f32 = 330.0;
-
 impl Board {
-    /// How wide the list is drawn, which the panel dock steps aside for.
-    pub(crate) fn list_width(&self) -> f32 {
-        PANEL_W.min(self.window.0 - 36.0).max(200.0)
-    }
-
     pub(crate) fn toggle_list(&mut self) {
         self.toggle_panel(crate::ui::panel::Which::List);
     }
@@ -181,56 +174,10 @@ impl Board {
             list = list.child(block);
         }
 
-        // Docked down the right edge rather than in the bottom corner: a list
-        // wants height, and the board has more of it than it has width.
-        let panel = div()
-            .absolute()
-            .top_0()
-            .right_0()
-            .bottom(px(STATUS_H))
-            .w(px(self.list_width()))
-            .flex()
-            .flex_col()
-            .bg(p.chrome)
-            .font_family(Theme::font(cx))
-            .text_size(px(BODY))
-            .text_color(p.foreground)
-            .overflow_hidden()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .pl(px(PAD))
-                    .pr(px(8.))
-                    .pt(px(8.))
-                    .pb(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .child(text(TextStyle::AppTitle, "CLAUDMAGI"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_baseline()
-                                    .gap(px(10.))
-                                    .child(div().ml(px(-2.)).child(text(TextStyle::Title2, "sessions")))
-                                    .child(div().text_color(p.accent).child(format!("{total}"))),
-                            ),
-                    )
-                    .child(round_button("list-close", Icon::Close).diameter(28.).on_click(cx.listener(
-                        |this, _: &ClickEvent, _, cx| {
-                            this.panel_mut(Which::List).open = false;
-                            cx.notify();
-                        },
-                    ))),
-            )
-            .child(div().flex_1().overflow_hidden().child(list))
-            .child(hint("\u{2318}L toggles this panel"));
-        // In from the right edge it is pinned to, like the other panels (#164).
-        crate::ui::metro::slide_in("list-enter", panel, true, cx)
+        // Down the right edge as the settings flyout, like the other panels
+        // (#175): a list wants height, and the board has more of it than it
+        // has width. The count rides in the title.
+        let body = div().flex().flex_col().child(list).child(hint("\u{2318}L toggles this panel"));
+        self.flyout(Which::List, format!("sessions  {total}"), body, cx)
     }
 }

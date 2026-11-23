@@ -10,7 +10,6 @@ use crate::ui::board::Board;
 use crate::ui::metro;
 use crate::ui::panel::{Which, button, hint, section};
 
-pub const PANEL_W: f32 = 320.0;
 const ZOOM_PRESETS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
 /// The twenty accents as a 10 × 2 grid of swatches, the way the phone's
 /// accent picker laid them out as tiles.
@@ -133,7 +132,7 @@ impl Board {
                     .child(presets),
             )
             .child(hint("⌘+ ⌘− ⌘0 · ⌘+wheel zoom · ⌘, toggles this panel · settings persist"));
-        self.panel_chrome(Which::Settings, "settings", PANEL_W, body, cx)
+        self.flyout(Which::Settings, "settings", body, cx)
     }
 }
 
