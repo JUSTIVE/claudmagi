@@ -1027,18 +1027,21 @@ impl Render for Board {
                             )),
                     ),
             )
-            // Panels dock down the left edge, top to the status bar, side by
-            // side (#25, #158); each scrolls when the window is short.
+            // Panels dock down the right edge, top to the status bar, side by
+            // side (#25, #158, #159); each scrolls when the window is short.
+            // The list (⌘L) holds the very edge when it is open, so the dock
+            // stands just inside it rather than over it.
             .when(dev_open || settings_open, |d| {
+                let inside = if list_open { self.list_width() + 2.0 } else { 0.0 };
                 // Both open in a narrow window are wider than it, so the dock
                 // keeps to the window and scrolls sideways instead.
                 let mut dock = div()
                     .id("panel-dock")
                     .absolute()
-                    .left_0()
+                    .right(px(inside))
                     .top_0()
                     .bottom(px(STATUS_H))
-                    .max_w(px(w))
+                    .max_w(px((w - inside).max(0.0)))
                     .overflow_x_scroll()
                     .flex()
                     .flex_row()

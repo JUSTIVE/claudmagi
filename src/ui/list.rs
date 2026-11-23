@@ -20,6 +20,11 @@ use crate::ui::panel::{Which, hint};
 pub const PANEL_W: f32 = 330.0;
 
 impl Board {
+    /// How wide the list is drawn, which the panel dock steps aside for.
+    pub(crate) fn list_width(&self) -> f32 {
+        PANEL_W.min(self.window.0 - 36.0).max(200.0)
+    }
+
     pub(crate) fn toggle_list(&mut self) {
         self.list_panel.toggle();
     }
@@ -183,7 +188,7 @@ impl Board {
             .top_0()
             .right_0()
             .bottom(px(STATUS_H))
-            .w(px(PANEL_W.min(self.window.0 - 36.0).max(200.0)))
+            .w(px(self.list_width()))
             .flex()
             .flex_col()
             .bg(p.chrome)
