@@ -949,8 +949,6 @@ impl Render for Board {
                     .justify_between()
                     .gap_4()
                     .bg(theme::hsla(palette.bg))
-                    .border_t_2()
-                    .border_color(fill)
                     .font_family(ui_font)
                     .text_size(px(crate::ui::metro::BODY))
                     .text_color(ink)
