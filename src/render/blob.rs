@@ -1239,6 +1239,7 @@ mod tests {
             cells: vec![Cell { center: at, q: 0, row: 0, chip: Some(0), subs: None, wave: 0.0 }],
             r,
             height: 600.0,
+            grid: comb::Grid::Hex,
         };
         let id = model.chips[0].info.session_id.clone();
         let from = Pt::new(300.0, 300.0);

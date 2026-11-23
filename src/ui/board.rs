@@ -22,6 +22,7 @@ use base_gpui::tooltip::{
 use crate::made;
 use crate::render::blob;
 use crate::render::comb;
+use crate::render::tiles;
 use crate::settings::{BoardView, Settings};
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
@@ -543,6 +544,14 @@ impl Board {
         if self.settings.view == BoardView::Blob && self.blobs.borrow().moving() {
             return true;
         }
+        // A live tile on its way up or down (#157). A tile resting on either
+        // face is still, so the clock only runs fast for the slide itself.
+        if self.settings.view == BoardView::Tiles
+            && let Some(since) = self.comb_since
+            && tiles::peeking(&self.model, now.duration_since(since).as_secs_f32())
+        {
+            return true;
+        }
         match (&self.comb, self.comb_since) {
             // The comb is still once its cells have all arrived.
             (Some(comb), Some(since)) => !comb::wave_over(comb, now.duration_since(since).as_secs_f32()),
@@ -668,7 +677,11 @@ impl Render for Board {
             // over the board's bottom edge, and the middle of the screen is
             // the middle of what is left (#138).
             let seen = visible_height(&self.layout);
-            let mut comb = comb::lay_out(&self.model, self.layout.width, seen);
+            let mut comb = if self.settings.view == BoardView::Tiles {
+                tiles::lay_out(&self.model, self.layout.width, seen)
+            } else {
+                comb::lay_out(&self.model, self.layout.width, seen)
+            };
             // A seat the packing has just handed over is somewhere to go,
             // not somewhere to be: the cells that changed seats are moved
             // back to where they were and let glide (#150). Before anything
@@ -715,6 +728,13 @@ impl Render for Board {
         // clusters on this (#92).
         let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
         let view = self.settings.view;
+        // The tiles wear the panels' accent (#157) — the ink on the orange
+        // board, where an orange accent would vanish.
+        let tile_accent: gpui::Rgba = if self.settings.theme == crate::settings::BoardTheme::Orange {
+            palette.ink
+        } else {
+            gpui_metro::Theme::palette(cx).accent.to_rgb()
+        };
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
@@ -884,6 +904,9 @@ impl Render for Board {
                                 let mut out = match view {
                                     BoardView::Blob => {
                                         blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, &blobs.borrow())
+                                    }
+                                    BoardView::Tiles => {
+                                        tiles::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, tile_accent)
                                     }
                                     _ => comb::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
                                 };

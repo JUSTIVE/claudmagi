@@ -38,16 +38,20 @@ pub enum BoardView {
     /// The same seating with the cells melted: a session is a ball of a
     /// field, and the ones of a cluster run together into one body (#140).
     Blob,
+    /// The Metro start screen: a live tile per session, grouped under the
+    /// window that seats them, in the accent of the panels around it (#157).
+    Tiles,
 }
 
 impl BoardView {
-    pub const ALL: [BoardView; 3] = [BoardView::Circuit, BoardView::Comb, BoardView::Blob];
+    pub const ALL: [BoardView; 4] = [BoardView::Circuit, BoardView::Comb, BoardView::Blob, BoardView::Tiles];
 
     pub fn label(self) -> &'static str {
         match self {
             BoardView::Circuit => "CIRCUIT",
             BoardView::Comb => "COMB",
             BoardView::Blob => "BLOB",
+            BoardView::Tiles => "TILES",
         }
     }
 
@@ -55,7 +59,7 @@ impl BoardView {
     /// is what the scroll, the presses and the drop-downs are keyed to (#86,
     /// #140).
     pub fn seated(self) -> bool {
-        matches!(self, BoardView::Comb | BoardView::Blob)
+        matches!(self, BoardView::Comb | BoardView::Blob | BoardView::Tiles)
     }
 }
 
@@ -114,6 +118,8 @@ mod tests {
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), s);
         let blob = Settings { view: BoardView::Blob, ..s.clone() };
         assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&blob).unwrap()).unwrap(), blob);
+        let tiles = Settings { view: BoardView::Tiles, ..s.clone() };
+        assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&tiles).unwrap()).unwrap(), tiles);
         let partial: Settings = serde_json::from_str(r#"{"theme":"orange"}"#).unwrap();
         assert_eq!(partial.theme, BoardTheme::Orange);
         assert_eq!(partial.zoom, 1.0);

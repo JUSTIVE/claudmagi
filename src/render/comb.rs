@@ -80,11 +80,56 @@ pub struct Cell {
 #[derive(Clone, Debug)]
 pub struct Comb {
     pub cells: Vec<Cell>,
-    /// Circumradius of a cell: centre to corner.
+    /// Circumradius of a cell: centre to corner. On a tile grid, half a
+    /// tile's side.
     pub r: f32,
     /// How far down the grid reaches, for the scroll.
     pub height: f32,
+    /// What the seats are: the honeycomb's hexes, or the square blocks of the
+    /// Metro start screen (#157). Everything keyed to the seating — the
+    /// press, the rows, the drop-down, the glide — asks this rather than
+    /// assuming a hex.
+    pub grid: Grid,
 }
+
+/// The shape of a seated view's grid (#157).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Grid {
+    Hex,
+    /// Square tiles on a lattice of `pitch` (a small tile and the gap after
+    /// it); every seat is a block two small tiles a side, its top-left at
+    /// `(q, row)` in small-tile units from `origin`. The group headers ride
+    /// along, in content coordinates: they are not seats, and nothing
+    /// presses or glides them, but they are part of what was laid out.
+    Tiles { pitch: f32, gap: f32, origin: Pt, headers: Vec<(Pt, String)> },
+}
+
+impl Comb {
+    /// Where a seat's centre is, for a cell given that seat (#150, #157).
+    pub fn seat_center(&self, q: i32, row: i32) -> Pt {
+        match &self.grid {
+            Grid::Hex => axial(q, row, self.r),
+            Grid::Tiles { pitch, gap, origin, .. } => {
+                let half = (2.0 * pitch - gap) / 2.0;
+                *origin + Pt::new(q as f32 * pitch + half, row as f32 * pitch + half)
+            }
+        }
+    }
+
+    /// Whether `p` is on the cell centred at `center`: inside the hexagon,
+    /// or inside the tile.
+    fn on_cell(&self, p: Pt, center: Pt) -> bool {
+        match self.grid {
+            Grid::Hex => inside_hex(p, center, self.r, GAP),
+            Grid::Tiles { .. } => (p.x - center.x).abs() <= self.r && (p.y - center.y).abs() <= self.r,
+        }
+    }
+}
+
+/// Where a tile's three rows divide, as a fraction of its side from the top:
+/// the issue above the first line, what the work produced below the second
+/// (#157).
+pub const TILE_BANDS: [f32; 2] = [0.3, 0.72];
 
 /// Flat-top axial coordinates to a centre point (#132).
 ///
@@ -520,11 +565,14 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
     }
 
     let height = cells.iter().map(|c| c.center.y).fold(0.0f32, f32::max) + half_h(r);
-    Comb { cells, r, height }
+    Comb { cells, r, height, grid: Grid::Hex }
 }
 
 /// The session under a point, in the grid's own coordinates.
 pub fn hit(comb: &Comb, p: Pt) -> Option<usize> {
+    if comb.grid != Grid::Hex {
+        return comb.cells.iter().find(|c| c.chip.is_some() && comb.on_cell(p, c.center)).and_then(|c| c.chip);
+    }
     comb.cells
         .iter()
         .filter(|c| c.chip.is_some())
@@ -708,7 +756,7 @@ fn room_at(r: f32, dy: f32, height: f32, gap: f32) -> f32 {
 
 /// `label` cut to `room`, with an ellipsis where it was cut. Nothing that
 /// cannot show at least one letter shows at all.
-fn fit(label: &str, scale: f32, room: f32) -> String {
+pub(crate) fn fit(label: &str, scale: f32, room: f32) -> String {
     if room <= 0.0 {
         return String::new();
     }
@@ -756,7 +804,7 @@ pub fn floor_color(c: Rgba, pal: Palette) -> Rgba {
 }
 
 /// Whether anything in this cell is waiting on a person (#90, #100).
-fn wants_a_person(info: &SessionInfo) -> bool {
+pub(crate) fn wants_a_person(info: &SessionInfo) -> bool {
     info.phase() == Phase::NeedsUser || info.prs.last().is_some_and(pr_needs_action)
 }
 
@@ -992,10 +1040,18 @@ pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape
 /// The row of a cell under a point, and whose cell it is. The caller knows
 /// whether that row has anything in it.
 pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
-    let cell = comb
-        .cells
-        .iter()
-        .find(|c| c.chip.is_some() && inside_hex(p, c.center, comb.r, GAP))?;
+    let cell = comb.cells.iter().find(|c| c.chip.is_some() && comb.on_cell(p, c.center))?;
+    if comb.grid != Grid::Hex {
+        let down = (p.y - (cell.center.y - comb.r)) / (2.0 * comb.r);
+        let slot = if down < TILE_BANDS[0] {
+            Slot::Ticket
+        } else if down > TILE_BANDS[1] {
+            Slot::Output
+        } else {
+            Slot::Session
+        };
+        return Some((cell.chip?, slot));
+    }
     let dy = (p.y - cell.center.y) / comb.r;
     let slot = if dy < (ROW_DY[0] + ROW_DY[1]) / 2.0 {
         Slot::Ticket
@@ -1017,6 +1073,18 @@ pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
 /// at its corners.
 pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> {
     let cell = comb.cells.iter().find(|c| c.chip == Some(chip))?;
+    if comb.grid != Grid::Hex {
+        // A tile's bands run its whole width, so the box is simply the band.
+        let side = 2.0 * comb.r;
+        let top = cell.center.y - comb.r;
+        let (from, to) = match slot {
+            Slot::Ticket => (0.0, TILE_BANDS[0]),
+            Slot::Session => (TILE_BANDS[0], TILE_BANDS[1]),
+            Slot::Output => (TILE_BANDS[1], 1.0),
+        };
+        let h = (to - from) * side;
+        return Some((Pt::new(cell.center.x, top + (from + to) / 2.0 * side), side, h));
+    }
     let row = match slot {
         Slot::Ticket => 0,
         Slot::Session => 1,
@@ -1157,6 +1225,9 @@ pub struct Slides {
 impl Slides {
     pub fn settle(&mut self, comb: &mut Comb, model: &BoardModel, now: std::time::Instant) {
         let r = comb.r;
+        // The grid as it stands, for where an old seat was; the cells
+        // themselves are rewritten below.
+        let seats = Comb { cells: Vec::new(), r, height: comb.height, grid: comb.grid.clone() };
         let mut here: std::collections::HashSet<String> = std::collections::HashSet::new();
         self.moving = false;
         for cell in &mut comb.cells {
@@ -1171,7 +1242,7 @@ impl Slides {
                 // Where it is at this instant, which is where it sets off
                 // from. A cell that was already on its way carries whatever
                 // is left of that first.
-                let was = axial(slide.seat.0, slide.seat.1, r) + slide.off * slide.left(now);
+                let was = seats.seat_center(slide.seat.0, slide.seat.1) + slide.off * slide.left(now);
                 let off = was - home;
                 // A seat on the other side of the board is not a move.
                 slide.off = if off.len() > r * SLIDE_MAX { Pt::new(0.0, 0.0) } else { off };
@@ -1834,6 +1905,7 @@ mod tests {
             cells: vec![Cell { center: axial(q, row, r), q, row, chip: Some(0), subs: None, wave: 0.0 }],
             r,
             height: 600.0,
+            grid: Grid::Hex,
         };
         let put = |slides: &mut Slides, q, row, r, at| {
             let mut comb = seated(q, row, r);

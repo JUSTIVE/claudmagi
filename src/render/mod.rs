@@ -5,3 +5,4 @@ pub mod comb;
 pub mod paint;
 pub mod scene;
 pub mod svg;
+pub mod tiles;

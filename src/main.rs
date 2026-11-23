@@ -155,6 +155,7 @@ fn main() {
         let svg = match view.as_deref() {
             Some("comb") => render_seated_svg(&sessions, w, h, palette, false),
             Some("blob") => render_seated_svg(&sessions, w, h, palette, true),
+            Some("tiles") => render_tiles_svg(&sessions, w, h, palette),
             _ => render_svg(&sessions, w, h, demo, user_zoom, palette),
         };
         std::fs::write(&out, svg).expect("write svg");
@@ -313,6 +314,25 @@ fn main() {
 fn args_wave() -> Option<f32> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     args.iter().position(|a| a == "--wave").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok())
+}
+
+/// The Metro start screen as a one-shot SVG (#157), in the accent the
+/// settings name (the ink on the orange board, as on screen).
+fn render_tiles_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
+    let mut model = BoardModel::new();
+    model.apply(list.to_vec(), Instant::now());
+    model.settle();
+    let tiles = render::tiles::lay_out(&model, width, height);
+    // Settled and on their fronts unless `--wave` asks for a moment.
+    let t = args_wave().unwrap_or(5.0);
+    let accent = if palette.bg == theme::ORANGE.bg {
+        palette.ink
+    } else {
+        let a = ui::metro::accent_of(&settings::Settings::load().accent);
+        gpui::Rgba::from(a.color())
+    };
+    let shapes = render::tiles::build_shapes(&model, &tiles, palette, 0.0, geom::Pt::new(0.0, 0.0), t, accent);
+    render::svg::to_svg(&shapes, width, tiles.height.max(height))
 }
 
 /// A seated view as a one-shot SVG, for looking at it without a window: the
