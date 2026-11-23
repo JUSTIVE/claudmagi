@@ -2222,7 +2222,7 @@ dependencies = [
 [[package]]
 name = "gpui-metro"
 version = "0.1.0"
-source = "git+https://github.com/JUSTIVE/gpui-metro?rev=dfefdbd5c58422c39b9ecfb5dc0e4260a523711f#dfefdbd5c58422c39b9ecfb5dc0e4260a523711f"
+source = "git+https://github.com/JUSTIVE/gpui-metro?rev=efb08bba67cbb09ab78d25069ea27af772d5d8d3#efb08bba67cbb09ab78d25069ea27af772d5d8d3"
 dependencies = [
  "anyhow",
  "gpui",
