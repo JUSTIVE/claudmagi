@@ -75,20 +75,19 @@ pub fn side() -> f32 {
 
 /// What a session is working on, as the group it goes under (#162): its
 /// Linear issue, or failing that its pull request, or failing that the
-/// directory it works in. The key the group is told apart by, and its header.
-pub fn work_unit(info: &SessionInfo) -> (String, String) {
+/// directory it works in. The key the group is told apart by; it is named
+/// for its sessions (`section_name`).
+pub fn work_unit(info: &SessionInfo) -> String {
     if let Some(t) = &info.ticket {
-        let head = if t.title.is_empty() { t.label() } else { format!("{}  {}", t.label(), t.title) };
-        return (format!("issue:{}", t.key), head);
+        return format!("issue:{}", t.key);
     }
     if let Some(p) = info.prs.last() {
-        let head = if p.title.is_empty() { p.label() } else { format!("{}  {}", p.label(), p.title) };
-        return (format!("pr:{}", p.url()), head);
+        return format!("pr:{}", p.url());
     }
     if let Some(r) = info.prs_unanswered.last() {
-        return (format!("pr:{}", r.url()), r.label());
+        return format!("pr:{}", r.url());
     }
-    (format!("dir:{}", info.cwd), info.short_cwd())
+    format!("dir:{}", info.cwd)
 }
 
 /// One seat of the grid: a session, its subagents, or one of its rows as a
@@ -109,23 +108,24 @@ pub fn lay_out(model: &BoardModel, width: f32, _height: f32) -> Comb {
 
     // Sessions by what they are working on, in board order (#162). The
     // window they run in does not come into it.
-    let mut units: Vec<(String, String, Vec<usize>)> = Vec::new();
+    let mut units: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in model.chips.iter().enumerate() {
         if c.anim.gone {
             continue;
         }
-        let (key, head) = work_unit(&c.info);
-        match units.iter_mut().find(|(k, _, _)| *k == key) {
-            Some((_, _, members)) => members.push(i),
-            None => units.push((key, head, vec![i])),
+        let key = work_unit(&c.info);
+        match units.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(i),
+            None => units.push((key, vec![i])),
         }
     }
 
     let mut cells = Vec::new();
     let mut headers = Vec::new();
     let mut row = 0i32;
-    for (_, head, members) in &units {
-        headers.push((origin + Pt::new(0.0, row as f32 * PITCH + TILE * 0.55), head.clone()));
+    for (_, members) in &units {
+        let head = section_name(members.iter().map(|&i| &model.chips[i].info));
+        headers.push((origin + Pt::new(0.0, row as f32 * PITCH + TILE * 0.55), head));
         row += 1;
         let mut blocks: Vec<Block> = Vec::new();
         // The issue once, whoever of them carries it.
@@ -172,6 +172,22 @@ pub fn lay_out(model: &BoardModel, width: f32, _height: f32) -> Comb {
         comb.cells[i].wave = q as f32 / 2.0 + r as f32 * 0.25;
     }
     comb
+}
+
+/// A group's header: the names its Claude sessions go by (#165) — what
+/// `/rename` set, as written, or the session's directory where it has none —
+/// each once, in board order. The issue and the pull request have tiles of
+/// their own to be named on.
+pub fn section_name<'a>(sessions: impl Iterator<Item = &'a SessionInfo>) -> String {
+    let mut names: Vec<String> = Vec::new();
+    for info in sessions {
+        let name = info.name.trim();
+        let name = if name.is_empty() { info.label().to_lowercase() } else { name.to_string() };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names.join("  ·  ")
 }
 
 /// What a session's output tile is known by, or `None` when it has nothing
@@ -828,6 +844,18 @@ mod tests {
         let (box_at, w, _) = comb::slot_box(&comb, 0, Slot::Output).unwrap();
         assert_eq!(box_at, at(Some(Slot::Output), 0), "the drop-down hangs off the output tile");
         assert!((w - s).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_section_is_named_for_its_sessions() {
+        let mut a = SessionInfo::synthetic(1, "A", Phase::Working);
+        a.name = "fix the login flow".into();
+        let mut b = SessionInfo::synthetic(2, "B", Phase::Working);
+        b.name = String::new();
+        b.cwd = "/work/claudmagi".into();
+        let mut c = a.clone();
+        c.session_id = "other".into();
+        assert_eq!(section_name([&a, &b, &c].into_iter()), "fix the login flow  ·  claudmagi");
     }
 
     #[test]
