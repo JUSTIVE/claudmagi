@@ -18,10 +18,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$NAME"
 
-# Icon: render the board as SVG, rasterise, and pack an .icns.
+# Icon: the circuit board as SVG (kept in assets since the circuit view went,
+# #183), rasterised and packed into an .icns.
 ICONSET=target/bundle/$NAME.iconset
 rm -rf "$ICONSET"; mkdir -p "$ICONSET"
-"$BIN" --icon target/bundle/icon.svg >/dev/null
+cp assets/icon.svg target/bundle/icon.svg
 swift tools/svg2png.swift target/bundle/icon.svg target/bundle/icon-1024.png 1 >/dev/null
 # Round the corners the way macOS expects (icons are not masked automatically).
 swift tools/round_icon.swift target/bundle/icon-1024.png target/bundle/icon-rounded.png

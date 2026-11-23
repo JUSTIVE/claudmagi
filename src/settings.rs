@@ -25,42 +25,49 @@ impl BoardTheme {
     }
 }
 
-/// Which way the sessions are drawn (#86).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Which way the sessions are drawn (#86). The circuit board this started
+/// as and the metaballs went in #183: the start screen and the honeycomb are
+/// what is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BoardView {
-    /// Chips riding traces: the circuit board this started as.
-    #[default]
-    Circuit,
     /// A honeycomb of cells, one per session, clustered by the window
     /// their host seats them in — a Warp tab, an Orca tab (#118).
     Comb,
-    /// The same seating with the cells melted: a session is a ball of a
-    /// field, and the ones of a cluster run together into one body (#140).
-    Blob,
-    /// The Metro start screen: a live tile per session, grouped under the
-    /// window that seats them, in the accent of the panels around it (#157).
+    /// The Metro start screen: a live tile per session, grouped by the work
+    /// it is on, drawn by gpui-metro (#157, #176).
+    #[default]
     Tiles,
 }
 
+/// A view that is gone (`circuit`, `blob`) or unknown opens on the default
+/// rather than failing the whole file: a settings file that does not parse
+/// is thrown away, theme and accent with it.
+impl<'de> Deserialize<'de> for BoardView {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "comb" => BoardView::Comb,
+            _ => BoardView::Tiles,
+        })
+    }
+}
+
 impl BoardView {
-    pub const ALL: [BoardView; 4] = [BoardView::Circuit, BoardView::Comb, BoardView::Blob, BoardView::Tiles];
+    pub const ALL: [BoardView; 2] = [BoardView::Comb, BoardView::Tiles];
 
     pub fn label(self) -> &'static str {
         match self {
-            BoardView::Circuit => "CIRCUIT",
             BoardView::Comb => "COMB",
-            BoardView::Blob => "BLOB",
             BoardView::Tiles => "TILES",
         }
     }
 
     /// Whether this view lays its sessions out on the honeycomb's grid, which
-    /// is what the scroll, the presses and the drop-downs are keyed to (#86,
-    /// #140). The tiles are gpui-metro's start screen, which seats, scrolls
-    /// and presses its own (#176).
+    /// is what the scroll, the presses and the drop-downs are keyed to (#86).
+    /// The tiles are gpui-metro's start screen, which seats, scrolls and
+    /// presses its own (#176).
     pub fn seated(self) -> bool {
-        matches!(self, BoardView::Comb | BoardView::Blob)
+        self == BoardView::Comb
     }
 }
 
@@ -80,7 +87,7 @@ pub const DEFAULT_ACCENT: &str = "orange";
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: BoardTheme::White, zoom: 1.0, view: BoardView::Circuit, accent: DEFAULT_ACCENT.into() }
+        Self { theme: BoardTheme::White, zoom: 1.0, view: BoardView::Tiles, accent: DEFAULT_ACCENT.into() }
     }
 }
 
@@ -117,15 +124,19 @@ mod tests {
         let s = Settings { theme: BoardTheme::Dark, zoom: 1.5, view: BoardView::Comb, accent: "lime".into() };
         let text = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), s);
-        let blob = Settings { view: BoardView::Blob, ..s.clone() };
-        assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&blob).unwrap()).unwrap(), blob);
         let tiles = Settings { view: BoardView::Tiles, ..s.clone() };
         assert_eq!(serde_json::from_str::<Settings>(&serde_json::to_string(&tiles).unwrap()).unwrap(), tiles);
         let partial: Settings = serde_json::from_str(r#"{"theme":"orange"}"#).unwrap();
         assert_eq!(partial.theme, BoardTheme::Orange);
         assert_eq!(partial.zoom, 1.0);
         assert_eq!(partial.accent, DEFAULT_ACCENT, "an old settings file keeps the default accent");
-        assert_eq!(partial.view, BoardView::Circuit, "an old settings file still opens on the circuit");
+        assert_eq!(partial.view, BoardView::Tiles, "an old settings file opens on the start screen");
+        // The views that went (#183) open on the default, and the rest of
+        // the file still counts.
+        for gone in ["circuit", "blob", "nonsense"] {
+            let old: Settings = serde_json::from_str(&format!(r#"{{"theme":"dark","view":"{gone}","accent":"lime"}}"#)).unwrap();
+            assert_eq!((old.view, old.theme, old.accent.as_str()), (BoardView::Tiles, BoardTheme::Dark, "lime"), "{gone}");
+        }
         assert_eq!(serde_json::from_str::<Settings>("{}").unwrap(), Settings::default());
     }
 }

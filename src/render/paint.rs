@@ -18,9 +18,6 @@ use crate::theme::{self, Rgba};
 /// window is resized or scrolled every frame mints new geometry, so entries
 /// not used this frame are dropped once the budget is exceeded (#40).
 const CACHE_BUDGET: usize = 320_000;
-/// Rounded rects narrower than this (the packets) move every frame and are
-/// cheap to build, so they bypass the cache.
-const CACHE_MIN_W: f32 = 12.0;
 
 fn gp(p: Pt) -> gpui::Point<Pixels> {
     point(px(p.x), px(p.y))
@@ -52,37 +49,6 @@ fn stroke_path(pieces: &[Vec<Pt>], width: f32) -> Option<Path<Pixels>> {
     b.build().ok()
 }
 
-fn rounded_rect_outline(w: f32, h: f32, r: f32, mut b: PathBuilder) -> PathBuilder {
-    let (hw, hh) = (w / 2.0, h / 2.0);
-    let r = r.min(hw).min(hh);
-    b.move_to(point(px(-hw + r), px(-hh)));
-    b.line_to(point(px(hw - r), px(-hh)));
-    b.curve_to(point(px(hw), px(-hh + r)), point(px(hw), px(-hh)));
-    b.line_to(point(px(hw), px(hh - r)));
-    b.curve_to(point(px(hw - r), px(hh)), point(px(hw), px(hh)));
-    b.line_to(point(px(-hw + r), px(hh)));
-    b.curve_to(point(px(-hw), px(hh - r)), point(px(-hw), px(hh)));
-    b.line_to(point(px(-hw), px(-hh + r)));
-    b.curve_to(point(px(-hw + r), px(-hh)), point(px(-hw), px(-hh)));
-    b.close();
-    b
-}
-
-fn rounded_rect(center: Pt, w: f32, h: f32, r: f32, angle: f32, stroke: Option<f32>) -> Option<Path<Pixels>> {
-    let builder = match stroke {
-        Some(sw) => {
-            let options = StrokeOptions::default().with_line_width(sw).with_line_join(LineJoin::Round);
-            PathBuilder::stroke(px(sw)).with_style(PathStyle::Stroke(options))
-        }
-        None => PathBuilder::fill(),
-    };
-    let mut b = rounded_rect_outline(w, h, r, builder);
-    if angle != 0.0 {
-        b.rotate(angle);
-    }
-    b.translate(gp(center));
-    b.build().ok()
-}
 
 /// Quantises a coordinate so tiny float noise still hits the cache.
 fn q(v: f32) -> i32 {
@@ -103,16 +69,6 @@ fn key_of(shape: &Shape) -> Option<u64> {
                     q(p.y).hash(&mut h);
                 }
             }
-        }
-        Shape::RoundedRect { center, w, h: hh, r, angle, stroke, .. } => {
-            if *w < CACHE_MIN_W {
-                return None;
-            }
-            2u8.hash(&mut h);
-            for v in [center.x, center.y, *w, *hh, *r, *angle] {
-                q(v).hash(&mut h);
-            }
-            stroke.map(q).hash(&mut h);
         }
         Shape::Text { text, scale, stroke, angle, center, .. } => {
             3u8.hash(&mut h);
@@ -156,7 +112,6 @@ fn build(shape: &Shape) -> Option<Path<Pixels>> {
     match shape {
         Shape::Rect { .. } => None,
         Shape::Stroke { pieces, width, .. } => stroke_path(pieces, *width),
-        Shape::RoundedRect { center, w, h, r, angle, stroke, .. } => rounded_rect(*center, *w, *h, *r, *angle, *stroke),
         Shape::Text { text, scale, angle, center, .. } => font::build(text, *scale, *angle, (center.x, center.y)),
         Shape::Mark { mark, size, angle, center, .. } => {
             font::path_of(logos::outline(*mark, *size), *angle, (center.x, center.y))
@@ -170,7 +125,6 @@ fn cost_of(shape: &Shape) -> usize {
     match shape {
         Shape::Rect { .. } => 0,
         Shape::Stroke { pieces, .. } => pieces.iter().map(|p| p.len()).sum::<usize>() * 14,
-        Shape::RoundedRect { .. } => 48,
         Shape::Text { text, .. } => text.len() * 160,
         // A mark is a couple of glyphs' worth of curves.
         Shape::Mark { .. } => 400,
@@ -219,7 +173,6 @@ impl PathCache {
                 }
                 Shape::Poly { color, screen, .. } => (*color, *screen),
                 Shape::Stroke { color, .. }
-                | Shape::RoundedRect { color, .. }
                 | Shape::Text { color, .. }
                 | Shape::Mark { color, .. } => (*color, Screen::Solid),
             };
@@ -261,7 +214,6 @@ fn ink(color: Rgba, screen: Screen, grain: f32) -> gpui::Background {
     match screen {
         Screen::Solid => theme::hsla(color).into(),
         Screen::Slash { width, gap } => gpui::pattern_slash(theme::hsla(color), width * grain, gap * grain),
-        Screen::Check { size } => gpui::checkerboard(theme::hsla(color), size * grain),
     }
 }
 

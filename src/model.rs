@@ -246,38 +246,11 @@ impl SessionInfo {
 }
 
 /// Animation timings, in seconds.
-pub const APPEAR_SECS: f32 = 0.45;
 pub const UNPLUG_DELAY_SECS: f32 = 0.7;
 pub const UNPLUG_SECS: f32 = 0.42;
 pub const HOVER_SECS: f32 = 0.12;
 pub const FADE_SECS: f32 = 0.35;
-/// Half of a relocation: fade out at the old spot, then fade in at the new one.
-pub const RELOC_HALF_SECS: f32 = 0.22;
 pub const NOTICE_SECS: u64 = 5;
-
-/// A chip moving to a different spot on its lane (window resized, #28).
-#[derive(Clone, Copy, Debug)]
-pub struct Reloc {
-    /// Arc length of the old spot.
-    pub from_s: f32,
-    pub started: Instant,
-}
-
-impl Reloc {
-    /// `(use_old_spot, alpha_factor)` for `now`.
-    pub fn stage(&self, now: Instant) -> (bool, f32) {
-        let t = now.saturating_duration_since(self.started).as_secs_f32();
-        if t < RELOC_HALF_SECS {
-            (true, 1.0 - t / RELOC_HALF_SECS)
-        } else {
-            (false, ((t - RELOC_HALF_SECS) / RELOC_HALF_SECS).min(1.0))
-        }
-    }
-
-    pub fn done(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.started).as_secs_f32() >= 2.0 * RELOC_HALF_SECS
-    }
-}
 
 /// Animated presentation state shared by session and subagent chips.
 #[derive(Clone, Debug)]
@@ -289,11 +262,6 @@ pub struct Anim {
     /// The underlying thing disappeared; fade out then drop.
     pub gone: bool,
     pub fade: f32,
-    /// Which spot on the lane the chip was last placed at (see
-    /// `scene::placements`), and its arc length; a change starts a `Reloc`.
-    pub place_key: Option<u32>,
-    pub last_s: f32,
-    pub reloc: Option<Reloc>,
 }
 
 impl Anim {
@@ -304,41 +272,11 @@ impl Anim {
             born: now,
             gone: false,
             fade: 0.0,
-            place_key: None,
-            last_s: 0.0,
-            reloc: None,
         }
-    }
-
-    /// Records where the chip is about to be drawn; a new placement key
-    /// (other than the very first) triggers the fade-out / fade-in.
-    pub fn track_placement(&mut self, key: u32, s: f32, now: Instant) {
-        match self.place_key {
-            Some(prev) if prev != key => {
-                let from_s = match self.reloc {
-                    // Mid-relocation: keep fading from where we were heading.
-                    Some(r) if !r.stage(now).0 => self.last_s,
-                    Some(r) => r.from_s,
-                    None => self.last_s,
-                };
-                self.reloc = Some(Reloc { from_s, started: now });
-            }
-            _ => {}
-        }
-        if self.reloc.is_some_and(|r| r.done(now)) {
-            self.reloc = None;
-        }
-        self.place_key = Some(key);
-        self.last_s = s;
     }
 
     pub fn age(&self, now: Instant) -> f32 {
         now.saturating_duration_since(self.born).as_secs_f32()
-    }
-
-    /// Combined appear/fade opacity.
-    pub fn alpha(&self, now: Instant) -> f32 {
-        crate::geom::ease_out(self.age(now) / APPEAR_SECS) * self.fade
     }
 
     fn step(&mut self, phase: Phase, hovered: bool, dt: f32, now: Instant) {
@@ -353,7 +291,6 @@ impl Anim {
         self.fade = 1.0;
         self.disconnect = if phase == Phase::Working { 0.0 } else { 1.0 };
         self.hover_t = 0.0;
-        self.reloc = None;
     }
 
     fn dead(&self) -> bool {
@@ -373,7 +310,6 @@ impl Anim {
         settling(self.disconnect, target_p)
             || settling(self.hover_t, if hovered { 1.0 } else { 0.0 })
             || settling(self.fade, if self.gone { 0.0 } else { 1.0 })
-            || self.reloc.is_some()
             || (phase != Phase::Working && young)
     }
 }
@@ -446,77 +382,6 @@ impl Target {
 /// Empty rows between session groups (#41, #48: three, and no traces are
 /// drawn in them).
 pub const GROUP_GAP: usize = 3;
-/// Empty traces drawn below the last group (#45).
-pub const TRAIL_ROWS: usize = 6;
-/// How long rows take to slide into a new arrangement (#48).
-pub const ROW_SECS: f32 = 0.4;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RowKind {
-    /// Part of a group block; carries a session.
-    Session,
-    /// Between two groups; no trace is drawn.
-    Gap,
-    /// Below the last group; an empty trace.
-    Trail,
-}
-
-/// The rows of the board in slot order (group blocks, gaps, trailing rows)
-/// and how they are moving. When the blocks change, nothing jumps: rows
-/// that already existed slide from where they were to where they are now,
-/// and brand-new rows draw in from the left (#48).
-#[derive(Clone, Debug, Default)]
-pub struct Rows {
-    pub kind: Vec<RowKind>,
-    /// Where each row was drawn when the change began, in row units;
-    /// `None` for a row that did not exist before.
-    pub from: Vec<Option<f32>>,
-    pub started: Option<Instant>,
-}
-
-impl Rows {
-    pub fn is_empty(&self) -> bool {
-        self.kind.is_empty()
-    }
-
-    /// 0 → 1 over `ROW_SECS`, eased.
-    pub fn progress(&self, now: Instant) -> f32 {
-        match self.started {
-            Some(t0) => crate::geom::smoothstep(now.saturating_duration_since(t0).as_secs_f32() / ROW_SECS),
-            None => 1.0,
-        }
-    }
-
-    pub fn active(&self, now: Instant) -> bool {
-        self.progress(now) < 1.0
-    }
-
-    /// Where row `r` is drawn right now, in row units (fractional mid-slide).
-    pub fn pos(&self, r: usize, now: Instant) -> f32 {
-        match self.from.get(r) {
-            Some(Some(f)) => f + (r as f32 - f) * self.progress(now),
-            _ => r as f32,
-        }
-    }
-
-    /// How much of a new row's trace has drawn in (0 → 1); 1 for old rows.
-    pub fn reveal(&self, r: usize, now: Instant) -> f32 {
-        match self.from.get(r) {
-            Some(None) => self.progress(now),
-            _ => 1.0,
-        }
-    }
-
-    pub fn kind(&self, r: usize) -> RowKind {
-        self.kind.get(r).copied().unwrap_or(RowKind::Trail)
-    }
-
-    fn settle(&mut self) {
-        self.from = (0..self.kind.len()).map(|r| Some(r as f32)).collect();
-        self.started = None;
-    }
-}
-
 /// Everything the renderer needs, updated by `apply` (data) and `tick` (time).
 ///
 /// Cloneable so a painter can be handed a snapshot: the comb view builds its
@@ -531,7 +396,6 @@ pub struct BoardModel {
     pub groups: Vec<String>,
     /// `(group, first slot, span)` per block, as laid out by `assign_slots`.
     pub blocks: Vec<(String, usize, usize)>,
-    pub rows: Rows,
 }
 
 impl BoardModel {
@@ -577,7 +441,7 @@ impl BoardModel {
                 }
             }
         }
-        self.assign_slots(now);
+        self.assign_slots();
     }
 
     /// Lowest in-group position not held by any chip of `group` (fading ones
@@ -590,7 +454,7 @@ impl BoardModel {
     /// empty rows. Inside a block chips keep their `gslot`; a block only
     /// moves when an earlier group grows or vanishes entirely — and then it
     /// slides there with its chips aboard rather than jumping (#48).
-    pub fn assign_slots(&mut self, now: Instant) {
+    pub fn assign_slots(&mut self) {
         self.groups.retain(|g| self.chips.iter().any(|c| &c.info.group == g));
         let mut offset = 0;
         let mut blocks = Vec::with_capacity(self.groups.len());
@@ -603,61 +467,7 @@ impl BoardModel {
             blocks.push((group.clone(), offset, span));
             offset += span + GROUP_GAP;
         }
-        if blocks != self.blocks || self.rows.is_empty() {
-            self.rows = self.rows_for(&blocks, now);
-            self.blocks = blocks;
-        }
-    }
-
-    /// The row list for `blocks`, with every row that survives from the
-    /// current arrangement starting where it is drawn at `now`.
-    fn rows_for(&self, blocks: &[(String, usize, usize)], now: Instant) -> Rows {
-        let old_total = self.blocks.last().map(|b| b.1 + b.2).unwrap_or(0) + TRAIL_ROWS;
-        let prev = |r: usize| (r < old_total).then(|| self.rows.pos(r, now));
-        let mut kind = Vec::new();
-        let mut from = Vec::new();
-        for (bi, (group, _, span)) in blocks.iter().enumerate() {
-            let old = self.blocks.iter().find(|b| &b.0 == group);
-            for j in 0..*span {
-                kind.push(RowKind::Session);
-                from.push(match old {
-                    Some((_, o_off, o_span)) if j < *o_span => prev(o_off + j),
-                    _ => None,
-                });
-            }
-            let last = bi + 1 == blocks.len();
-            for j in 0..if last { TRAIL_ROWS } else { GROUP_GAP } {
-                kind.push(if last { RowKind::Trail } else { RowKind::Gap });
-                from.push(old.and_then(|(_, o_off, o_span)| prev(o_off + o_span + j)));
-            }
-        }
-        if blocks.is_empty() {
-            for r in 0..TRAIL_ROWS {
-                kind.push(RowKind::Trail);
-                from.push(prev(r));
-            }
-        }
-        let moving = from.iter().enumerate().any(|(r, f)| *f != Some(r as f32));
-        Rows { kind, from, started: moving.then_some(now) }
-    }
-
-    /// One past the highest occupied slot: how many lanes the board needs.
-    pub fn slot_span(&self) -> usize {
-        self.chips.iter().map(|c| c.slot + 1).max().unwrap_or(0)
-    }
-
-    pub fn anim_mut(&mut self, target: Target) -> Option<&mut Anim> {
-        match target {
-            Target::Session(i) => self.chips.get_mut(i).map(|c| &mut c.anim),
-            Target::Sub(i, j) => self.chips.get_mut(i).and_then(|c| c.subs.get_mut(j)).map(|s| &mut s.anim),
-        }
-    }
-
-    pub fn anim(&self, target: Target) -> Option<&Anim> {
-        match target {
-            Target::Session(i) => self.chips.get(i).map(|c| &c.anim),
-            Target::Sub(i, j) => self.chips.get(i).and_then(|c| c.subs.get(j)).map(|s| &s.anim),
-        }
+        self.blocks = blocks;
     }
 
     /// Advances animations by `dt` seconds. Returns true when chips were
@@ -702,7 +512,7 @@ impl BoardModel {
         self.chips.retain(|c| !c.anim.dead());
         if self.chips.len() != before {
             dropped = true;
-            self.assign_slots(now);
+            self.assign_slots();
         }
         if let Some((_, at)) = &self.notice {
             if now.saturating_duration_since(*at) > Duration::from_secs(NOTICE_SECS) {
@@ -718,7 +528,6 @@ impl BoardModel {
     /// Jumps every animation to its resting state (headless renders, tests).
     pub fn settle(&mut self) {
         self.chips.retain(|c| !c.anim.gone);
-        self.rows.settle();
         for c in &mut self.chips {
             c.anim.settle(c.info.phase());
             c.subs.retain(|s| !s.anim.gone);
@@ -870,7 +679,6 @@ mod tests {
         m.tick(FADE_SECS + 0.1, t0 + secs(1.0));
         assert_eq!(m.chips.iter().map(|c| (c.info.name.clone(), c.slot)).collect::<Vec<_>>(),
                    vec![("b".to_string(), 1), ("c".to_string(), 2)]);
-        assert_eq!(m.slot_span(), 3);
         // A newcomer takes the freed slot instead of pushing everyone around.
         let mut d = SessionInfo::synthetic(4, "d", Phase::Working);
         d.group = "sandbox:0".into();
@@ -921,59 +729,6 @@ mod tests {
         assert_eq!(m.chips.iter().map(|c| c.slot).collect::<Vec<_>>(), vec![0, 1 + GROUP_GAP]);
     }
 
-    #[test]
-    fn rows_slide_when_a_session_is_inserted_mid_board_and_up_when_a_group_goes() {
-        let t0 = Instant::now();
-        let mut m = BoardModel::new();
-        let mut a = SessionInfo::synthetic(1, "a", Phase::Working);
-        a.group = "g1".into();
-        let mut b = SessionInfo::synthetic(2, "b", Phase::Working);
-        b.group = "g2".into();
-        m.apply(vec![a.clone(), b.clone()], t0);
-        // Blocks: g1 = row 0, gap rows 1..4, g2 = row 4, then trailing rows.
-        assert_eq!(m.rows.kind.len(), 1 + GROUP_GAP + 1 + TRAIL_ROWS);
-        assert_eq!(m.rows.kind(0), RowKind::Session);
-        assert_eq!(m.rows.kind(1), RowKind::Gap);
-        assert_eq!(m.rows.kind(4), RowKind::Session);
-        assert_eq!(m.rows.kind(5), RowKind::Trail);
-        m.settle();
-        assert!(!m.rows.active(t0));
-
-        // A second session joins g1: its row is new and everything below
-        // slides down by one, gap and trailing rows included.
-        let mut c = SessionInfo::synthetic(3, "c", Phase::Working);
-        c.group = "g1".into();
-        let t1 = t0 + secs(5.0);
-        m.apply(vec![a.clone(), b.clone(), c.clone()], t1);
-        assert_eq!(m.chips.iter().map(|ch| ch.slot).collect::<Vec<_>>(), vec![0, 5, 1]);
-        assert_eq!(m.rows.from[0], Some(0.0));
-        assert_eq!(m.rows.from[1], None, "the new row draws in from the left");
-        assert_eq!(m.rows.from[2], Some(1.0), "gap rows shift too");
-        assert_eq!(m.rows.from[5], Some(4.0), "b's row starts where it was");
-        assert_eq!(m.rows.from[6], Some(5.0), "so do the trailing rows");
-        assert!(m.rows.active(t1));
-        assert_eq!(m.rows.pos(5, t1), 4.0);
-        assert_eq!(m.rows.reveal(1, t1), 0.0);
-        let mid = t1 + secs(ROW_SECS / 2.0);
-        assert!((m.rows.pos(5, mid) - 4.5).abs() < 1e-3);
-        assert!((m.rows.reveal(1, mid) - 0.5).abs() < 1e-3);
-        // A poll that changes nothing must not restart the slide.
-        m.apply(vec![a.clone(), b.clone(), c.clone()], t1 + secs(0.1));
-        assert_eq!(m.rows.started, Some(t1));
-        let end = t1 + secs(ROW_SECS + 0.01);
-        assert_eq!(m.rows.pos(5, end), 5.0);
-        assert!(!m.rows.active(end));
-
-        // g1 goes away entirely: g2 slides up from row 5 to row 0.
-        m.apply(vec![b.clone()], end);
-        assert_eq!(m.rows.started, Some(t1), "fading chips still hold their rows");
-        let gone = end + secs(FADE_SECS + 0.1);
-        m.tick(FADE_SECS + 0.1, gone);
-        assert_eq!(m.chips.len(), 1);
-        assert_eq!(m.chips[0].slot, 0);
-        assert_eq!(m.rows.from[0], Some(5.0));
-        assert_eq!(m.rows.started, Some(gone));
-    }
 
     #[test]
     fn tick_fades_gone_chips_out_and_drops_them() {
@@ -1033,24 +788,6 @@ mod tests {
         assert!(m.chips.is_empty());
     }
 
-    #[test]
-    fn a_new_placement_key_starts_a_fade_out_then_in() {
-        let t0 = Instant::now();
-        let mut a = Anim::new(t0);
-        a.track_placement(1, 100.0, t0);
-        assert!(a.reloc.is_none(), "first placement never animates");
-        a.track_placement(1, 120.0, t0 + secs(0.1));
-        assert!(a.reloc.is_none(), "sliding within the same spot is not a relocation");
-        a.track_placement(2, 400.0, t0 + secs(0.2));
-        let r = a.reloc.expect("key change relocates");
-        assert_eq!(r.from_s, 120.0);
-        let (old, alpha) = r.stage(t0 + secs(0.2));
-        assert!(old && (alpha - 1.0).abs() < 1e-6);
-        let (old, _) = r.stage(t0 + secs(0.2 + RELOC_HALF_SECS + 0.01));
-        assert!(!old, "second half draws at the new spot");
-        a.track_placement(2, 400.0, t0 + secs(2.0));
-        assert!(a.reloc.is_none(), "finished relocations are cleared");
-    }
 
     #[test]
     fn settle_resolves_every_animation() {
@@ -1063,7 +800,7 @@ mod tests {
         assert_eq!(m.chips[0].anim.disconnect, 1.0);
         assert_eq!(m.chips[1].anim.disconnect, 0.0);
         assert_eq!(m.chips[1].subs[0].anim.disconnect, 1.0);
-        assert!(m.chips.iter().all(|c| c.anim.alpha(Instant::now()) > 0.99));
+        assert!(m.chips.iter().all(|c| c.anim.fade > 0.99));
     }
     /// The frame clock stops at full speed when this says nothing is moving,
     /// so a chip that is still settling and is called still would be a board

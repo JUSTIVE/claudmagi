@@ -32,15 +32,6 @@ pub trait SessionSource: Send + Sync {
     }
 }
 
-/// The login name of whoever runs the board, uppercased for the badge (#15).
-pub fn machine_user() -> String {
-    let name = std::env::var("USER")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| dirs::home_dir().and_then(|h| h.file_name().map(|s| s.to_string_lossy().into_owned())))
-        .unwrap_or_else(|| "CLAUDMAGI".into());
-    name.to_ascii_uppercase()
-}
 
 fn millis(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)

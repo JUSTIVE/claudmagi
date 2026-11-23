@@ -15,16 +15,12 @@ use gpui::{
 use crate::geom::Pt;
 use crate::model::{BoardModel, Target};
 use crate::render::paint::PathCache;
-use crate::render::scene::{self, ChipDraw, Frame, GAP, Lane, Layout};
-use base_gpui::tooltip::{
-    TooltipPopup, TooltipPortal, TooltipPositioner, TooltipRoot, TooltipSide, TooltipTrigger,
-};
+use crate::render::scene::{self, GAP, Layout};
 
 use crate::made;
-use crate::render::blob;
 use crate::render::comb;
 use crate::settings::{BoardView, Settings};
-use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
+use crate::sources::{ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
 use crate::ui::palette::PaletteState;
 use crate::ui::panel::PanelState;
@@ -35,16 +31,10 @@ pub const STATUS_H: f32 = 30.0;
 /// The strip along the top that drags the window, as a titlebar would: the
 /// height of the macOS titlebar the traffic lights sit in (#171).
 const GRAB_H: f32 = 28.0;
-/// The hover tooltip on a pull request connector (#77, #115): its padding,
-/// how wide it may run, and how long a pointer has to rest before it opens.
-/// Where it goes and how it stays on screen is base-gpui's job now.
-const TIP_PAD: f32 = 8.0;
-const TIP_MAX: f32 = 340.0;
-const TIP_DELAY: std::time::Duration = std::time::Duration::from_millis(150);
 /// Session registry poll interval.
 const POLL_MS: u64 = 1000;
-/// Redraw cadence: the packets glide at 30fps, which halves the CPU of a
-/// vsync-driven loop (#38).
+/// Redraw cadence while the honeycomb moves (cells arriving and gliding to
+/// new seats): 30fps, which halves the CPU of a vsync-driven loop (#38).
 const FRAME_MS: u64 = 33;
 /// And while nothing is. A floor rather than a stop: anything the predicate
 /// below fails to notice is a quarter second late instead of frozen, which
@@ -52,15 +42,6 @@ const FRAME_MS: u64 = 33;
 const IDLE_MS: u64 = 250;
 /// How far a press has to travel before it drags the window, in window px.
 const DRAG_SLOP: f32 = 4.0;
-/// And while the only thing moving is the metaball view's wander (#144).
-///
-/// That one never stops, so this is the cadence the blob board idles at for
-/// as long as it is open, which is why it is not the full thirty: the wander
-/// is a couple of pixels over several seconds, so a third of the frames
-/// carry it with nothing to see, and every frame of it is every body built
-/// and tessellated again (#38).
-const FLOAT_MS: u64 = 100;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Real Claude Code sessions from `~/.claude/sessions`.
@@ -88,27 +69,15 @@ pub struct Board {
     /// The list down the right-hand side (#103).
     pub(crate) list_panel: PanelState,
     pub(crate) layout: Layout,
-    lanes: Rc<Vec<Lane>>,
-    /// True while the last built lanes were mid-slide (#49).
-    lanes_moving: bool,
-    draws: Vec<ChipDraw>,
     paths: Rc<RefCell<PathCache>>,
     pub(crate) scroll_y: f32,
     /// Mouse in design units / window pixels.
     mouse: Option<Pt>,
     pressed: Option<Target>,
-    /// PR connectors of the last frame, kept so clicks can hit them (#57).
-    prs: Vec<scene::PrDraw>,
-    hovered_pr: Option<usize>,
-    pressed_pr: Option<usize>,
-    tickets: Vec<scene::TicketDraw>,
-    hovered_ticket: Option<usize>,
-    pressed_ticket: Option<usize>,
     /// The cell whose pull requests are dropped down, by session id (#134).
     /// The id rather than the index: sessions come and go while the list is
     /// open, and an index would quietly become somebody else's.
     pub(crate) pr_menu: Option<String>,
-    title: String,
     /// A press on bare board that has not moved yet: the first drag hands the
     /// window to AppKit's own move loop.
     drag_pending: bool,
@@ -116,7 +85,6 @@ pub struct Board {
     press_at: Option<gpui::Point<Pixels>>,
     /// Bumped after a tile's press so the start screen turns back in (#176).
     pub(crate) tiles_replay: usize,
-    started: Instant,
     last_tick: Instant,
     focus_handle: FocusHandle,
     /// Claude plan usage for the status bar (#48): the last good value and
@@ -125,16 +93,12 @@ pub struct Board {
     usage_error: Option<usage::UsageError>,
     /// What the live source wants said in the status bar (#67).
     source_note: Option<&'static str>,
-    /// How far down the last frame reached, so the scroll can get there even
-    /// when a narrow window has pushed chips onto later stripes (#83).
+    /// How far down the honeycomb reaches, so the scroll can get there.
     content_bottom: f32,
     /// The window in pixels, for the chrome that has to fit inside it (#83).
     pub(crate) window: (f32, f32),
     /// The hex grid, when the comb view is the one showing (#86).
     pub(crate) comb: Option<comb::Comb>,
-    /// Where the metaball view's bodies actually are, which is a walk away
-    /// from where they were seated (#142).
-    pub(crate) blobs: Rc<RefCell<blob::Sim>>,
     /// The cells still on their way to seats they were given this frame
     /// (#150).
     slides: comb::Slides,
@@ -183,13 +147,7 @@ impl Board {
             loop {
                 let Ok(ms) = this.update(cx, |board, cx| {
                     cx.notify();
-                    if board.moving() {
-                        FRAME_MS
-                    } else if board.afloat() {
-                        FLOAT_MS
-                    } else {
-                        IDLE_MS
-                    }
+                    if board.moving() { FRAME_MS } else { IDLE_MS }
                 }) else {
                     break;
                 };
@@ -233,7 +191,7 @@ impl Board {
             live: Arc::new(ClaudeSource::default()),
             sandbox: Arc::new(FakeSource::new()),
             mode: Mode::Live,
-            layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0, settings.zoom),
+            layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, settings.zoom),
             settings,
             dev: PanelState::default(),
             tiles_view: cx.new(|_| TilesView { board: me.clone() }),
@@ -241,25 +199,14 @@ impl Board {
             dev_expanded: Default::default(),
             settings_panel: PanelState::default(),
             list_panel: PanelState::default(),
-            lanes: Rc::new(Vec::new()),
-            lanes_moving: false,
-            draws: Vec::new(),
             paths: Rc::new(RefCell::new(PathCache::default())),
             scroll_y: 0.0,
             mouse: None,
             pressed: None,
-            prs: Vec::new(),
-            hovered_pr: None,
-            pressed_pr: None,
-            tickets: Vec::new(),
-            hovered_ticket: None,
-            pressed_ticket: None,
             pr_menu: None,
-            title: sources::machine_user(),
             drag_pending: false,
             press_at: None,
             tiles_replay: 0,
-            started: now,
             last_tick: now,
             focus_handle,
             usage: None,
@@ -268,7 +215,6 @@ impl Board {
             content_bottom: 0.0,
             window: (scene::DESIGN_W, scene::DESIGN_H),
             comb: None,
-            blobs: Rc::new(RefCell::new(blob::Sim::default())),
             slides: comb::Slides::default(),
             comb_since: None,
             palette: PaletteState::default(),
@@ -318,20 +264,6 @@ impl Board {
         self.touch(cx);
     }
 
-    /// Rebuilds the lane geometry when the layout changes and on every
-    /// frame while rows are sliding into a new arrangement (#49), plus one
-    /// more frame afterwards so the lanes settle on their exact spots.
-    fn ensure_lanes(&mut self, win_w: f32, win_h: f32, now: Instant) {
-        let layout = Layout::new(win_w, win_h, self.model.slot_span(), self.settings.zoom);
-        let moving = self.model.rows.active(now);
-        if layout == self.layout && !self.lanes.is_empty() && !moving && !self.lanes_moving {
-            return;
-        }
-        self.layout = layout;
-        self.lanes = Rc::new(layout.build_lanes_for(&self.model.rows, now));
-        self.lanes_moving = moving;
-    }
-
     /// How far down the board can be pushed.
     ///
     /// The status bar is drawn over the board's bottom edge, so what can be
@@ -359,63 +291,18 @@ impl Board {
         y < GRAB_H || y >= f32::from(window.viewport_size().height) - STATUS_H
     }
 
-    /// What is under a board point: a cell, a PR connector, a ticket —
-    /// nothing at all when the pointer is on the chrome.
+    /// The cell under a board point — none at all when the pointer is on
+    /// the chrome.
     fn hover_at(&mut self, m: Pt, bar: bool) {
         self.model.hovered = if bar { None } else { self.hit_test(m) };
-        self.hovered_pr = if bar { None } else { self.hit_pr(m) };
-        self.hovered_ticket = if bar { None } else { self.hit_ticket(m) };
     }
 
-    /// Hit test in design units.
+    /// The cell under a point in design units. The comb's cells live in
+    /// content coordinates, so the pointer is pushed back down by however far
+    /// the grid is scrolled (#86).
     fn hit_test(&self, m: Pt) -> Option<Target> {
-        // The comb's cells live in content coordinates, so the pointer has to
-        // be pushed back down by however far the grid is scrolled (#86).
-        if let Some(c) = &self.comb {
-            return comb::hit(c, m + Pt::new(0.0, self.scroll_y)).map(Target::Session);
-        }
-        let mut best: Option<(f32, Target)> = None;
-        for d in &self.draws {
-            if d.alpha < 0.4 {
-                continue;
-            }
-            let center = Pt::new(d.center.x, d.center.y - self.scroll_y);
-            let rel = m - center;
-            let lx = rel.dot(d.tangent);
-            let ly = rel.dot(d.tangent.perp());
-            if lx.abs() <= d.width / 2.0 + 3.0 && ly.abs() <= d.style.h / 2.0 + 3.0 {
-                let dist = lx.abs() + ly.abs();
-                if best.is_none_or(|(bd, _)| dist < bd) {
-                    best = Some((dist, d.target));
-                }
-            }
-        }
-        best.map(|(_, t)| t)
-    }
-
-    /// Index of the PR connector under the pointer. They never rotate, so the
-    /// test is a plain box (#57).
-    fn hit_pr(&self, m: Pt) -> Option<usize> {
-        if self.comb.is_some() {
-            return None;
-        }
-        self.prs.iter().position(|p| {
-            p.alpha >= 0.4
-                && (m.x - p.center.x).abs() <= p.width / 2.0 + 3.0
-                && (m.y - (p.center.y - self.scroll_y)).abs() <= scene::PR_H / 2.0 + 3.0
-        })
-    }
-
-    /// Index of the Linear node under the pointer (#57).
-    fn hit_ticket(&self, m: Pt) -> Option<usize> {
-        if self.comb.is_some() {
-            return None;
-        }
-        self.tickets.iter().position(|t| {
-            t.alpha >= 0.4
-                && (m.x - t.center.x).abs() <= t.width / 2.0 + 3.0
-                && (m.y - (t.center.y - self.scroll_y)).abs() <= scene::PR_H / 2.0 + 3.0
-        })
+        let c = self.comb.as_ref()?;
+        comb::hit(c, m + Pt::new(0.0, self.scroll_y)).map(Target::Session)
     }
 
     /// The session whose output row is under the pointer, when that row has
@@ -490,89 +377,14 @@ impl Board {
         .detach();
     }
 
-    /// Opens a PR connector's pull request in the browser (#57).
-    fn open_pr(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(p) = self.prs.get(i) else { return };
-        let (label, url) = (p.label.clone(), p.url.clone());
-        self.open_link(label, None, url, "pull request", cx);
-    }
-
-    /// Opens a Linear node's issue in the browser (#57).
-    fn open_ticket(&mut self, i: usize, cx: &mut Context<Self>) {
-        let Some(t) = self.tickets.get(i) else { return };
-        let (label, app, web) = (t.label.clone(), t.app_url.clone(), t.url.clone());
-        self.open_link(label, app, web, "Linear issue", cx);
-    }
-
-    /// Every pull request connector as a tooltip trigger, with its title in
-    /// the popup (#77, #115).
-    ///
-    /// The connectors are painted into the canvas, so there is no element to
-    /// hang a tooltip on: each one gets a transparent trigger laid over where
-    /// it was drawn, and base-gpui does the delay, the side flipping and the
-    /// collision work that was hand-rolled here before.
-    fn pr_tooltips(&self, cx: &mut Context<Self>) -> gpui::Div {
-        let zoom = self.layout.zoom;
-        let mut out = div().absolute().top_0().left_0().right_0().bottom_0();
-        for (i, draw) in self.prs.iter().enumerate() {
-            let title = draw.title.trim().to_string();
-            if title.is_empty() || draw.alpha < 0.4 {
-                continue;
-            }
-            let (w, h) = (draw.width * zoom, scene::PR_H * zoom);
-            let left = (draw.center.x * zoom) - w / 2.0;
-            let top = ((draw.center.y - self.scroll_y) * zoom) - h / 2.0;
-            out = out.child(
-                div().absolute().left(px(left)).top(px(top)).child(
-                    TooltipRoot::<()>::new()
-                        .id(SharedString::from(format!("pr-tip-{i}")))
-                        .child(
-                            TooltipTrigger::<()>::new()
-                                .id(SharedString::from(format!("pr-tip-trigger-{i}")))
-                                .delay(TIP_DELAY)
-                                .w(px(w))
-                                .h(px(h)),
-                        )
-                        .child(
-                            TooltipPortal::<()>::new().child(
-                                TooltipPositioner::<()>::new()
-                                    .side(TooltipSide::Top)
-                                    .side_offset(px(6.))
-                                    .child_any(
-                                    TooltipPopup::<()>::new()
-                                        .id(SharedString::from(format!("pr-tip-popup-{i}")))
-                                        .px(px(TIP_PAD))
-                                        .py(px(4.))
-                                        .max_w(px(TIP_MAX))
-                                        .border_1()
-                                        .border_color(theme::hsla(theme::with_alpha(
-                                            self.palette().ink,
-                                            0.35,
-                                        )))
-                                        .bg(theme::hsla(crate::ui::palette::card_bg(self.palette())))
-                                        .font_family(theme::UI_FONT)
-                                        .text_size(px(11.))
-                                        .text_color(theme::hsla(self.palette().ink))
-                                        .child_any(SharedString::from(title)),
-                                ),
-                            ),
-                        ),
-                ),
-            );
-        }
-        let _ = cx;
-        out
-    }
-
     /// Something on screen is *animating*, so the next frame will differ from
     /// this one without anybody doing anything (#126).
     ///
     /// Only animation. Everything else that changes the board — a poll
     /// answering, a key, the mouse — calls `cx.notify()` where it happens,
     /// and gpui repaints then whatever this says. The clock is here for the
-    /// things nothing notifies about, and there are four of them: the arrival
-    /// wave, the blink, a chip settling into or out of its socket, and the
-    /// packets that run along a trace for as long as the trace is there.
+    /// things nothing notifies about: the arrival wave, the blink, and a cell
+    /// gliding to a new seat.
     fn moving(&self) -> bool {
         // The start screen is gpui-metro's, and asks for its own frames while
         // a tile turns or slides (#176).
@@ -587,26 +399,11 @@ impl Board {
         if self.slides.moving() {
             return true;
         }
-        // The metaball view is still once its bodies have stopped moving as
-        // well as arriving (#142).
-        if self.settings.view == BoardView::Blob && self.blobs.borrow().moving() {
-            return true;
-        }
+        // The comb is still once its cells have all arrived.
         match (&self.comb, self.comb_since) {
-            // The comb is still once its cells have all arrived.
             (Some(comb), Some(since)) => !comb::wave_over(comb, now.duration_since(since).as_secs_f32()),
-            (Some(_), None) => false,
-            // The circuit board's packets never stop while a lane exists.
-            (None, _) => !self.lanes.is_empty(),
+            _ => false,
         }
-    }
-
-    /// Nothing is happening, but the metaball bodies are breathing anyway
-    /// (#144), so the clock keeps a slow beat instead of dropping to the
-    /// idle floor.
-    fn afloat(&self) -> bool {
-        self.settings.view == BoardView::Blob
-            && self.comb.as_ref().is_some_and(|c| c.cells.iter().any(|c| c.chip.is_some() || c.subs.is_some()))
     }
 
     /// Opens the pane the `NO WARP TABS` tag asks for (#70). That tag is the
@@ -681,29 +478,11 @@ impl Render for Board {
         self.window = (w, h);
 
         self.model.tick(dt, now);
-        self.ensure_lanes(w, h, now);
-        self.clamp_scroll();
-        for (target, key, s) in scene::placements(&self.model, &self.layout, &self.lanes) {
-            if let Some(anim) = self.model.anim_mut(target) {
-                anim.track_placement(key, s, now);
-            }
-        }
-        self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
-        self.prs = scene::pr_draws(&self.model, &self.layout, &self.lanes, &self.draws);
-        self.tickets = scene::ticket_draws(&self.model, &self.lanes, &self.draws);
+        self.layout = Layout::new(w, h, self.settings.zoom);
         let board_mouse = self.mouse.filter(|_| self.settings.view != BoardView::Tiles);
         self.model.hovered = board_mouse.and_then(|m| self.hit_test(m));
-        let (hp, ht) = board_mouse.map(|m| (self.hit_pr(m), self.hit_ticket(m))).unwrap_or((None, None));
-        self.hovered_pr = hp;
-        self.hovered_ticket = ht;
-        if let Some(i) = self.hovered_pr {
-            self.prs[i].hover = 1.0;
-        }
-        if let Some(i) = self.hovered_ticket {
-            self.tickets[i].hover = 1.0;
-        }
-        // Both of the seated views lay the sessions out on the same hex grid
-        // and scroll by its height (#86, #140).
+        // The honeycomb lays the sessions out on a hex grid and scrolls by
+        // its height (#86).
         if self.settings.view.seated() {
             // The clock starts on the first frame with something to spread
             // out from. At launch the first session poll has not answered
@@ -725,47 +504,22 @@ impl Render for Board {
             // reads the seating, so the press and the walk are on the cell
             // that is drawn.
             self.slides.settle(&mut comb, &self.model, now);
-            if self.settings.view == BoardView::Blob {
-                let since = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
-                self.blobs.borrow_mut().step(&self.model, &comb, since, now);
-            }
             self.comb = Some(comb);
         } else {
             self.comb = None;
             self.comb_since = None;
         }
         self.prune_pr_menu();
-        self.content_bottom = match &self.comb {
-            Some(c) => c.height,
-            None => self.layout.board_bottom(&self.draws, &self.prs, &self.tickets),
-        };
+        self.content_bottom = self.comb.as_ref().map_or(0.0, |c| c.height);
         self.clamp_scroll();
-        let prs = self.prs.clone();
-        let tickets = self.tickets.clone();
-        let done_lanes = scene::done_lanes(&self.model, &self.draws);
 
         let palette = self.palette();
-        let frame = Frame {
-            lanes: self.lanes.clone(),
-            chips: self.draws.clone(),
-            prs,
-            tickets,
-            done_lanes,
-            scroll_y: self.scroll_y,
-            t: now.duration_since(self.started).as_secs_f32(),
-            layout: self.layout,
-            title: self.title.clone(),
-            pan_x: 0.0,
-            palette,
-        };
         let paths = self.paths.clone();
         let comb = self.comb.clone();
-        let blobs = self.blobs.clone();
         // Seconds since the view opened: the cells spread out from the
         // clusters on this (#92).
         let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
-        let view = self.settings.view;
-        let tiles_view = view == BoardView::Tiles;
+        let tiles_view = self.settings.view == BoardView::Tiles;
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
@@ -798,7 +552,7 @@ impl Render for Board {
             .relative()
             .size_full()
             .track_focus(&self.focus_handle)
-            .when(self.model.hovered.is_some() || self.hovered_pr.is_some() || self.hovered_ticket.is_some(), |d| d.cursor_pointer())
+            .when(self.model.hovered.is_some(), |d| d.cursor_pointer())
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 let cmd = ev.keystroke.modifiers.platform;
                 // ⌘K opens and closes it; while it is open every other key
@@ -835,9 +589,9 @@ impl Render for Board {
                 // The start screen's tiles are elements of their own, which
                 // take their own hover and press (#176).
                 let off_board = Self::on_chrome(ev.position, window) || this.settings.view == BoardView::Tiles;
-                let before = (this.model.hovered, this.hovered_pr, this.hovered_ticket);
+                let before = this.model.hovered;
                 this.hover_at(m, off_board);
-                let changed = (this.model.hovered, this.hovered_pr, this.hovered_ticket) != before;
+                let changed = this.model.hovered != before;
                 // The window server moves the window itself, in step with the
                 // cursor; moving it by hand from deltas lagged and jumped.
                 // Only once the pointer has really moved: a press with a pixel
@@ -876,17 +630,8 @@ impl Render for Board {
                         (asked, _) => asked,
                     };
                     this.hover_at(m, bar);
-                    if this.model.hovered.is_some() || this.hovered_pr.is_some() || this.hovered_ticket.is_some() {
-                        this.pressed = this.model.hovered;
-                        this.pressed_pr = this.hovered_pr;
-                        this.pressed_ticket = this.hovered_ticket;
-                        this.drag_pending = false;
-                    } else {
-                        this.pressed = None;
-                        this.pressed_pr = None;
-                        this.pressed_ticket = None;
-                        this.drag_pending = true;
-                    }
+                    this.pressed = this.model.hovered;
+                    this.drag_pending = this.pressed.is_none();
                     // A click on the board is a click past the palette: the
                     // card itself stops propagation, so anything reaching here
                     // was outside it (#71).
@@ -907,19 +652,7 @@ impl Render for Board {
                             this.activate_at(h, m, cx);
                         }
                     }
-                    if let (Some(p), Some(h)) = (this.pressed_pr, this.hit_pr(m)) {
-                        if p == h {
-                            this.open_pr(h, cx);
-                        }
-                    }
-                    if let (Some(p), Some(h)) = (this.pressed_ticket, this.hit_ticket(m)) {
-                        if p == h {
-                            this.open_ticket(h, cx);
-                        }
-                    }
                     this.pressed = None;
-                    this.pressed_pr = None;
-                    this.pressed_ticket = None;
                     this.drag_pending = false;
                     cx.notify();
                 }),
@@ -944,23 +677,18 @@ impl Render for Board {
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         let origin = Pt::new(f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+                        // The start screen is its own element over this (#176):
+                        // the canvas draws only the honeycomb.
                         let shapes = match (&comb, &model) {
                             (Some(c), Some(m)) => {
                                 let at = origin * (1.0 / zoom);
-                                let mut out = match view {
-                                    BoardView::Blob => {
-                                        blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, &blobs.borrow())
-                                    }
-                                    _ => comb::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
-                                };
+                                let mut out = comb::build_shapes(m, c, palette, scroll_y, at, comb_t);
                                 for s in &mut out {
                                     s.scale(zoom);
                                 }
                                 out
                             }
-                            // The start screen is its own element over this (#176).
-                            _ if tiles_view => Vec::new(),
-                            _ => scene::build_shapes(&frame, origin),
+                            _ => Vec::new(),
                         };
                         paths.borrow_mut().paint(&shapes, window);
                     },
@@ -1073,7 +801,6 @@ impl Render for Board {
             // The connectors these hang on are the board's, not the comb's:
             // in the comb view they would sit over the honeycomb at
             // positions nothing is drawn at (#115, #134).
-            .when(self.comb.is_none() && !tiles_view, |d| d.child(self.pr_tooltips(cx)))
             .children(self.render_pr_menu(cx))
     }
 }
@@ -1222,31 +949,3 @@ impl Render for PanelsView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    const VP: (f32, f32) = (980.0, 620.0);
-
-    /// Pushed all the way down, the lowest lane has to be clear of the status
-    /// bar. The bar is a fixed number of window pixels, so zooming out makes
-    /// it taller in the board's own units, and it used to swallow the last
-    /// lane's connectors (#81).
-    #[test]
-    fn the_lowest_lane_clears_the_status_bar_at_every_zoom() {
-        for zoom in [0.5, 0.8, 1.0, 1.5, 3.0] {
-            for sessions in [0, 1, 6, 14, 30] {
-                let layout = Layout::new(VP.0, VP.1, sessions, zoom);
-                let visible = visible_height(&layout);
-                // With nothing on it the board reaches exactly as far as its
-                // lanes do, and the lowest thing sits `BOTTOM_PAD` above that.
-                let bottom = layout.content_height();
-                let lowest = bottom - scene::BOTTOM_PAD - max_scroll(&layout, bottom);
-                assert!(
-                    lowest + scene::PR_H / 2.0 <= visible,
-                    "zoom {zoom}, {sessions} sessions: the last lane reaches {lowest} of a visible {visible}"
-                );
-            }
-        }
-    }
-
-}

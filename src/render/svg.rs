@@ -51,13 +51,6 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                         r#"<pattern id="screen{k}" patternUnits="userSpaceOnUse" width="{period:.3}" height="{period:.3}" patternTransform="rotate(45)"><rect x="0" y="0" width="{w:.3}" height="{period:.3}" fill="{c}"/></pattern>"#
                     );
                 }
-                Screen::Check { size } => {
-                    let two = size * 2.0;
-                    let _ = writeln!(
-                        s,
-                        r#"<pattern id="screen{k}" patternUnits="userSpaceOnUse" width="{two:.3}" height="{two:.3}"><rect x="0" y="0" width="{size:.3}" height="{size:.3}" fill="{c}"/><rect x="{size:.3}" y="{size:.3}" width="{size:.3}" height="{size:.3}" fill="{c}"/></pattern>"#
-                    );
-                }
             }
         }
         let _ = writeln!(s, "</defs>");
@@ -80,20 +73,6 @@ pub fn to_svg(shapes: &[Shape], width: f32, height: f32) -> String {
                         svg_color(*color)
                     );
                 }
-            }
-            Shape::RoundedRect { center, w, h, r, angle, color, stroke } => {
-                let (fill, stroke_attr) = match stroke {
-                    Some(sw) => ("none".to_string(), format!(r#"stroke="{}" stroke-width="{sw}""#, svg_color(*color))),
-                    None => (svg_color(*color), String::new()),
-                };
-                let _ = writeln!(
-                    s,
-                    r#"<rect x="{:.2}" y="{:.2}" width="{w:.2}" height="{h:.2}" rx="{r}" fill="{fill}" {stroke_attr} transform="rotate({angle:.2} {:.2} {:.2})"/>"#,
-                    center.x - w / 2.0,
-                    center.y - h / 2.0,
-                    center.x,
-                    center.y
-                );
             }
             Shape::Poly { points, color, screen } => {
                 let pts: Vec<String> = points.iter().map(|p| format!("{:.2},{:.2}", p.x, p.y)).collect();

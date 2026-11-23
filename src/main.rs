@@ -16,7 +16,7 @@ mod ticket;
 mod ui;
 mod usage;
 
-use std::rc::Rc;
+
 use std::time::Instant;
 
 use gpui::{
@@ -40,12 +40,6 @@ fn main() {
     if let Some(i) = args.iter().position(|a| a == "--svg") {
         let out = args.get(i + 1).cloned().unwrap_or_else(|| "claudmagi.svg".into());
         let demo = args.iter().any(|a| a == "--demo");
-        let user_zoom = args
-            .iter()
-            .position(|a| a == "--zoom")
-            .and_then(|k| args.get(k + 1))
-            .and_then(|z| z.parse().ok())
-            .unwrap_or(1.0);
         let (w, h) = args
             .iter()
             .position(|a| a == "--size")
@@ -152,36 +146,18 @@ fn main() {
             _ => theme::PALETTE,
         };
         let view = args.iter().position(|a| a == "--view").and_then(|k| args.get(k + 1)).cloned();
+        // The honeycomb is the one view drawn as shapes: the start screen is
+        // gpui-metro's elements (#176), and the circuit and the metaballs
+        // are gone (#183).
         let svg = match view.as_deref() {
-            Some("comb") => render_seated_svg(&sessions, w, h, palette, false),
-            Some("blob") => render_seated_svg(&sessions, w, h, palette, true),
-            Some("tiles") => {
-                // The start screen is gpui-metro's elements, not the board's
-                // shapes, so there is nothing to write as SVG (#176).
-                eprintln!("--view tiles has no SVG export: the start screen is drawn by gpui-metro");
+            None | Some("comb") => render_comb_svg(&sessions, w, h, palette),
+            Some(other) => {
+                eprintln!("--view {other} has no SVG export: only the comb is drawn as shapes");
                 std::process::exit(2);
             }
-            _ => render_svg(&sessions, w, h, demo, user_zoom, palette),
         };
         std::fs::write(&out, svg).expect("write svg");
         println!("wrote {out} ({} sessions)", sessions.len());
-        return;
-    }
-    if let Some(i) = args.iter().position(|a| a == "--icon") {
-        // App icon: a square board with a single chip and no badge.
-        let out = args.get(i + 1).cloned().unwrap_or_else(|| "icon.svg".into());
-        let mut chip = SessionInfo::synthetic(1, "MAGI", model::Phase::Working);
-        chip.subagents.push(model::SubagentInfo::synthetic(1, "AGENT", "", true));
-        // Bold version of the board on the reference orange: few lanes, thick
-        // traces, the chip near the centre.
-        let zoom = 3.0;
-        let layout = scene::Layout { zoom, width: 176.0, height: 1024.0 / zoom, bands: 1, lanes: scene::LEAD_LANES + 10 };
-        let mut palette = theme::PALETTE;
-        palette.bg = theme::hex(0xF04A0E);
-        palette.packet = palette.line;
-        let svg = render_frame(&[chip], layout, false, String::new(), (0.0, -26.0), palette, 1024.0, 1024.0);
-        std::fs::write(&out, svg).expect("write icon svg");
-        println!("wrote {out}");
         return;
     }
     if let Some(i) = args.iter().position(|a| a == "--focus") {
@@ -326,15 +302,8 @@ fn args_wave() -> Option<f32> {
     args.iter().position(|a| a == "--wave").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok())
 }
 
-/// A seated view as a one-shot SVG, for looking at it without a window: the
-/// honeycomb (#86), or the same seating as metaballs (#140).
-fn render_seated_svg(
-    list: &[SessionInfo],
-    width: f32,
-    height: f32,
-    palette: theme::Palette,
-    blobs: bool,
-) -> String {
+/// The honeycomb as a one-shot SVG, for looking at it without a window (#86).
+fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
     let mut model = BoardModel::new();
     model.apply(list.to_vec(), Instant::now());
     model.settle();
@@ -342,77 +311,6 @@ fn render_seated_svg(
     // A one-shot render wants the view as it settles, not mid-arrival; pass
     // `--wave <seconds>` to catch it partway (#92).
     let t = args_wave().unwrap_or(1.0e3);
-    let at = geom::Pt::new(0.0, 0.0);
-    let shapes = if blobs {
-        // No clock in a still frame, so the balls are walked to a standstill
-        // before it is taken (#142).
-        let mut sim = render::blob::Sim::default();
-        sim.settle(&model, &comb, t);
-        render::blob::build_shapes(&model, &comb, palette, 0.0, at, t, &sim)
-    } else {
-        render::comb::build_shapes(&model, &comb, palette, 0.0, at, t)
-    };
+    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0), t);
     render::svg::to_svg(&shapes, width, comb.height.max(height))
-}
-
-fn render_svg(
-    list: &[SessionInfo],
-    width: f32,
-    height: f32,
-    demo_hover: bool,
-    user_zoom: f32,
-    palette: theme::Palette,
-) -> String {
-    let mut model = BoardModel::new();
-    model.apply(list.to_vec(), Instant::now());
-    let layout = scene::Layout::new(width, height, model.slot_span(), user_zoom);
-    render_frame(list, layout, demo_hover, sources::machine_user(), (0.0, 0.0), palette, width, height)
-}
-
-#[allow(dead_code)]
-fn render_svg_titled(list: &[SessionInfo], width: f32, height: f32, demo_hover: bool, title: String) -> String {
-    let mut model = BoardModel::new();
-    model.apply(list.to_vec(), Instant::now());
-    let layout = scene::Layout::new(width, height, model.slot_span(), 1.0);
-    render_frame(list, layout, demo_hover, title, (0.0, 0.0), theme::PALETTE, width, height)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn render_frame(
-    list: &[SessionInfo],
-    layout: scene::Layout,
-    demo_hover: bool,
-    title: String,
-    pan: (f32, f32),
-    palette: theme::Palette,
-    width: f32,
-    height: f32,
-) -> String {
-    let now = Instant::now();
-    let mut model = BoardModel::new();
-    model.apply(list.to_vec(), now);
-    model.settle();
-    if demo_hover && model.chips.len() > 1 {
-        model.chips[1].anim.hover_t = 1.0;
-    }
-    let lanes = Rc::new(layout.build_lanes_for(&model.rows, now));
-    let chips = scene::chip_draws(&model, &layout, &lanes, now);
-    let prs = scene::pr_draws(&model, &layout, &lanes, &chips);
-    let tickets = scene::ticket_draws(&model, &lanes, &chips);
-    let done_lanes = scene::done_lanes(&model, &chips);
-    let frame = scene::Frame {
-        lanes,
-        chips,
-        prs,
-        tickets,
-        done_lanes,
-        scroll_y: pan.1,
-        t: 3.7,
-        layout,
-        title,
-        pan_x: pan.0,
-        palette,
-    };
-    let shapes = scene::build_shapes(&frame, geom::Pt::new(0.0, 0.0));
-    render::svg::to_svg(&shapes, width, height)
 }

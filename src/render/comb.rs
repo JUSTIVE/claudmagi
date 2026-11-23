@@ -794,23 +794,6 @@ pub(crate) fn wants_a_person(info: &SessionInfo) -> bool {
     info.phase() == Phase::NeedsUser || info.prs.last().is_some_and(pr_needs_action)
 }
 
-/// The same statement as `body`'s colour, for a board that prints rather
-/// than paints (#146, #149): the screen the whole cell is laid down with.
-///
-/// Written here beside the colour because they are one statement in two
-/// alphabets, and a board that had them in two places would sooner or later
-/// say different things in each. Solid for work going on, warning stripes
-/// for anything waiting on a person, and a fine half-tone for a session
-/// sitting idle.
-pub fn body_screen(info: &SessionInfo) -> Screen {
-    if wants_a_person(info) {
-        return Screen::Slash { width: 4.0, gap: 4.0 };
-    }
-    match info.phase() {
-        Phase::Working => Screen::Solid,
-        Phase::Idle | Phase::NeedsUser => Screen::Check { size: 2.0 },
-    }
-}
 
 /// What the whole cell speaks in, and the beat the session's own row keeps.
 ///
@@ -862,7 +845,6 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             origin: None,
             made: 0,
             fill: None,
-            screen: Screen::Solid,
             waiting: false,
         }),
         Some(SlotInk {
@@ -877,7 +859,6 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
             // The session's bed is the cell's own colour and is drawn for the
             // whole cell, not for this row alone (#89).
             fill: None,
-            screen: Screen::Solid,
             waiting: false,
         }),
         // The answered one if there is one, otherwise the number GitHub would
@@ -897,7 +878,6 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                 origin: None,
                 made: info.artifacts.len(),
                 fill: Some(floor_color(pr_color(p, pal), pal)),
-                screen: pr_screen(p),
                 waiting: p.awaiting_review(),
             })
             .or_else(|| {
@@ -913,7 +893,6 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // claiming one. It stays the quiet, blinking line it was
                     // (#112).
                     fill: None,
-                    screen: Screen::Solid,
                     waiting: false,
                 })
             })
@@ -930,7 +909,6 @@ pub fn slots(info: &SessionInfo, pal: Palette, on: Rgba) -> [Option<SlotInk>; 3]
                     // What was asked for is the pull request's state as a
                     // floor (#139); a page has no state to paint.
                     fill: None,
-                    screen: Screen::Solid,
                     waiting: false,
                 })
             }),
@@ -1080,25 +1058,10 @@ pub struct SlotInk {
     /// Opaque, because the label is drawn in the board's colour on top of
     /// it.
     pub fill: Option<Rgba>,
-    /// The same statement for a board that prints rather than paints (#146,
-    /// #149): the weave the floor is laid down with.
-    pub screen: Screen,
     /// The floor is waiting on a reviewer (#153). Ruled across in the
     /// board's own colour, which is the same word the cell itself wears
     /// when it is waiting on a person (#149).
     pub waiting: bool,
-}
-
-/// Smoothstep: nought to one with both ends eased (#143, #150).
-///
-/// The wave walks a cell from nothing to arrived in a straight line (#92),
-/// and a ball grown to that line arrives at a dead stop — the drawn surface
-/// is a fixed fraction of the reach, so it swells at one rate throughout and
-/// then simply ceases. Smoothstep gives both ends back their ease: it leaves
-/// nothing gently and settles into its size rather than hitting it.
-pub fn ease(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
 }
 
 /// Ease-in: slow to set off, and still gaining when it gets there (#151).
@@ -1513,31 +1476,6 @@ pub fn blinks(info: &SessionInfo) -> bool {
         || !info.prs_unanswered.is_empty()
 }
 
-/// How a pull request's floor is screened, where the board has one ink and
-/// cannot say it in colour (#146, #149).
-///
-/// Told apart by grain rather than by darkness: the six floor colours differ
-/// by hue and `floor_color` has already pinned every one of them to the same
-/// contrast against the board, so as tones they are identical. Each is a
-/// different weave instead, and none of them is the cell's own (`body_screen`
-/// above) — the floor has to be a floor and not the rest of the body.
-fn pr_screen(p: &crate::pr::Pr) -> Screen {
-    use crate::pr::Look;
-    if p.running() {
-        // In flight: a thin hatch with air in it.
-        return Screen::Slash { width: 1.0, gap: 3.0 };
-    }
-    match p.look() {
-        // Packed tight, and the cell is already striped for it (#90).
-        Look::Failing => Screen::Slash { width: 2.0, gap: 1.0 },
-        // Landed: the blocks of a tiled floor.
-        Look::Merged => Screen::Check { size: 4.0 },
-        Look::Open => Screen::Slash { width: 2.0, gap: 4.0 },
-        // Barely there, and barely there at all.
-        Look::Draft => Screen::Slash { width: 1.0, gap: 1.0 },
-        Look::Closed => Screen::Slash { width: 1.0, gap: 6.0 },
-    }
-}
 
 pub(crate) fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     use crate::pr::Look;

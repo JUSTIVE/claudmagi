@@ -1,15 +1,15 @@
 # claudmagi
 
-A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
-and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts. The
-chrome around the board (panels, status bar, search) is dressed in Windows Phone Metro by
-[gpui-metro](https://github.com/JUSTIVE/gpui-metro): flat square sheets that slide in from the edge, an accent colour, light lower-case titles.
+A board of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
+and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts, and
+dressed in Windows Phone Metro by [gpui-metro](https://github.com/JUSTIVE/gpui-metro):
+flat square sheets that slide in from the edge, an accent colour, light lower-case titles.
 
-Every running `claude` process becomes a chip riding on a trace, with Claude's mark inside it ahead of the name, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
-working the chip stays plugged in and packets flow along the line. The moment a
-session needs you (permission prompt, question, dialog) or finishes its turn, the
-trace goes slack and the chip pulls out of its socket. Click a chip to jump to the
-Warp tab that hosts that session.
+Every running `claude` process is a live tile on a Metro start screen, or a cell of a
+honeycomb, with its Linear issue, its subagents and the pull requests it opened beside it.
+A session that needs you (permission prompt, question, dialog) is the one in the accent.
+Click a session to jump to the Warp tab that hosts it. The circuit board this started as,
+and the metaballs after it, went in #183; the app icon still remembers the circuit.
 
 ## Install
 
@@ -24,7 +24,7 @@ tools/bundle.sh          # release build → claudmagi.app → /Applications
 open -a claudmagi
 ```
 
-The script renders the icon from the board itself (`--icon`), ad-hoc signs the
+The script packs `assets/icon.svg` (the circuit board, kept as art since that view went) into the icon, ad-hoc signs the
 bundle, and falls back to `~/Applications` if `/Applications` is not writable.
 
 Then grant the app **Full Disk Access** once, in System Settings → Privacy &
@@ -56,23 +56,21 @@ switch off and on keeps the stale requirement and stays denied (#69). The
 cargo run --release
 ```
 
-- Frameless window: drag anywhere on the board to move it, drag edges to resize. `CLAUDMAGI_WINDOW=WxH` opens at a given size. The board draws sessions + 6 lanes (plus a few lead lanes at the top); bigger windows get more trace stripes, not more lanes, and the chips never scale with the window.
+- Frameless window: drag the top strip, the status bar or any bare part of the board to move it, drag edges to resize. `CLAUDMAGI_WINDOW=WxH` opens at a given size.
 - `⌘+` / `⌘-` / `⌘0` (or ⌘ + wheel) zoom the whole board between 50% and 300%.
 - `⌘K` searches everything on the board at once: session names, Linear issue keys, pull request numbers, and the paths and titles behind them. Picking a row does what clicking that node does — jump to the Warp tab, open the PR, open the issue in Linear.app. Letters may be scattered across a candidate, but an unbroken run of them is worth far more than the same letters spread out, so `pjm-20` puts the tickets that carry it whole on top. A hit brings its whole lane with it — find a pull request by its number and its issue and its session come along under it, stepped in behind the hit — since the number is often all anyone remembers and the work around it is what was wanted. Each row is drawn as the node itself, in the body the board would give it and carrying the mark of whose thing it is — Claude, GitHub, Linear — at one chip size for every kind, so a merged pull request, a chip waiting on you and an issue nobody has started read the same in the list as they do on the board. `↑↓` moves, `⏎` opens, `esc` or a click on the board closes.
-- **Four views**, switched in the settings panel. `CIRCUIT` is the board above. `COMB` lays the same sessions out as a vertically scrolling honeycomb: every cell is drawn, empty ones in grey, and the panes of one Warp tab cluster into a flower with a ring of empty cells around it. A cell carries its Linear issue, its session and its pull request, in that order top to bottom, with subagents as a sub-grid of small hexes along its floor. Cells are outlines only, and they stand apart with a gap between them. `claudmagi --svg out.svg --view comb` renders it without a window. `BLOB` melts the same seating into metaballs (#140). `TILES` is the board as a Metro start screen (#157). It groups by the work, not the window (#162): everything on one Linear issue sits in one group (failing an issue, one pull request; failing that, one directory), whichever Warp tab it runs in, headed by the names of its Claude sessions (#165). A group reads left to right: the issue as a tile of its own, the sessions as live tiles (name and state; subagents split the block beside them into four small tiles), and what they produced, each pull request a tile painted in its state. Working tiles wear the board's chip colour (black on the white board); a tile waiting on you is the one in the accent, with a blinking `!`; an idle one goes grey (#161). The start screen is gpui-metro's own `tile_grid` and live `tile` (#176): tiles turn in on its turnstile, every session tile is live, sliding to a back that says what it is up to, and a press swings the screen away before it lands. Being elements rather than the board's shapes, it has no `--svg` export.
+- **Two views**, switched in the settings panel. `COMB` lays the sessions out as a vertically scrolling honeycomb: every cell is drawn, empty ones in grey, and the panes of one Warp tab cluster into a flower with a ring of empty cells around it. A cell carries its Linear issue, its session and its pull request, in that order top to bottom, with subagents as a sub-grid of small hexes along its floor. Cells are outlines only, and they stand apart with a gap between them. `claudmagi --svg out.svg` renders it without a window. `TILES`, the default, is the board as a Metro start screen (#157). It groups by the work, not the window (#162): everything on one Linear issue sits in one group (failing an issue, one pull request; failing that, one directory), whichever Warp tab it runs in, headed by the names of its Claude sessions (#165). A group reads left to right: the issue as a tile of its own, the sessions as live tiles (name and state; subagents split the block beside them into four small tiles), and what they produced, each pull request a tile painted in its state. Working tiles wear the board's chip colour (black on the white board); a tile waiting on you is the one in the accent, with a blinking `!`; an idle one goes grey (#161). The start screen is gpui-metro's own `tile_grid` and live `tile` (#176): tiles turn in on its turnstile, every session tile is live, sliding to a back that says what it is up to, and a press swings the screen away before it lands. Being elements rather than the board's shapes, it has no `--svg` export.
 - `⌘L` opens a list down the right-hand side: every session the board is drawing, in board order, with its issue, its pull requests and its subagents underneath. Every line clicks through to the same place its node on the board does (#103).
 - `⌘,` (or the `SETTINGS` button in the status bar) opens the settings panel: view, background (white / orange / dark), Metro accent (the twenty Windows Phone accents, orange by default) and UI size (a slider plus presets). The panels take the dark Metro ground on the dark board and the light one otherwise; the status bar keeps the board's own ink so it reads on all three, with the accent filling whatever is switched on (ink on the orange board, where an orange accent would vanish). Settings persist in `~/Library/Application Support/claudmagi/settings.json`.
-- Sessions are grouped by where they run with a wide gap between groups: panes of the same Warp tab stay together, otherwise each Warp pane, other terminals, and the Claude desktop app form their own groups. The pane → tab map is read from Warp's own state database (`warp.sqlite` under `~/Library/Group Containers/2BBY89MBSN.dev.warp`, via the system `sqlite3`, read-only, every 5s), so it needs no Warp setting; Warp Control (`warpctrl pane list`) is the fallback when that database is missing. Groups are separated by three empty rows with no traces in them. Inside a group a session keeps its lane for life: when one ends, the others stay put and the next new session takes the freed lane. When a session joins a group in the middle of the board, nothing jumps: its new trace draws in from the left and the traces below slide down with their chips aboard. Chips never sit in the left 20% of the board; a spot that would is swapped for the next one to the right, and a chip whose spot changes (say, after a resize) fades out and back in.
 - The status bar shows your Claude plan usage (the `/usage` numbers: 5-hour and 7-day utilization with the time to reset), read once a minute from Anthropic's usage endpoint with the login Claude Code keeps in the keychain. Nothing is shown when there is no Claude Code login. `claudmagi --usage` prints the same numbers.
-- Scroll to pan when there are more lanes than fit.
 - `Esc` or `⌘Q` quits.
 
 ### Headless helpers
 
 ```sh
 cargo run -- --list                 # print discovered sessions
-cargo run -- --svg out.svg          # render the current board as SVG
-cargo run -- --svg out.svg --demo   # same, with fake sessions in every state (--count N, --theme dark|orange, --zoom 1.5)
+cargo run -- --svg out.svg          # render the honeycomb as SVG
+cargo run -- --svg out.svg --demo   # same, with fake sessions in every state (--count N, --theme dark|orange)
 cargo run -- --focus PERSONAL-71    # jump to a session's Warp tab from the CLI
 ```
 
@@ -106,51 +104,39 @@ and the app itself as the way back.
 | Data | `sources.rs` | `SessionSource` trait. `ClaudeSource` reads `~/.claude/sessions/<pid>.json`, the process env, and each session's `projects/<slug>/<session>/subagents/` transcripts; `FakeSource` is the in-memory sandbox the test tools edit. |
 | Data | `host/` | `Host` trait: which app a session is seated in, which window of it, and how to bring that window to the front. `warp.rs`, `orca.rs`, `cloud.rs`, `desktop.rs`. |
 | Data | `cloud.rs` | Sessions running in Anthropic's containers, read from `/v1/code/sessions` with the login keychain's token. |
-| Render | `render/scene.rs` | `Layout` (zoom, lanes, stripes), `chip_draws` (model → lane positions), `build_shapes` (→ flat `Shape` list). |
+| Render | `render/scene.rs` | `Shape` (the flat list a frame is drawn as), `Screen`, and `Layout` (the window at the user's zoom). |
 | Render | `render/paint.rs`, `render/svg.rs` | The same shape list painted with gpui paths (tessellations cached by geometry), or serialised to SVG for headless checks. |
-| UI | `ui/board.rs` | The frameless window view: polls the active source, hit-tests chips, forwards clicks to `host/`. |
+| UI | `ui/board.rs` | The frameless window view: polls the active source, draws the honeycomb or hosts the start screen, hit-tests cells, forwards clicks to `host/`. |
 | UI | `ui/panel.rs`, `ui/devtools.rs`, `ui/settings.rs` | Shared floating-panel chrome, the test tools (below), and the settings panel. |
-| Render | `render/tiles.rs` | The Metro start-screen view (#157): lays the sessions out on a square grid as the same `Comb` seating the honeycomb uses (`Grid::Tiles`), and draws live tiles. |
+| UI | `ui/tiles.rs` | The Metro start-screen view (#157): sessions grouped by the work, drawn with gpui-metro's `tile_grid` and live `tile` (#176). |
 | UI | `ui/metro.rs` | Settings → gpui-metro theme (mode from the board, accent by name), and the panel-scale Metro pieces (`chip`, `section`, `hint`, `phase_mark`). |
 | Data | `settings.rs` | Theme + zoom, persisted as JSON. |
 | Data | `pr.rs`, `ticket.rs` | What a session links out to: the GitHub PR (transcript → `gh`) and the Linear issue (name, PR title tag, or transcript links). |
-| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs` | Embedded D-DIN outlines, polylines, palette, AppKit shims + the launch `PATH` fix. |
+| Support | `font.rs`, `geom.rs`, `theme.rs`, `mac.rs` | Embedded D-DIN outlines, points, palette, AppKit shims + the launch `PATH` fix. |
 
 Pull requests: a session's PR is read out of its own transcript — the last
 `github.com/<owner>/<repo>/pull/<n>` inside a message body whose repo matches
 the checkout's `origin`. `cwd → branch` cannot do this job when several
-sessions share one checkout. One ticket often has several PRs, so a session's are chained along the right
-edge with the newest outermost and the oldest folded into a `+n` badge when the
-chain runs long. State comes from `gh pr view` on a small pool of worker threads — never
-inside the session poll — and the trace runs into the leftmost connector of
-that chain, where the body's colour
-is the whole signal — hollow draft, green outline open, orange failing, purple
-merged, faint closed — with a yellow border laid over any of them while CI is
-still running, and a tick beside the number where review has signed off.
+sessions share one checkout. State comes from `gh pr view` on a small pool of worker threads — never inside
+the session poll — and it is what a pull request's tile or floor is painted in:
+draft, open, failing, merged, closed, with CI still running and review signed
+off said on top.
 
 Review is not one of those colours and never was one of them: it is orthogonal
 to every one, so it is drawn as a tick on top instead, the way a running check
 is a border on top. A pull request can be approved and failing, approved and
 still a draft, approved and landed, and each reads as itself. Merging counts as
 a sign-off — nothing lands without one — so a merged pull request keeps the
-tick (#116). Hovering a connector puts the pull
-request's own title beside it, above where there is room and below where there
-is not, and never off the edge of the window (#77, #115).
+tick (#116).
 
-The Linear issue docks at the left edge, where the lane begins: the work comes
-from a ticket and leaves through a PR. Both ends share a grammar — outlined
-while a thing is still in flight, filled once it has resolved, black for done. Its key is the session's own name when
+The Linear issue is the work's other end: it comes from a ticket and leaves
+through a PR. Its key is the session's own name when
 something corroborates it — a `linear.app` link, a `[ABC-123]` tag in the PR
 title, or a team prefix the board has seen in a real link — otherwise the PR
 title's tag. Status comes from `orca linear issue <KEY> --json`, which needs the
-Orca app to be running; with Orca closed the node falls back to showing just
-the key. Clicking a PR node opens it in the browser; a Linear node opens in the desktop app through `linear://`, falling back to the web.
+Orca app to be running; with Orca closed it falls back to showing just
+the key. Clicking a pull request opens it in the browser; an issue opens in the desktop app through `linear://`, falling back to the web.
 `claudmagi --prs` prints what resolved.
-
-A lane is drawn bold while a session is working on it, and turns green when
-all three agree that the work is over: the issue done, the pull request
-merged, the session idle. Weight says what is happening now, colour says what
-is finished, and the two are independent.
 
 Phase rules: `waitingFor` present → needs input · `status == busy` → working ·
 otherwise idle (`tempo`/`state == blocked` also counts as needs input). Warp
