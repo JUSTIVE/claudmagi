@@ -32,6 +32,9 @@ use crate::usage::{self, Usage};
 use crate::host;
 
 pub const STATUS_H: f32 = 30.0;
+/// The strip along the top that drags the window, as a titlebar would: the
+/// height of the macOS titlebar the traffic lights sit in (#171).
+const GRAB_H: f32 = 28.0;
 /// The hover tooltip on a pull request connector (#77, #115): its padding,
 /// how wide it may run, and how long a pointer has to rest before it opens.
 /// Where it goes and how it stays on screen is base-gpui's job now.
@@ -326,15 +329,18 @@ impl Board {
         Pt::new(f32::from(p.x), f32::from(p.y)) * (1.0 / self.layout.zoom)
     }
 
-    /// Whether a window point is on the status bar. The board's canvas runs
-    /// under it, so a cell scrolled down there would otherwise take the press
-    /// (and the hover) meant for the bar, and the bar would not drag (#170).
-    fn on_status_bar(p: gpui::Point<Pixels>, window: &Window) -> bool {
-        f32::from(p.y) >= f32::from(window.viewport_size().height) - STATUS_H
+    /// Whether a window point is on the window's chrome rather than the
+    /// board: the status bar along the bottom or the titlebar strip along the
+    /// top. The board's canvas runs under both, so a cell scrolled there would
+    /// otherwise take the press (and the hover) meant for them, and neither
+    /// would drag the window (#170, #171).
+    fn on_chrome(p: gpui::Point<Pixels>, window: &Window) -> bool {
+        let y = f32::from(p.y);
+        y < GRAB_H || y >= f32::from(window.viewport_size().height) - STATUS_H
     }
 
     /// What is under a board point: a cell, a PR connector, a ticket —
-    /// nothing at all when the pointer is on the status bar.
+    /// nothing at all when the pointer is on the chrome.
     fn hover_at(&mut self, m: Pt, bar: bool) {
         self.model.hovered = if bar { None } else { self.hit_test(m) };
         self.hovered_pr = if bar { None } else { self.hit_pr(m) };
@@ -819,7 +825,7 @@ impl Render for Board {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
-                this.hover_at(m, Self::on_status_bar(ev.position, window));
+                this.hover_at(m, Self::on_chrome(ev.position, window));
                 // The window server moves the window itself, in step with the
                 // cursor; moving it by hand from deltas lagged and jumped.
                 if this.drag_pending && ev.pressed_button == Some(MouseButton::Left) {
@@ -832,7 +838,7 @@ impl Render for Board {
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     let m = this.to_design(ev.position);
-                    let bar = Self::on_status_bar(ev.position, window);
+                    let bar = Self::on_chrome(ev.position, window);
                     this.mouse = Some(m);
                     // A cell with more than one pull request drops its list
                     // down on the press, the way a menu opens; the same row
