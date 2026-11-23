@@ -13,12 +13,6 @@ pub struct PanelState {
     pub open: bool,
 }
 
-impl PanelState {
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-    }
-}
-
 pub use crate::ui::metro::{chip as button, hint, section};
 
 /// Which panel a header drag belongs to.
@@ -31,6 +25,17 @@ pub enum Which {
 }
 
 impl Board {
+    /// Opens `which` and closes the other two, or closes `which` if it was
+    /// the one open: the test tools, the settings and the list are never up
+    /// together (#163).
+    pub(crate) fn toggle_panel(&mut self, which: Which) {
+        let was = self.panel_mut(which).open;
+        for w in [Which::Dev, Which::Settings, Which::List] {
+            self.panel_mut(w).open = false;
+        }
+        self.panel_mut(which).open = !was;
+    }
+
     pub(crate) fn panel_mut(&mut self, which: Which) -> &mut PanelState {
         match which {
             Which::Dev => &mut self.dev,

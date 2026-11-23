@@ -26,7 +26,7 @@ impl Board {
     }
 
     pub(crate) fn toggle_list(&mut self) {
-        self.list_panel.toggle();
+        self.toggle_panel(crate::ui::panel::Which::List);
     }
 
     pub(crate) fn render_list(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

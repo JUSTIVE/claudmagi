@@ -24,7 +24,7 @@ pub(crate) fn phase_color(phase: Phase) -> Rgba {
 
 impl Board {
     pub(crate) fn toggle_devtools(&mut self) {
-        self.dev.toggle();
+        self.toggle_panel(Which::Dev);
     }
 
     pub(crate) fn render_devtools(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

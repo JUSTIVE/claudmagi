@@ -28,7 +28,7 @@ fn unit_to_zoom(v: f32) -> f32 {
 
 impl Board {
     pub(crate) fn toggle_settings(&mut self) {
-        self.settings_panel.toggle();
+        self.toggle_panel(Which::Settings);
     }
 
     pub(crate) fn set_view(&mut self, view: BoardView, cx: &mut Context<Self>) {
