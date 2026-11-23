@@ -21,9 +21,10 @@ memmap2 = "0.9"
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "59b2ebf10351b5c0b5cd4403f01ed0460eeec06d", features = ["font-kit", "runtime_shaders"] }
 # Headless components for gpui (#115). Tracks the same gpui revision.
 base-gpui = { git = "https://github.com/LukeTandjung/base-gpui" }
-# Metro chrome for the panels and the status bar. Sibling checkout next to
-# this repo; it pins the same Zed rev as the patch below.
-gpui-metro = { path = "../gpui-metro/crates/gpui-metro" }
+# Metro chrome for the panels and the status bar, and the tiles view
+# (#156, #157). It pins the same Zed rev as the patch below; cargo treats
+# two revs of one repo as two gpui crates, so bump them together.
+gpui-metro = { git = "https://github.com/JUSTIVE/gpui-metro", rev = "c46a60a4d5cec427dd26ce37cf6b70067f525739" }
 lyon = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -3,7 +3,7 @@
 A circuit-board view of your live Claude Code sessions, built with [gpui](https://www.gpui.rs/)
 and [base-gpui](https://github.com/LukeTandjung/base-gpui) for the headless parts. The
 chrome around the board (panels, status bar, search) is dressed in Windows Phone Metro by
-[gpui-metro](../gpui-metro): flat square sheets, an accent colour, light lower-case titles.
+[gpui-metro](https://github.com/JUSTIVE/gpui-metro): flat square sheets, an accent colour, light lower-case titles.
 
 Every running `claude` process becomes a chip riding on a trace, with Claude's mark inside it ahead of the name, and the subagents it spawns hang off it on the same trace, alternating right and left so they stay on screen. A background job the session parked rides that trace too, labelled with its `/jobs` handle: it is a process the session spawned in the session's own Warp pane, so it is not a chip of its own (#68). While Claude is
 working the chip stays plugged in and packets flow along the line. The moment a
@@ -13,8 +13,8 @@ Warp tab that hosts that session.
 
 ## Install
 
-gpui-metro is a path dependency on a sibling checkout, so clone it next to this
-repo first (`../gpui-metro`). It pins the same Zed gpui revision as the
+gpui-metro comes from [its GitHub repo](https://github.com/JUSTIVE/gpui-metro),
+pinned to a commit. It pins the same Zed gpui revision as the
 `[patch.crates-io]` here; cargo treats two revisions of one repo as two gpui
 crates, so bump them together. gpui is built with `runtime_shaders`, so the
 build does not need Xcode's Metal Toolchain.
