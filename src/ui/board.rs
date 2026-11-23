@@ -326,6 +326,21 @@ impl Board {
         Pt::new(f32::from(p.x), f32::from(p.y)) * (1.0 / self.layout.zoom)
     }
 
+    /// Whether a window point is on the status bar. The board's canvas runs
+    /// under it, so a cell scrolled down there would otherwise take the press
+    /// (and the hover) meant for the bar, and the bar would not drag (#170).
+    fn on_status_bar(p: gpui::Point<Pixels>, window: &Window) -> bool {
+        f32::from(p.y) >= f32::from(window.viewport_size().height) - STATUS_H
+    }
+
+    /// What is under a board point: a cell, a PR connector, a ticket —
+    /// nothing at all when the pointer is on the status bar.
+    fn hover_at(&mut self, m: Pt, bar: bool) {
+        self.model.hovered = if bar { None } else { self.hit_test(m) };
+        self.hovered_pr = if bar { None } else { self.hit_pr(m) };
+        self.hovered_ticket = if bar { None } else { self.hit_ticket(m) };
+    }
+
     /// Hit test in design units.
     fn hit_test(&self, m: Pt) -> Option<Target> {
         // The comb's cells live in content coordinates, so the pointer has to
@@ -804,9 +819,7 @@ impl Render for Board {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
-                this.model.hovered = this.hit_test(m);
-                this.hovered_pr = this.hit_pr(m);
-                this.hovered_ticket = this.hit_ticket(m);
+                this.hover_at(m, Self::on_status_bar(ev.position, window));
                 // The window server moves the window itself, in step with the
                 // cursor; moving it by hand from deltas lagged and jumped.
                 if this.drag_pending && ev.pressed_button == Some(MouseButton::Left) {
@@ -817,21 +830,20 @@ impl Render for Board {
             }))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     let m = this.to_design(ev.position);
+                    let bar = Self::on_status_bar(ev.position, window);
                     this.mouse = Some(m);
                     // A cell with more than one pull request drops its list
                     // down on the press, the way a menu opens; the same row
                     // again puts it away, and so does a press anywhere else
                     // that reaches the board at all (#134).
-                    let asked = this.pr_menu_at(m);
+                    let asked = if bar { None } else { this.pr_menu_at(m) };
                     this.pr_menu = match (asked, this.pr_menu.take()) {
                         (Some(id), Some(open)) if id == open => None,
                         (asked, _) => asked,
                     };
-                    this.model.hovered = this.hit_test(m);
-                    this.hovered_pr = this.hit_pr(m);
-                    this.hovered_ticket = this.hit_ticket(m);
+                    this.hover_at(m, bar);
                     if this.model.hovered.is_some() || this.hovered_pr.is_some() || this.hovered_ticket.is_some() {
                         this.pressed = this.model.hovered;
                         this.pressed_pr = this.hovered_pr;
