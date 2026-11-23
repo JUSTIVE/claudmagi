@@ -34,6 +34,8 @@ const WIDE: usize = 4;
 /// Kept clear around the screen, and under the traffic lights.
 const MARGIN: f32 = 24.0;
 const TOP: f32 = 22.0;
+/// Between one row of groups and the next.
+const ROW_GAP: f32 = 28.0;
 /// A live tile's cycle, gpui-metro's own default.
 const PERIOD: f32 = 12.0;
 /// The most letters a group's title runs to before it is cut, per small
@@ -160,6 +162,14 @@ pub fn columns(groups: &[(String, Vec<Kind>)]) -> usize {
         kinds.len() - small + small.div_ceil(4)
     };
     if groups.iter().any(|(_, k)| worth(k) > 2) { WIDE } else { NARROW }
+}
+
+/// How many groups `columns` small tiles wide stand side by side in `room`
+/// design px: as many as fit, and always one.
+pub fn groups_per_row(room: f32, columns: usize) -> usize {
+    let group = columns as f32 * UNIT + columns.saturating_sub(1) as f32 * GAP;
+    let gap = gpui_metro::tile::GROUP_GAP;
+    (((room + gap) / (group + gap)).floor() as usize).max(1)
 }
 
 /// `text` cut to `n` characters, with an ellipsis if it was longer.
@@ -314,15 +324,36 @@ impl Board {
 
         let groups = groups(&self.model);
         let columns = columns(&groups);
-        let mut grid = tile_grid().id("start").metrics(UNIT, GAP).columns(columns).hinge(MARGIN).turnstile(true).replay(replay);
-        for (title, kinds) in &groups {
-            let tiles: Vec<Tile> = kinds.iter().filter_map(|k| self.tile_for(k, inks, &board)).collect();
-            grid = grid.group(clip(title, columns * TITLE_CHARS_PER_UNIT), tiles);
-        }
+        // gpui-metro sets a start screen's groups side by side in one long
+        // row, the way Windows 8 scrolled sideways. A window is not a
+        // screen: the groups that fit across it make a row, and the rest
+        // go on in rows below, each a start screen of its own (#177).
+        let room = self.window.0 / self.layout.zoom.max(0.1) - 2.0 * MARGIN;
+        let per_row = groups_per_row(room, columns);
+        let rows: Vec<AnyElement> = groups
+            .chunks(per_row)
+            .enumerate()
+            .map(|(r, row)| {
+                let mut grid = tile_grid()
+                    .id(("start", r))
+                    .metrics(UNIT, GAP)
+                    .columns(columns)
+                    .hinge(MARGIN)
+                    .turnstile(true)
+                    .replay(replay);
+                for (title, kinds) in row {
+                    let tiles: Vec<Tile> = kinds.iter().filter_map(|k| self.tile_for(k, inks, &board)).collect();
+                    // One short of the room: the last group of a row has nothing to
+                    // its right for a long title to run into, and it wraps instead.
+                    grid = grid.group(clip(title, columns * TITLE_CHARS_PER_UNIT - 1), tiles);
+                }
+                grid.into_any_element()
+            })
+            .collect();
         let body = if groups.is_empty() {
             div().pl(u(MARGIN)).text_color(Theme::palette(cx).subtle).child("no claude code sessions").into_any_element()
         } else {
-            div().pl(u(MARGIN)).child(grid).into_any_element()
+            div().pl(u(MARGIN)).flex().flex_col().gap(u(ROW_GAP)).children(rows).into_any_element()
         };
         div()
             .id("tiles")
@@ -628,6 +659,15 @@ mod tests {
         assert_eq!(columns(&one), NARROW, "a session and its pull request fit one tile wide");
         let agents = vec![("a".to_string(), vec![Kind::Session(0), Kind::Agent(0, 0), Kind::Agent(0, 1)])];
         assert_eq!(columns(&agents), NARROW, "subagents take one medium tile's room between them");
+    }
+
+    #[test]
+    fn groups_wrap_to_the_window_instead_of_running_off_it() {
+        // One medium tile a group: 136 px and a 56 px gap each.
+        assert_eq!(groups_per_row(136.0, NARROW), 1);
+        assert_eq!(groups_per_row(136.0 * 3.0 + 56.0 * 2.0, NARROW), 3, "three fit exactly");
+        assert_eq!(groups_per_row(136.0 * 3.0 + 56.0 * 2.0 - 1.0, NARROW), 2);
+        assert_eq!(groups_per_row(20.0, WIDE), 1, "never none, however narrow");
     }
 
     #[test]
