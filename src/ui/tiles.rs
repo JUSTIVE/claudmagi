@@ -171,9 +171,22 @@ const MAX_PER_ROW: usize = 4;
 /// How many groups `columns` small tiles wide stand side by side in `room`
 /// design px: as many as fit, never more than `MAX_PER_ROW`, and always one.
 pub fn groups_per_row(room: f32, columns: usize) -> usize {
-    let group = columns as f32 * UNIT + columns.saturating_sub(1) as f32 * GAP;
-    let gap = gpui_metro::tile::GROUP_GAP;
+    let (group, gap) = (group_width(columns), gpui_metro::tile::GROUP_GAP);
     (((room + gap) / (group + gap)).floor() as usize).clamp(1, MAX_PER_ROW)
+}
+
+/// One group's width in design px, `columns` small tiles across.
+fn group_width(columns: usize) -> f32 {
+    columns as f32 * UNIT + columns.saturating_sub(1) as f32 * GAP
+}
+
+/// How far in from the margin the start screen sits so its widest row is
+/// centred in `room` (#179): `groups` in all, `per_row` to a row. Nothing
+/// when the row fills the room.
+pub fn centring(room: f32, columns: usize, groups: usize, per_row: usize) -> f32 {
+    let k = per_row.min(groups).max(1) as f32;
+    let row = k * group_width(columns) + (k - 1.0) * gpui_metro::tile::GROUP_GAP;
+    ((room - row) / 2.0).max(0.0)
 }
 
 /// `text` cut to `n` characters, with an ellipsis if it was longer.
@@ -334,6 +347,9 @@ impl Board {
         // go on in rows below, each a start screen of its own (#177).
         let room = self.window.0 / self.layout.zoom.max(0.1) - 2.0 * MARGIN;
         let per_row = groups_per_row(room, columns);
+        // On a wide window the screen stands in the middle, the title over
+        // its left edge, rather than hugging the left with the rest empty.
+        let inset = centring(room, columns, groups.len(), per_row);
         let rows: Vec<AnyElement> = groups
             .chunks(per_row)
             .enumerate()
@@ -342,7 +358,7 @@ impl Board {
                     .id(("start", r))
                     .metrics(UNIT, GAP)
                     .columns(columns)
-                    .hinge(MARGIN)
+                    .hinge(MARGIN + inset)
                     .turnstile(true)
                     .replay(replay);
                 for (title, kinds) in row {
@@ -370,7 +386,15 @@ impl Board {
             .overflow_scroll()
             .child(
                 scaled(self.layout.zoom).child(
-                    div().pt(u(TOP)).pb(u(MARGIN)).pr(u(MARGIN)).flex().flex_col().child(page_header("start")).child(body),
+                    div()
+                        .pt(u(TOP))
+                        .pb(u(MARGIN))
+                        .pr(u(MARGIN))
+                        .pl(u(inset))
+                        .flex()
+                        .flex_col()
+                        .child(page_header("start"))
+                        .child(body),
                 ),
             )
             .into_any_element()
@@ -673,6 +697,17 @@ mod tests {
         assert_eq!(groups_per_row(136.0 * 3.0 + 56.0 * 2.0 - 1.0, NARROW), 2);
         assert_eq!(groups_per_row(20.0, WIDE), 1, "never none, however narrow");
         assert_eq!(groups_per_row(10_000.0, NARROW), MAX_PER_ROW, "four pieces of work a row at most");
+    }
+
+    #[test]
+    fn a_wide_window_centres_the_widest_row() {
+        // Three narrow groups (3 × 136 + 2 × 56 = 520) in 1000: 240 either side.
+        assert_eq!(centring(1000.0, NARROW, 3, 4), 240.0);
+        // Seven groups go four to a row: the four-wide row is what is centred.
+        let four = 4.0 * 136.0 + 3.0 * 56.0;
+        assert_eq!(centring(1000.0, NARROW, 7, 4), (1000.0 - four) / 2.0);
+        assert_eq!(centring(300.0, NARROW, 3, 1), 82.0, "one to a row on a narrow window, still centred");
+        assert_eq!(centring(100.0, WIDE, 1, 1), 0.0, "never pushed off the left");
     }
 
     #[test]
