@@ -100,12 +100,6 @@ pub struct Comb {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Grid {
     Hex,
-    /// Square tiles on a lattice of `pitch` (a small tile and the gap after
-    /// it); every seat is a block two small tiles a side, its top-left at
-    /// `(q, row)` in small-tile units from `origin`. The group headers ride
-    /// along, in content coordinates: they are not seats, and nothing
-    /// presses or glides them, but they are part of what was laid out.
-    Tiles { pitch: f32, gap: f32, origin: Pt, headers: Vec<(Pt, String)> },
 }
 
 impl Comb {
@@ -113,10 +107,6 @@ impl Comb {
     pub fn seat_center(&self, q: i32, row: i32) -> Pt {
         match &self.grid {
             Grid::Hex => axial(q, row, self.r),
-            Grid::Tiles { pitch, gap, origin, .. } => {
-                let half = (2.0 * pitch - gap) / 2.0;
-                *origin + Pt::new(q as f32 * pitch + half, row as f32 * pitch + half)
-            }
         }
     }
 
@@ -125,7 +115,6 @@ impl Comb {
     fn on_cell(&self, p: Pt, center: Pt) -> bool {
         match self.grid {
             Grid::Hex => inside_hex(p, center, self.r, GAP),
-            Grid::Tiles { .. } => (p.x - center.x).abs() <= self.r && (p.y - center.y).abs() <= self.r,
         }
     }
 }
@@ -570,9 +559,6 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
 
 /// The session under a point, in the grid's own coordinates.
 pub fn hit(comb: &Comb, p: Pt) -> Option<usize> {
-    if comb.grid != Grid::Hex {
-        return comb.cells.iter().find(|c| c.chip.is_some() && comb.on_cell(p, c.center)).and_then(|c| c.chip);
-    }
     comb.cells
         .iter()
         .filter(|c| c.chip.is_some())
@@ -1041,10 +1027,6 @@ pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape
 /// whether that row has anything in it.
 pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
     let cell = comb.cells.iter().find(|c| c.chip.is_some() && comb.on_cell(p, c.center))?;
-    if comb.grid != Grid::Hex {
-        // Each of a session's rows is a tile of its own here (#162).
-        return Some((cell.chip?, cell.slot.unwrap_or(Slot::Session)));
-    }
     let dy = (p.y - cell.center.y) / comb.r;
     let slot = if dy < (ROW_DY[0] + ROW_DY[1]) / 2.0 {
         Slot::Ticket
@@ -1065,13 +1047,6 @@ pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
 /// from it, so a box measured at its own middle would poke out of the sides
 /// at its corners.
 pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> {
-    if comb.grid != Grid::Hex {
-        // The row is a tile of its own, so its box is the tile (#162).
-        let want = if slot == Slot::Session { None } else { Some(slot) };
-        let cell = comb.cells.iter().find(|c| c.chip == Some(chip) && c.subs.is_none() && c.slot == want)?;
-        let side = 2.0 * comb.r;
-        return Some((cell.center, side, side));
-    }
     let cell = comb.cells.iter().find(|c| c.chip == Some(chip))?;
     let row = match slot {
         Slot::Ticket => 0,

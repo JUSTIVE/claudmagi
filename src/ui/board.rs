@@ -22,7 +22,6 @@ use base_gpui::tooltip::{
 use crate::made;
 use crate::render::blob;
 use crate::render::comb;
-use crate::render::tiles;
 use crate::settings::{BoardView, Settings};
 use crate::sources::{self, ClaudeSource, FakeSource, SessionSource};
 use crate::theme::{self, Palette};
@@ -50,6 +49,8 @@ const FRAME_MS: u64 = 33;
 /// below fails to notice is a quarter second late instead of frozen, which
 /// is the difference between a slow board and a broken one (#126).
 const IDLE_MS: u64 = 250;
+/// How far a press has to travel before it drags the window, in window px.
+const DRAG_SLOP: f32 = 4.0;
 /// And while the only thing moving is the metaball view's wander (#144).
 ///
 /// That one never stops, so this is the cadence the blob board idles at for
@@ -102,6 +103,10 @@ pub struct Board {
     /// A press on bare board that has not moved yet: the first drag hands the
     /// window to AppKit's own move loop.
     drag_pending: bool,
+    /// Where the press that may become a drag went down, in window px.
+    press_at: Option<gpui::Point<Pixels>>,
+    /// Bumped after a tile's press so the start screen turns back in (#176).
+    pub(crate) tiles_replay: usize,
     started: Instant,
     last_tick: Instant,
     focus_handle: FocusHandle,
@@ -239,6 +244,8 @@ impl Board {
             pr_menu: None,
             title: sources::machine_user(),
             drag_pending: false,
+            press_at: None,
+            tiles_replay: 0,
             started: now,
             last_tick: now,
             focus_handle,
@@ -554,6 +561,11 @@ impl Board {
     /// wave, the blink, a chip settling into or out of its socket, and the
     /// packets that run along a trace for as long as the trace is there.
     fn moving(&self) -> bool {
+        // The start screen is gpui-metro's, and asks for its own frames while
+        // a tile turns or slides (#176).
+        if self.settings.view == BoardView::Tiles {
+            return false;
+        }
         let now = Instant::now();
         if self.model.moving(now) || self.model.blinking() {
             return true;
@@ -565,14 +577,6 @@ impl Board {
         // The metaball view is still once its bodies have stopped moving as
         // well as arriving (#142).
         if self.settings.view == BoardView::Blob && self.blobs.borrow().moving() {
-            return true;
-        }
-        // A live tile on its way up or down (#157). A tile resting on either
-        // face is still, so the clock only runs fast for the slide itself.
-        if self.settings.view == BoardView::Tiles
-            && let Some(since) = self.comb_since
-            && tiles::peeking(&self.model, now.duration_since(since).as_secs_f32())
-        {
             return true;
         }
         match (&self.comb, self.comb_since) {
@@ -674,8 +678,9 @@ impl Render for Board {
         self.draws = scene::chip_draws(&self.model, &self.layout, &self.lanes, now);
         self.prs = scene::pr_draws(&self.model, &self.layout, &self.lanes, &self.draws);
         self.tickets = scene::ticket_draws(&self.model, &self.lanes, &self.draws);
-        self.model.hovered = self.mouse.and_then(|m| self.hit_test(m));
-        let (hp, ht) = self.mouse.map(|m| (self.hit_pr(m), self.hit_ticket(m))).unwrap_or((None, None));
+        let board_mouse = self.mouse.filter(|_| self.settings.view != BoardView::Tiles);
+        self.model.hovered = board_mouse.and_then(|m| self.hit_test(m));
+        let (hp, ht) = board_mouse.map(|m| (self.hit_pr(m), self.hit_ticket(m))).unwrap_or((None, None));
         self.hovered_pr = hp;
         self.hovered_ticket = ht;
         if let Some(i) = self.hovered_pr {
@@ -700,11 +705,7 @@ impl Render for Board {
             // over the board's bottom edge, and the middle of the screen is
             // the middle of what is left (#138).
             let seen = visible_height(&self.layout);
-            let mut comb = if self.settings.view == BoardView::Tiles {
-                tiles::lay_out(&self.model, self.layout.width, seen)
-            } else {
-                comb::lay_out(&self.model, self.layout.width, seen)
-            };
+            let mut comb = comb::lay_out(&self.model, self.layout.width, seen);
             // A seat the packing has just handed over is somewhere to go,
             // not somewhere to be: the cells that changed seats are moved
             // back to where they were and let glide (#150). Before anything
@@ -751,13 +752,7 @@ impl Render for Board {
         // clusters on this (#92).
         let comb_t = self.comb_since.map_or(0.0, |at| now.duration_since(at).as_secs_f32());
         let view = self.settings.view;
-        // The tiles wear the panels' accent (#157) — the ink on the orange
-        // board, where an orange accent would vanish.
-        let tile_accent: gpui::Rgba = if self.settings.theme == crate::settings::BoardTheme::Orange {
-            palette.ink
-        } else {
-            gpui_metro::Theme::palette(cx).accent.to_rgb()
-        };
+        let tiles_view = view == BoardView::Tiles;
         let model = (comb.is_some()).then(|| self.model.clone());
         let scroll_y = self.scroll_y;
         let zoom = self.layout.zoom;
@@ -824,10 +819,20 @@ impl Render for Board {
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
-                this.hover_at(m, Self::on_chrome(ev.position, window));
+                // The start screen's tiles are elements of their own, which
+                // take their own hover and press (#176).
+                let off_board = Self::on_chrome(ev.position, window) || this.settings.view == BoardView::Tiles;
+                this.hover_at(m, off_board);
                 // The window server moves the window itself, in step with the
                 // cursor; moving it by hand from deltas lagged and jumped.
-                if this.drag_pending && ev.pressed_button == Some(MouseButton::Left) {
+                // Only once the pointer has really moved: a press with a pixel
+                // of wobble in it is a click, and on the start screen the
+                // click is a tile's (#176).
+                let travelled = this.press_at.is_some_and(|at| {
+                    let (dx, dy) = (f32::from(ev.position.x - at.x), f32::from(ev.position.y - at.y));
+                    dx * dx + dy * dy >= DRAG_SLOP * DRAG_SLOP
+                });
+                if this.drag_pending && travelled && ev.pressed_button == Some(MouseButton::Left) {
                     this.drag_pending = false;
                     window.start_window_move();
                 }
@@ -837,7 +842,8 @@ impl Render for Board {
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     let m = this.to_design(ev.position);
-                    let bar = Self::on_chrome(ev.position, window);
+                    let bar = Self::on_chrome(ev.position, window) || this.settings.view == BoardView::Tiles;
+                    this.press_at = Some(ev.position);
                     this.mouse = Some(m);
                     // A cell with more than one pull request drops its list
                     // down on the press, the way a menu opens; the same row
@@ -905,6 +911,10 @@ impl Render for Board {
                     this.zoom_by(factor, cx);
                     return;
                 }
+                // The start screen scrolls itself (#176).
+                if this.settings.view == BoardView::Tiles {
+                    return;
+                }
                 this.scroll_y -= f32::from(delta.y) / this.layout.zoom;
                 cx.notify();
             }))
@@ -920,9 +930,6 @@ impl Render for Board {
                                     BoardView::Blob => {
                                         blob::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, &blobs.borrow())
                                     }
-                                    BoardView::Tiles => {
-                                        tiles::build_shapes(m, c, frame.palette, scroll_y, at, comb_t, tile_accent)
-                                    }
                                     _ => comb::build_shapes(m, c, frame.palette, scroll_y, at, comb_t),
                                 };
                                 for s in &mut out {
@@ -930,6 +937,8 @@ impl Render for Board {
                                 }
                                 out
                             }
+                            // The start screen is its own element over this (#176).
+                            _ if tiles_view => Vec::new(),
                             _ => scene::build_shapes(&frame, origin),
                         };
                         paths.borrow_mut().paint(&shapes, window);
@@ -937,6 +946,7 @@ impl Render for Board {
                 )
                 .size_full(),
             )
+            .when(tiles_view, |d| d.child(self.render_tiles(cx)))
             .child(
                 div()
                     .absolute()
@@ -1042,7 +1052,7 @@ impl Render for Board {
             // The connectors these hang on are the board's, not the comb's:
             // in the comb view they would sit over the honeycomb at
             // positions nothing is drawn at (#115, #134).
-            .when(self.comb.is_none(), |d| d.child(self.pr_tooltips(cx)))
+            .when(self.comb.is_none() && !tiles_view, |d| d.child(self.pr_tooltips(cx)))
             .children(self.render_pr_menu(cx))
     }
 }

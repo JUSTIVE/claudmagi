@@ -57,9 +57,10 @@ impl BoardView {
 
     /// Whether this view lays its sessions out on the honeycomb's grid, which
     /// is what the scroll, the presses and the drop-downs are keyed to (#86,
-    /// #140).
+    /// #140). The tiles are gpui-metro's start screen, which seats, scrolls
+    /// and presses its own (#176).
     pub fn seated(self) -> bool {
-        matches!(self, BoardView::Comb | BoardView::Blob | BoardView::Tiles)
+        matches!(self, BoardView::Comb | BoardView::Blob)
     }
 }
 

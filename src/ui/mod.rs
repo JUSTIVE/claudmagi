@@ -8,6 +8,7 @@ pub mod palette;
 pub mod panel;
 pub mod prmenu;
 pub mod settings;
+pub mod tiles;
 
 /// Hands gpui the embedded board typeface so `theme::UI_FONT` resolves to the
 /// same face the chip labels are drawn from (#55).
