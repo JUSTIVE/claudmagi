@@ -910,7 +910,6 @@ dependencies = [
  "log",
  "lyon",
  "memmap2",
- "objc",
  "serde",
  "serde_json",
  "ttf-parser",

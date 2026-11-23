@@ -20,7 +20,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    App, Application, Bounds, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions,
+    App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, actions,
     prelude::*, px, size,
 };
 
@@ -289,7 +289,13 @@ fn main() {
         let bounds = Bounds::centered(None, size(px(win_w), px(win_h)), cx);
         cx.open_window(
             WindowOptions {
-                titlebar: None,
+                // A transparent titlebar rather than none: without one gpui
+                // leaves the close and minimise bits off the style mask, so
+                // those traffic lights showed but were greyed out (#167).
+                // The board still draws to the top edge and moves the window
+                // itself (#166).
+                titlebar: Some(TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: None }),
+                app_owns_titlebar_drag: true,
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(520.), px(340.))),
                 focus: true,
@@ -298,7 +304,6 @@ fn main() {
             |window, cx| cx.new(|cx| Board::new(window, cx)),
         )
         .expect("open window");
-        mac::style_frameless();
 
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {

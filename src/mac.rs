@@ -1,12 +1,5 @@
-//! The macOS shims: thin AppKit calls for the frameless window — hide the
-//! traffic lights, keep the window resizable — and the one thing a bundle has to fix about how it was launched.
-
-#![allow(non_camel_case_types)]
-
-use objc::runtime::{Object, YES};
-use objc::{class, msg_send, sel, sel_impl};
-
-type id = *mut Object;
+//! The macOS shim: the one thing a bundle has to fix about how it was
+//! launched.
 
 /// Where a command-line tool lands when a shell's profile put it on `PATH`
 /// and launchd's environment did not. Homebrew first on Apple silicon, then
@@ -52,44 +45,6 @@ fn widen(current: &str, home: &[String]) -> String {
         }
     }
     dirs.join(":")
-}
-
-const NS_RESIZABLE_WINDOW_MASK: u64 = 1 << 3;
-
-fn main_window() -> Option<id> {
-    unsafe {
-        let app: id = msg_send![class!(NSApplication), sharedApplication];
-        if app.is_null() {
-            return None;
-        }
-        let key: id = msg_send![app, keyWindow];
-        if !key.is_null() {
-            return Some(key);
-        }
-        let windows: id = msg_send![app, windows];
-        let count: usize = msg_send![windows, count];
-        if count == 0 {
-            return None;
-        }
-        let win: id = msg_send![windows, objectAtIndex: 0usize];
-        if win.is_null() { None } else { Some(win) }
-    }
-}
-
-/// Removes the traffic-light buttons and re-enables edge resizing, which gpui
-/// drops when a window is created without a titlebar.
-pub fn style_frameless() {
-    let Some(win) = main_window() else { return };
-    unsafe {
-        for button in 0u64..3 {
-            let b: id = msg_send![win, standardWindowButton: button];
-            if !b.is_null() {
-                let _: () = msg_send![b, setHidden: YES];
-            }
-        }
-        let mask: u64 = msg_send![win, styleMask];
-        let _: () = msg_send![win, setStyleMask: mask | NS_RESIZABLE_WINDOW_MASK];
-    }
 }
 
 #[cfg(test)]
