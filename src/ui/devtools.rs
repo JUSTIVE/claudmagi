@@ -41,7 +41,9 @@ impl Board {
             .map(|(i, chip)| (i, chip.info.clone()))
             .collect();
 
-        let mut panel = self.panel_chrome(Which::Dev, "test tools", PANEL_W, cx)
+        let mut panel = div()
+            .flex()
+            .flex_col()
             // Data source.
             .child(
                 section("SOURCE").child(
@@ -136,9 +138,7 @@ impl Board {
             .id("dev-session-list")
             .flex()
             .flex_col()
-            .gap_1()
-            .max_h(px(280.))
-            .overflow_y_scroll();
+            .gap_1();
         if rows.is_empty() {
             list = list.child(div().text_color(dim(0.5)).child(if mode == Mode::Sandbox {
                 "no synthetic sessions yet — add one above"
@@ -428,6 +428,7 @@ impl Board {
             );
         }
 
-        panel.child(hint("T toggles this panel · ⌘L lists the sessions · Esc closes"))
+        let body = panel.child(hint("T toggles this panel · ⌘L lists the sessions · Esc closes"));
+        self.panel_chrome(Which::Dev, "test tools", PANEL_W, body, cx)
     }
 }

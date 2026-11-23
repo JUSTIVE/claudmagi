@@ -159,7 +159,7 @@ environment via `sysctl KERN_PROCARGS2`.
 
 ## Test tools
 
-Press `T` (or click `TEST` in the status bar) to open the test panel. Panels dock in the bottom-right corner above the status bar, side by side with the settings panel, so they never overlap:
+Press `T` (or click `TEST` in the status bar) to open the test panel. Panels dock down the left edge, from the top of the window to the status bar, side by side with the settings panel so they never overlap; a panel taller than the window scrolls under its header, and two panels wider than it scroll sideways (#158):
 
 - **SOURCE** switches the board between live sessions and a sandbox.
 - **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at

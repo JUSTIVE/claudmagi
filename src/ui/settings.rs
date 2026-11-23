@@ -115,7 +115,9 @@ impl Board {
             );
         }
 
-        self.panel_chrome(Which::Settings, "settings", PANEL_W, cx)
+        let body = div()
+            .flex()
+            .flex_col()
             .child(section("view").child(views))
             .child(section("background").child(themes))
             .child(section("accent").child(swatches).child(div().text_color(p.accent).child(current.name())))
@@ -130,7 +132,8 @@ impl Board {
                     )
                     .child(presets),
             )
-            .child(hint("⌘+ ⌘− ⌘0 · ⌘+wheel zoom · ⌘, toggles this panel · settings persist"))
+            .child(hint("⌘+ ⌘− ⌘0 · ⌘+wheel zoom · ⌘, toggles this panel · settings persist"));
+        self.panel_chrome(Which::Settings, "settings", PANEL_W, body, cx)
     }
 }
 
