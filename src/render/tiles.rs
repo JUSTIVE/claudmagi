@@ -44,8 +44,10 @@ const PITCH: f32 = TILE + GAP;
 const MAX_ACROSS: usize = 6;
 /// Kept clear at either side of the grid.
 const MARGIN: f32 = 32.0;
-/// The page title's band above the first group.
-const TITLE_H: f32 = 92.0;
+/// The page title's band above the first group: one grid row (#173).
+const TITLE_H: f32 = 72.0;
+/// Small-tile columns kept between two groups side by side on a shelf.
+const GROUP_GAP: i32 = 1;
 /// Inside a tile, from its edges to its letters.
 const PAD: f32 = 9.0;
 
@@ -120,13 +122,17 @@ pub fn lay_out(model: &BoardModel, width: f32, _height: f32) -> Comb {
         }
     }
 
+    // Groups sit side by side while the row has room, the way a start
+    // screen's groups stand next to each other, and a group too wide for
+    // what is left starts the next shelf (#173). A group with one or two
+    // sessions no longer has a whole row to itself.
+    let cols = across as i32 * 2;
     let mut cells = Vec::new();
     let mut headers = Vec::new();
     let mut row = 0i32;
+    let mut q0 = 0i32;
+    let mut shelf_h = 0i32;
     for (_, members) in &units {
-        let head = section_name(members.iter().map(|&i| &model.chips[i].info));
-        headers.push((origin + Pt::new(0.0, row as f32 * PITCH + TILE * 0.55), head));
-        row += 1;
         let mut blocks: Vec<Block> = Vec::new();
         // The issue once, whoever of them carries it.
         if let Some(&i) = members.iter().find(|&&i| model.chips[i].info.ticket.is_some()) {
@@ -150,13 +156,28 @@ pub fn lay_out(model: &BoardModel, width: f32, _height: f32) -> Comb {
                 blocks.push(Block { chip: Some(i), subs: None, slot: Some(Slot::Output) });
             }
         }
+        let w = blocks.len().min(across) as i32 * 2;
+        let h = 1 + blocks.len().div_ceil(across) as i32 * 2;
+        if q0 > 0 && q0 + w > cols {
+            row += shelf_h;
+            q0 = 0;
+            shelf_h = 0;
+        }
+        // The header is cut to its own group: beside another group it would
+        // otherwise run on under that one's name.
+        let head = section_name(members.iter().map(|&i| &model.chips[i].info));
+        let room = w as f32 * PITCH - GAP;
+        let head = comb::fit(&head, scale_for(CAP_HEADER), room);
+        headers.push((origin + Pt::new(q0 as f32 * PITCH, row as f32 * PITCH + TILE * 0.55), head));
         for (k, b) in blocks.iter().enumerate() {
-            let q = (k % across) as i32 * 2;
-            let r = row + (k / across) as i32 * 2;
+            let q = q0 + (k % across) as i32 * 2;
+            let r = row + 1 + (k / across) as i32 * 2;
             cells.push(Cell { center: Pt::new(0.0, 0.0), q, row: r, chip: b.chip, subs: b.subs, wave: 0.0, slot: b.slot });
         }
-        row += blocks.len().div_ceil(across) as i32 * 2;
+        q0 += w + GROUP_GAP;
+        shelf_h = shelf_h.max(h);
     }
+    row += shelf_h;
 
     let mut comb = Comb {
         cells,
@@ -816,13 +837,39 @@ mod tests {
         let comb = lay_out(&model, 1100.0, 600.0);
         let Grid::Tiles { headers, .. } = &comb.grid else { panic!() };
         assert_eq!(headers.len(), 2, "one group for the issue, one for the loose session: {headers:?}");
+        // The groups may share a shelf (#173): the first group is what
+        // stands left of the second one's header.
+        let second = headers[1].0.x;
         let first: Vec<(Option<usize>, Option<Slot>)> =
-            comb.cells.iter().filter(|c| c.row < comb.cells.last().unwrap().row).map(|c| (c.chip, c.slot)).collect();
+            comb.cells.iter().filter(|c| c.center.x < second).map(|c| (c.chip, c.slot)).collect();
         assert_eq!(
             first,
             vec![(Some(0), Some(Slot::Ticket)), (Some(0), None), (Some(1), None), (Some(0), Some(Slot::Output))],
             "the issue once, both sessions, then what they produced"
         );
+    }
+
+    #[test]
+    fn small_groups_stand_side_by_side_and_wide_ones_take_the_next_shelf() {
+        let model = work();
+        // Wide enough for both: the loose session's group stands beside the
+        // issue's four tiles, a column apart, on the same rows.
+        let wide = lay_out(&model, 1100.0, 600.0);
+        let Grid::Tiles { headers, .. } = &wide.grid else { panic!() };
+        assert_eq!(headers[0].0.y, headers[1].0.y, "one shelf: {headers:?}");
+        let last = wide.cells.last().unwrap();
+        assert_eq!(last.row, wide.cells[0].row, "the loose session is on the first group's row");
+        assert_eq!(last.q, 4 * 2 + GROUP_GAP, "a column after the four tiles");
+        // Too narrow for both: the second group starts a shelf below.
+        let narrow = lay_out(&model, 700.0, 600.0);
+        let Grid::Tiles { headers, .. } = &narrow.grid else { panic!() };
+        assert!(headers[1].0.y > headers[0].0.y, "next shelf: {headers:?}");
+        assert_eq!(narrow.cells.last().unwrap().q, 0);
+        // And a header never runs past its own group.
+        for (at, label) in headers {
+            let w = font::measure(label, scale_for(CAP_HEADER));
+            assert!(at.x + w <= narrow.cells.iter().map(|c| c.center.x + side() / 2.0).fold(0.0, f32::max) + 0.5);
+        }
     }
 
     #[test]
