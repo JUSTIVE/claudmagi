@@ -2112,7 +2112,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.20",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -2222,7 +2222,7 @@ dependencies = [
 [[package]]
 name = "gpui-metro"
 version = "0.1.0"
-source = "git+https://github.com/JUSTIVE/gpui-metro?rev=c46a60a4d5cec427dd26ce37cf6b70067f525739#c46a60a4d5cec427dd26ce37cf6b70067f525739"
+source = "git+https://github.com/JUSTIVE/gpui-metro?rev=dfefdbd5c58422c39b9ecfb5dc0e4260a523711f#dfefdbd5c58422c39b9ecfb5dc0e4260a523711f"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2621,7 +2621,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
