@@ -1,6 +1,5 @@
 //! The macOS shims: thin AppKit calls for the frameless window — hide the
-//! traffic lights, keep the window resizable, move it while the user drags the
-//! board — and the one thing a bundle has to fix about how it was launched.
+//! traffic lights, keep the window resizable — and the one thing a bundle has to fix about how it was launched.
 
 #![allow(non_camel_case_types)]
 
@@ -55,27 +54,6 @@ fn widen(current: &str, home: &[String]) -> String {
     dirs.join(":")
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct NSPoint {
-    x: f64,
-    y: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct NSSize {
-    width: f64,
-    height: f64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct NSRect {
-    origin: NSPoint,
-    size: NSSize,
-}
-
 const NS_RESIZABLE_WINDOW_MASK: u64 = 1 << 3;
 
 fn main_window() -> Option<id> {
@@ -111,24 +89,6 @@ pub fn style_frameless() {
         }
         let mask: u64 = msg_send![win, styleMask];
         let _: () = msg_send![win, setStyleMask: mask | NS_RESIZABLE_WINDOW_MASK];
-    }
-}
-
-/// Current mouse position in screen coordinates (origin bottom-left).
-pub fn mouse_location() -> (f64, f64) {
-    unsafe {
-        let p: NSPoint = msg_send![class!(NSEvent), mouseLocation];
-        (p.x, p.y)
-    }
-}
-
-/// Shifts the main window by a screen-space delta.
-pub fn move_window_by(dx: f64, dy: f64) {
-    let Some(win) = main_window() else { return };
-    unsafe {
-        let frame: NSRect = msg_send![win, frame];
-        let origin = NSPoint { x: frame.origin.x + dx, y: frame.origin.y + dy };
-        let _: () = msg_send![win, setFrameOrigin: origin];
     }
 }
 

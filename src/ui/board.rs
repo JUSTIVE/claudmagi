@@ -29,7 +29,7 @@ use crate::theme::{self, Palette};
 use crate::ui::palette::PaletteState;
 use crate::ui::panel::PanelState;
 use crate::usage::{self, Usage};
-use crate::{host, mac};
+use crate::host;
 
 pub const STATUS_H: f32 = 30.0;
 /// The hover tooltip on a pull request connector (#77, #115): its padding,
@@ -96,7 +96,9 @@ pub struct Board {
     /// open, and an index would quietly become somebody else's.
     pub(crate) pr_menu: Option<String>,
     title: String,
-    drag_anchor: Option<(f64, f64)>,
+    /// A press on bare board that has not moved yet: the first drag hands the
+    /// window to AppKit's own move loop.
+    drag_pending: bool,
     started: Instant,
     last_tick: Instant,
     focus_handle: FocusHandle,
@@ -233,7 +235,7 @@ impl Board {
             pressed_ticket: None,
             pr_menu: None,
             title: sources::machine_user(),
-            drag_anchor: None,
+            drag_pending: false,
             started: now,
             last_tick: now,
             focus_handle,
@@ -799,21 +801,17 @@ impl Render for Board {
                 }
                 cx.notify();
             }))
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let m = this.to_design(ev.position);
                 this.mouse = Some(m);
                 this.model.hovered = this.hit_test(m);
                 this.hovered_pr = this.hit_pr(m);
                 this.hovered_ticket = this.hit_ticket(m);
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    if let Some(anchor) = this.drag_anchor {
-                        let cur = mac::mouse_location();
-                        let (dx, dy) = (cur.0 - anchor.0, cur.1 - anchor.1);
-                        this.drag_anchor = Some(cur);
-                        // Move outside the event dispatch: AppKit calls back into
-                        // gpui synchronously from `setFrameOrigin:`.
-                        cx.spawn(async move |_, _| mac::move_window_by(dx, dy)).detach();
-                    }
+                // The window server moves the window itself, in step with the
+                // cursor; moving it by hand from deltas lagged and jumped.
+                if this.drag_pending && ev.pressed_button == Some(MouseButton::Left) {
+                    this.drag_pending = false;
+                    window.start_window_move();
                 }
                 cx.notify();
             }))
@@ -838,12 +836,12 @@ impl Render for Board {
                         this.pressed = this.model.hovered;
                         this.pressed_pr = this.hovered_pr;
                         this.pressed_ticket = this.hovered_ticket;
-                        this.drag_anchor = None;
+                        this.drag_pending = false;
                     } else {
                         this.pressed = None;
                         this.pressed_pr = None;
                         this.pressed_ticket = None;
-                        this.drag_anchor = Some(mac::mouse_location());
+                        this.drag_pending = true;
                     }
                     // A click on the board is a click past the palette: the
                     // card itself stops propagation, so anything reaching here
@@ -878,7 +876,7 @@ impl Render for Board {
                     this.pressed = None;
                     this.pressed_pr = None;
                     this.pressed_ticket = None;
-                    this.drag_anchor = None;
+                    this.drag_pending = false;
                     cx.notify();
                 }),
             )
