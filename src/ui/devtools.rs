@@ -183,7 +183,7 @@ impl Board {
                             if !this.dev_expanded.remove(&sid) {
                                 this.dev_expanded.insert(sid.clone());
                             }
-                            cx.notify();
+                            this.touch(cx);
                         }),
                     ),
                 );

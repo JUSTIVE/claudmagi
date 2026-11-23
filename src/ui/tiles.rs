@@ -15,13 +15,13 @@
 //! as live tiles (with their subagents as small tiles after them), and what
 //! the work produced, a tile per pull request or page.
 
-use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*, px};
+use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*};
 use gpui_metro::{Theme, Tile, TileSize, page_header, scaled, tile, tile_grid, u};
 
 use crate::model::{BoardModel, ChipState, Phase, SessionInfo, Target};
 use crate::render::comb;
 use crate::theme::{self, Palette};
-use crate::ui::board::{Board, STATUS_H};
+use crate::ui::board::Board;
 
 /// A small tile's side and the gutter after it, in design px: a session is
 /// a medium tile, two of them and the gutter a side.
@@ -377,11 +377,7 @@ impl Board {
         };
         div()
             .id("tiles")
-            .absolute()
-            .top_0()
-            .left_0()
-            .right_0()
-            .bottom(px(STATUS_H))
+            .size_full()
             .bg(theme::hsla(pal.bg))
             .overflow_scroll()
             .child(
@@ -417,7 +413,7 @@ impl Board {
                         }
                     }
                     this.tiles_replay += 1;
-                    cx.notify();
+                    this.touch(cx);
                 });
             }
         };

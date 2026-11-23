@@ -70,7 +70,7 @@ impl Board {
             .child(div().mx(px(-PAD)).text_size(px(BODY)).child(body))
             .on_dismiss(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.panel_mut(which).open = false;
-                cx.notify();
+                this.touch(cx);
             }))
     }
 }

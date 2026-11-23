@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, ClickEvent, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, ScrollWheelEvent, SharedString, Stateful, Window, canvas, div, prelude::*, px,
+    App, ClickEvent, Context, Entity, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, ScrollWheelEvent, SharedString, Stateful, StyleRefinement, WeakEntity, Window, canvas,
+    div, prelude::*, px,
 };
 
 use crate::geom::Pt;
@@ -75,6 +76,11 @@ pub struct Board {
     pub(crate) mode: Mode,
     pub(crate) settings: Settings,
     pub(crate) dev: PanelState,
+    /// The start screen and the panels, each a view of its own drawn from
+    /// the last frame until `touch` says what they show has changed (#181):
+    /// the frame clock and the pointer redraw the board, not them.
+    tiles_view: Entity<TilesView>,
+    panels_view: Entity<PanelsView>,
     /// The sandbox sessions whose detail rows the test panel shows (#180).
     pub(crate) dev_expanded: std::collections::HashSet<String>,
     pub(crate) settings_panel: PanelState,
@@ -157,7 +163,7 @@ impl Board {
                     board.model.apply(list, now);
                     board.source_note = note;
                     board.palette_refresh();
-                    cx.notify();
+                    board.touch(cx);
                 });
                 if ok.is_err() {
                     break;
@@ -220,6 +226,7 @@ impl Board {
 
         let settings = Settings::load();
         let now = Instant::now();
+        let me = cx.entity().downgrade();
         Self {
             model: BoardModel::new(),
             live: Arc::new(ClaudeSource::default()),
@@ -228,6 +235,8 @@ impl Board {
             layout: Layout::new(scene::DESIGN_W, scene::DESIGN_H, 0, settings.zoom),
             settings,
             dev: PanelState::default(),
+            tiles_view: cx.new(|_| TilesView { board: me.clone() }),
+            panels_view: cx.new(|_| PanelsView { board: me.clone() }),
             dev_expanded: Default::default(),
             settings_panel: PanelState::default(),
             list_panel: PanelState::default(),
@@ -288,7 +297,7 @@ impl Board {
             self.mode = mode;
             let msg = format!("source: {}", self.source().name());
             self.model.set_notice(msg, Instant::now());
-            cx.notify();
+            self.touch(cx);
         }
     }
 
@@ -305,7 +314,7 @@ impl Board {
             self.settings.save();
         }
         self.model.set_notice(format!("zoom {:.0}%", zoom * 100.0), Instant::now());
-        cx.notify();
+        self.touch(cx);
     }
 
     /// Rebuilds the lane geometry when the layout changes and on every
@@ -817,7 +826,7 @@ impl Render for Board {
                     "0" if cmd => this.zoom_by(0.0, cx),
                     _ => return,
                 }
-                cx.notify();
+                this.touch(cx);
             }))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
                 let m = this.to_design(ev.position);
@@ -957,7 +966,7 @@ impl Render for Board {
                 )
                 .size_full(),
             )
-            .when(tiles_view, |d| d.child(self.render_tiles(cx)))
+            .when(tiles_view, |d| d.child(self.tiles_view.clone().cached(below_bar())))
             .child(
                 div()
                     .absolute()
@@ -1032,7 +1041,7 @@ impl Render for Board {
                                 status_colors,
                                 cx.listener(|this, _, _, cx| {
                                     this.toggle_settings();
-                                    cx.notify();
+                                    this.touch(cx);
                                 }),
                             ))
                             .child(status_button(
@@ -1042,7 +1051,7 @@ impl Render for Board {
                                 status_colors,
                                 cx.listener(|this, _, _, cx| {
                                     this.toggle_devtools();
-                                    cx.notify();
+                                    this.touch(cx);
                                 }),
                             )),
                     ),
@@ -1051,12 +1060,7 @@ impl Render for Board {
             // everything but the status bar, whose buttons open and close
             // them. Only one is ever open (#163); each is drawn every frame
             // so the one just closed can slide away while the next comes in.
-            .child({
-                let settings = self.render_settings(cx).into_any_element();
-                let dev = self.render_devtools(cx).into_any_element();
-                let list = self.render_list(cx).into_any_element();
-                div().absolute().top_0().left_0().right_0().bottom(px(STATUS_H)).child(settings).child(dev).child(list)
-            })
+            .child(self.panels_view.clone().cached(below_bar()))
             // The search sits over the board, near the top, where a palette
             // is looked for (#71).
             .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
@@ -1159,6 +1163,58 @@ fn status_button(
         .child(label.into())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(on_click)
+}
+
+impl Board {
+    /// Redraws the board and the views that cache what it shows — the start
+    /// screen and the panels (#181). For a change to the sessions, the
+    /// settings or the panels; the frame clock, the pointer and the status
+    /// bar's notices redraw the board alone.
+    pub(crate) fn touch(&mut self, cx: &mut Context<Self>) {
+        cx.notify();
+        self.tiles_view.update(cx, |_, cx| cx.notify());
+        self.panels_view.update(cx, |_, cx| cx.notify());
+    }
+}
+
+/// Where the cached views stand: the window above the status bar.
+fn below_bar() -> StyleRefinement {
+    StyleRefinement::default().absolute().top_0().left_0().right_0().bottom(px(STATUS_H))
+}
+
+/// The start screen as a view of its own (#181): gpui-metro's tiles ask
+/// their own frames while they turn and slide, and the board's clock and
+/// hover leave it as it was drawn.
+pub(crate) struct TilesView {
+    board: WeakEntity<Board>,
+}
+
+impl Render for TilesView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.board.upgrade() {
+            Some(board) => board.update(cx, |board, cx| board.render_tiles(cx)),
+            None => div().into_any_element(),
+        }
+    }
+}
+
+/// The three panels as a view of its own (#181): a pointer moving over a
+/// panel redraws the panel, not the start screen beside it, and the board's
+/// clock redraws neither.
+pub(crate) struct PanelsView {
+    board: WeakEntity<Board>,
+}
+
+impl Render for PanelsView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(board) = self.board.upgrade() else { return div().into_any_element() };
+        board.update(cx, |board, cx| {
+            let settings = board.render_settings(cx).into_any_element();
+            let dev = board.render_devtools(cx).into_any_element();
+            let list = board.render_list(cx).into_any_element();
+            div().relative().size_full().child(settings).child(dev).child(list).into_any_element()
+        })
+    }
 }
 
 #[cfg(test)]

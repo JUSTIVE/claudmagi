@@ -40,7 +40,7 @@ impl Board {
             // Opening the comb plays its arrival again, from its first
             // painted frame (#92, #93).
             self.comb_since = None;
-            cx.notify();
+            self.touch(cx);
         }
     }
 
@@ -50,7 +50,7 @@ impl Board {
             self.settings.save();
             // The panels follow the board: dark board, dark Metro ground.
             metro::sync(&self.settings, cx);
-            cx.notify();
+            self.touch(cx);
         }
     }
 
@@ -59,7 +59,7 @@ impl Board {
             self.settings.accent = accent.name().into();
             self.settings.save();
             metro::sync(&self.settings, cx);
-            cx.notify();
+            self.touch(cx);
         }
     }
 
