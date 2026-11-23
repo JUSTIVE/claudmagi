@@ -1236,7 +1236,7 @@ mod tests {
         let model = board(&[("a", 1)]);
         let r = 90.0;
         let seated = |at: Pt| Comb {
-            cells: vec![Cell { center: at, q: 0, row: 0, chip: Some(0), subs: None, wave: 0.0 }],
+            cells: vec![Cell { center: at, q: 0, row: 0, chip: Some(0), subs: None, wave: 0.0, slot: None }],
             r,
             height: 600.0,
             grid: comb::Grid::Hex,

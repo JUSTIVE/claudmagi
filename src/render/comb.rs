@@ -74,6 +74,10 @@ pub struct Cell {
     /// opens by spreading out from the clusters, and this is each cell's
     /// place in that wave (#92).
     pub wave: f32,
+    /// On a tile grid, a tile that is one of its session's rows standing on
+    /// its own — the Linear issue, or what the work produced (#162). `None`
+    /// for a cell that is the session itself, and always on the honeycomb.
+    pub slot: Option<Slot>,
 }
 
 /// The laid-out grid.
@@ -126,10 +130,6 @@ impl Comb {
     }
 }
 
-/// Where a tile's three rows divide, as a fraction of its side from the top:
-/// the issue above the first line, what the work produced below the second
-/// (#157).
-pub const TILE_BANDS: [f32; 2] = [0.3, 0.72];
 
 /// Flat-top axial coordinates to a centre point (#132).
 ///
@@ -546,7 +546,7 @@ pub fn lay_out(model: &BoardModel, width: f32, height: f32) -> Comb {
             let center = axial(q, row, r);
             let chip = seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
             let subs = sub_seats.iter().find(|(at, _)| *at == (q, row)).map(|(_, i)| *i);
-            cells.push(Cell { center, q, row, chip, subs, wave: 0.0 });
+            cells.push(Cell { center, q, row, chip, subs, wave: 0.0, slot: None });
         }
         q += 1;
     }
@@ -1042,15 +1042,8 @@ pub fn row_shapes(at: Pt, rb: &RowBox, slot: &SlotInk, color: Rgba) -> Vec<Shape
 pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
     let cell = comb.cells.iter().find(|c| c.chip.is_some() && comb.on_cell(p, c.center))?;
     if comb.grid != Grid::Hex {
-        let down = (p.y - (cell.center.y - comb.r)) / (2.0 * comb.r);
-        let slot = if down < TILE_BANDS[0] {
-            Slot::Ticket
-        } else if down > TILE_BANDS[1] {
-            Slot::Output
-        } else {
-            Slot::Session
-        };
-        return Some((cell.chip?, slot));
+        // Each of a session's rows is a tile of its own here (#162).
+        return Some((cell.chip?, cell.slot.unwrap_or(Slot::Session)));
     }
     let dy = (p.y - cell.center.y) / comb.r;
     let slot = if dy < (ROW_DY[0] + ROW_DY[1]) / 2.0 {
@@ -1072,19 +1065,14 @@ pub fn hit_slot(comb: &Comb, p: Pt) -> Option<(usize, Slot)> {
 /// from it, so a box measured at its own middle would poke out of the sides
 /// at its corners.
 pub fn slot_box(comb: &Comb, chip: usize, slot: Slot) -> Option<(Pt, f32, f32)> {
-    let cell = comb.cells.iter().find(|c| c.chip == Some(chip))?;
     if comb.grid != Grid::Hex {
-        // A tile's bands run its whole width, so the box is simply the band.
+        // The row is a tile of its own, so its box is the tile (#162).
+        let want = if slot == Slot::Session { None } else { Some(slot) };
+        let cell = comb.cells.iter().find(|c| c.chip == Some(chip) && c.subs.is_none() && c.slot == want)?;
         let side = 2.0 * comb.r;
-        let top = cell.center.y - comb.r;
-        let (from, to) = match slot {
-            Slot::Ticket => (0.0, TILE_BANDS[0]),
-            Slot::Session => (TILE_BANDS[0], TILE_BANDS[1]),
-            Slot::Output => (TILE_BANDS[1], 1.0),
-        };
-        let h = (to - from) * side;
-        return Some((Pt::new(cell.center.x, top + (from + to) / 2.0 * side), side, h));
+        return Some((cell.center, side, side));
     }
+    let cell = comb.cells.iter().find(|c| c.chip == Some(chip))?;
     let row = match slot {
         Slot::Ticket => 0,
         Slot::Session => 1,
@@ -1282,6 +1270,10 @@ impl Slide {
 /// do not go anywhere.
 fn cell_key(model: &BoardModel, cell: &Cell) -> Option<String> {
     match (cell.chip, cell.subs) {
+        // A session's issue or output tile goes its own way (#162).
+        (Some(i), _) if cell.slot.is_some() => {
+            model.chips.get(i).map(|c| format!("{}~{:?}", c.info.session_id, cell.slot))
+        }
         (Some(i), _) => model.chips.get(i).map(|c| c.info.session_id.clone()),
         (None, Some(i)) => model.chips.get(i).map(|c| colony_key(&c.info.session_id)),
         _ => None,
@@ -1524,7 +1516,7 @@ fn ticket_needs_action(t: &crate::ticket::Ticket) -> bool {
     matches!(t.status, Some(Status::Backlog) | Some(Status::Todo))
 }
 
-fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
+pub(crate) fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
     use crate::ticket::Status;
     match t.status {
         Some(Status::Started) => pal.text_idle,
@@ -1572,7 +1564,7 @@ fn pr_screen(p: &crate::pr::Pr) -> Screen {
     }
 }
 
-fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
+pub(crate) fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     use crate::pr::Look;
     if p.running() {
         return pal.busy;
@@ -1902,7 +1894,7 @@ mod tests {
         let model = board(&[("a", 1)]);
         let r = 90.0;
         let seated = |q: i32, row: i32, r: f32| Comb {
-            cells: vec![Cell { center: axial(q, row, r), q, row, chip: Some(0), subs: None, wave: 0.0 }],
+            cells: vec![Cell { center: axial(q, row, r), q, row, chip: Some(0), subs: None, wave: 0.0, slot: None }],
             r,
             height: 600.0,
             grid: Grid::Hex,
