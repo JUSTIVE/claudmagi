@@ -108,21 +108,10 @@ pub fn markup(mark: Mark) -> &'static str {
 /// `svg` with every colour it names put to `currentColor`, and a fill on the
 /// root so shapes that name none take it too.
 fn tint(svg: &str) -> String {
-    let mut out = String::with_capacity(svg.len() + 32);
-    let mut rest = svg;
-    while let Some(at) = rest.find("fill=\"") {
-        out.push_str(&rest[..at]);
-        let after = &rest[at + 6..];
-        let end = after.find('"').unwrap_or(after.len());
-        let value = &after[..end];
-        if value == "none" {
-            out.push_str("fill=\"none\"");
-        } else {
-            out.push_str("fill=\"currentColor\"");
-        }
-        rest = &after[(end + 1).min(after.len())..];
-    }
-    out.push_str(rest);
+    let mut out = currentize(svg, "fill=\"", '"', |v| if v == "none" { "none" } else { "currentColor" });
+    // A colour given in a style rather than an attribute (Orca's, from
+    // Inkscape) is the same colour said another way.
+    out = currentize(&out, "fill:", ';', |v| if v == "none" { "none" } else { "currentColor" });
     match out.find("<svg") {
         Some(at) => {
             let (head, tail) = out.split_at(at + 4);
@@ -130,6 +119,22 @@ fn tint(svg: &str) -> String {
         }
         None => out,
     }
+}
+
+/// `text` with every value that follows `key`, up to `end` (or a closing
+/// quote, for a style's last declaration), put through `to`.
+fn currentize(text: &str, key: &str, end: char, to: impl Fn(&str) -> &'static str) -> String {
+    let mut out = String::with_capacity(text.len() + 32);
+    let mut rest = text;
+    while let Some(at) = rest.find(key) {
+        out.push_str(&rest[..at + key.len()]);
+        let after = &rest[at + key.len()..];
+        let stop = after.find(|c| c == end || c == '"').unwrap_or(after.len());
+        out.push_str(to(after[..stop].trim()));
+        rest = &after[stop..];
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -151,7 +156,13 @@ mod tests {
             assert!(!text.contains("linearGradient"), "{path} would lose its gradient to the recolouring");
         }
         for mark in Mark::ALL {
-            assert!(markup(mark).contains("currentColor"), "{mark:?} would not take its tile's colour");
+            let m = markup(mark);
+            assert!(m.contains("currentColor"), "{mark:?} would not take its tile's colour");
+            // A colour left in, as an attribute or in a style, draws the
+            // mark in that colour whatever its tile is (#206).
+            for left in ["fill:#", "fill=\"#", "fill:rgb", "fill=\"rgb"] {
+                assert!(!m.contains(left), "{mark:?} keeps a colour of its own ({left})");
+            }
         }
     }
 
