@@ -47,7 +47,14 @@ const TITLE_CHARS_PER_UNIT: usize = 6;
 
 /// What a session is working on, as the group it goes under (#162): its
 /// Linear issue, or failing that its pull request, or failing that the
-/// directory it works in.
+/// directory it works in — and there, the seat it sits in (#191).
+///
+/// A ticket or a pull request is a session saying what it is on, and two
+/// sessions saying the same thing belong together whatever window they run
+/// in. A shared directory says nothing of the kind: one repository holds
+/// every piece of work anybody does in it. So where that is all there is,
+/// the place breaks the tie — another tab, or another app entirely, is its
+/// own heading rather than another tile under a folder's name.
 pub fn work_unit(info: &SessionInfo) -> String {
     if let Some(t) = &info.ticket {
         return format!("issue:{}", t.key);
@@ -58,7 +65,7 @@ pub fn work_unit(info: &SessionInfo) -> String {
     if let Some(r) = info.prs_unanswered.last() {
         return format!("pr:{}", r.url());
     }
-    format!("dir:{}", info.cwd)
+    format!("dir:{}@{}", info.cwd, info.group)
 }
 
 /// A group's title: the names its Claude sessions go by (#165) — what
@@ -695,6 +702,40 @@ mod tests {
             "the issue once, both sessions, then what they produced"
         );
         assert_eq!(groups[1].1, vec![Kind::Session(2)]);
+    }
+
+    /// A folder is not a piece of work (#191). Sessions that share only a
+    /// directory are sorted by where they sit — so a Herdr tab, a Warp tab
+    /// and the next tab along each keep their own heading — while a ticket
+    /// or a pull request still gathers them whatever window they run in
+    /// (#162).
+    #[test]
+    fn a_shared_folder_alone_does_not_make_one_section() {
+        let mut a = SessionInfo::synthetic(1, "A", Phase::Idle);
+        let mut b = SessionInfo::synthetic(2, "B", Phase::Idle);
+        for s in [&mut a, &mut b] {
+            s.cwd = "/Users/x/git/crepe/yoshi".into();
+            s.ticket = None;
+            s.prs.clear();
+            s.prs_unanswered.clear();
+        }
+        a.group = "warp-tab:1-1".into();
+        b.group = "herdr-tab:93362db4".into();
+        assert_ne!(work_unit(&a), work_unit(&b), "one folder, two places, two sections");
+
+        b.group = "warp-tab:1-3".into();
+        assert_ne!(work_unit(&a), work_unit(&b), "two tabs of one app are two places too");
+
+        b.group = a.group.clone();
+        assert_eq!(work_unit(&a), work_unit(&b), "the same folder in the same tab is one section");
+
+        // What a session is on outranks where it sits, which is the whole
+        // point of grouping by work (#162).
+        b.group = "herdr-tab:93362db4".into();
+        for s in [&mut a, &mut b] {
+            s.ticket = Some(crate::ticket::Ticket::synthetic(7, Some(crate::ticket::Status::Started)));
+        }
+        assert_eq!(work_unit(&a), work_unit(&b), "one issue is one section, wherever it is worked on");
     }
 
     #[test]
