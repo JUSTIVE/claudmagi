@@ -273,10 +273,13 @@ fn main() {
                 // A transparent titlebar rather than none: without one gpui
                 // leaves the close and minimise bits off the style mask, so
                 // those traffic lights showed but were greyed out (#167).
-                // The board still draws to the top edge and moves the window
-                // itself (#166).
+                // The board still draws to the top edge.
                 titlebar: Some(TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: None }),
-                app_owns_titlebar_drag: true,
+                // The titlebar strip moves the window the way any Mac window's
+                // does, by AppKit (#185): handed over from the board's own
+                // press, the strip's drag took one try and not the next. The
+                // rest of the board still moves it itself (#166).
+                app_owns_titlebar_drag: false,
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(520.), px(340.))),
                 focus: true,

@@ -29,8 +29,9 @@ use crate::host;
 
 pub const STATUS_H: f32 = 30.0;
 /// The strip along the top that drags the window, as a titlebar would: the
-/// height of the macOS titlebar the traffic lights sit in (#171).
-const GRAB_H: f32 = 28.0;
+/// height of the macOS titlebar the traffic lights sit in (#171), which
+/// AppKit drags from itself (#185) and which runs to 32 px on macOS 27.
+const GRAB_H: f32 = 32.0;
 /// Session registry poll interval.
 const POLL_MS: u64 = 1000;
 /// Redraw cadence while the honeycomb moves (cells arriving and gliding to
@@ -631,7 +632,9 @@ impl Render for Board {
                     };
                     this.hover_at(m, bar);
                     this.pressed = this.model.hovered;
-                    this.drag_pending = this.pressed.is_none();
+                    // AppKit moves the window from the titlebar strip itself
+                    // (#185); a second move started from here would fight it.
+                    this.drag_pending = this.pressed.is_none() && f32::from(ev.position.y) >= GRAB_H;
                     // A click on the board is a click past the palette: the
                     // card itself stops propagation, so anything reaching here
                     // was outside it (#71).
