@@ -125,7 +125,8 @@ fn on_key(ui: &Ui, ev: &KeyEvent) {
             "Escape" if b.settings_panel.open => b.settings_panel.open = false,
             "Escape" if b.dev.open => b.dev.open = false,
             "Escape" => return true,
-            "t" if !cmd => panel::toggle(b, Which::Dev),
+            // ⌘T, or T alone as it always was.
+            "t" | "T" => panel::toggle(b, Which::Dev),
             "," if cmd => panel::toggle(b, Which::Settings),
             "=" | "+" => b.zoom_by(zoom::USER_ZOOM_STEP),
             "-" | "_" => b.zoom_by(1.0 / zoom::USER_ZOOM_STEP),

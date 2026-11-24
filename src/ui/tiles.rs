@@ -563,14 +563,14 @@ fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
 }
 
 /// How the start screen is set out: how wide a group is, how many stand in
-/// a row, where the screen stands and at what zoom. The screen is built
-/// again only when this changes; groups and tiles come and go inside it.
-#[derive(Clone, Debug, PartialEq)]
+/// a row and where the screen stands. All of it moves with the board — a
+/// group outgrowing one tile's width widens every group (#173) — and what
+/// moves slides there; only the zoom builds the screen again.
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Frame {
     columns: usize,
     per_row: usize,
     inset: f32,
-    zoom: f32,
 }
 
 fn frame_of(b: &Board) -> Frame {
@@ -583,7 +583,7 @@ fn frame_of(b: &Board) -> Frame {
     let per_row = groups_per_row(room, columns);
     // On a wide window the screen stands in the middle (#179).
     let inset = centring(room, columns, groups.len(), per_row);
-    Frame { columns, per_row, inset, zoom }
+    Frame { columns, per_row, inset }
 }
 
 /// One group as the screen shows it: its title and its tiles' keys.
@@ -605,7 +605,7 @@ fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
 /// The tiles view: a page header and the start screen under it, scrolling
 /// in the space above the status bar.
 pub fn start_screen(ui: Ui) -> AnyElement {
-    let frame = ui.memo(frame_of);
+    let zoom = ui.memo(|b| (b.layout.zoom * 1000.0).round() as i32);
     // Bumped after a tile's press, so the screen turns back in (#176).
     let replay = signal(0usize);
     {
@@ -622,15 +622,18 @@ pub fn start_screen(ui: Ui) -> AnyElement {
         // A press on the bare screen moves the window, as on gpui (#166);
         // the tiles keep their own presses.
         .window_drag(true)
-        .child(view().window_drag(true).child(dynamic(move || screen(ui.clone(), frame.get(), replay))))
+        .child(view().window_drag(true).child(dynamic(move || screen(ui.clone(), zoom.get() as f32 / 1000.0, replay))))
         .into_element()
 }
 
-fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
-    let z = frame.zoom;
+fn screen(ui: Ui, z: f32, replay: Signal<usize>) -> AnyElement {
+    let frame = ui.memo(frame_of);
     let (tile_unit, gap) = (UNIT * z, GAP * z);
-    let group_w = group_width(frame.columns) * z;
-    let row_w = frame.per_row as f32 * group_w + (frame.per_row as f32 - 1.0) * GROUP_GAP * z;
+    let group_w = move || group_width(frame.get().columns) * z;
+    let row_w = move || {
+        let f = frame.get();
+        f.per_row as f32 * group_w() + (f.per_row as f32 - 1.0) * GROUP_GAP * z
+    };
     let header = label("start")
         .text_size(px(size::HUGE * z))
         .font_weight(LIGHT)
@@ -657,8 +660,12 @@ fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
             move |unit, at| {
                 let unit = untracked(|| unit.get());
                 let at = untracked(|| at.get());
-                let hinge = (MARGIN + frame.inset) * z + (at % frame.per_row) as f32 * (group_w + GROUP_GAP * z);
-                group(ui.clone(), unit, frame.columns, (tile_unit, gap), z, hinge, replay, tapped)
+                // Where the turnstile's hinge stands for this group: taken as
+                // the screen is when the group is built.
+                let f = untracked(|| frame.get());
+                let hinge = (MARGIN + f.inset) * z + (at % f.per_row) as f32 * (untracked(group_w) + GROUP_GAP * z);
+                let columns = ui.memo(|b| frame_of(b).columns);
+                group(ui.clone(), unit, columns, (tile_unit, gap), z, hinge, replay, tapped)
             },
         )
     };
@@ -667,7 +674,7 @@ fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
         .pt(px(TOP * z))
         .pb(px(MARGIN * z))
         .pr(px(MARGIN * z))
-        .pl(px(frame.inset * z))
+        .pl(move || px(frame.get().inset * z))
         .child(view().pt(px(12. * z)).pb(px(20. * z)).px(px(MARGIN * z)).child(view().ml(px(-3. * z)).child(header)))
         .child(when(move || empty.get().is_empty(), move || {
             view()
@@ -678,7 +685,7 @@ fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
         // (#177); a group that comes or goes moves the ones after it along,
         // and the rest stay where they are.
         .child(view().pl(px(MARGIN * z)).child(
-            view().flex_row().flex_wrap().items_start().w(px(row_w)).gap_x(px(GROUP_GAP * z)).gap_y(px(ROW_GAP * z)).child(groups),
+            view().flex_row().flex_wrap().items_start().w(move || px(row_w())).gap_x(px(GROUP_GAP * z)).gap_y(px(ROW_GAP * z)).child(groups),
         ))
         .into_element()
 }
@@ -690,7 +697,7 @@ fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
 fn group(
     ui: Ui,
     unit: String,
-    columns: usize,
+    columns: Memo<usize>,
     metrics: (f32, f32),
     z: f32,
     hinge: f32,
@@ -700,7 +707,7 @@ fn group(
     let (unit_px, gap) = metrics;
     let shown = {
         let unit = unit.clone();
-        ui.memo(move |b| group_of(b, &unit, columns))
+        ui.memo(move |b| group_of(b, &unit, frame_of(b).columns))
     };
     // Every other group swings away while a tile of this one is pressed.
     let leave = signal(false);
@@ -716,7 +723,7 @@ fn group(
         Rc::new(move || tapped.set(Some(unit.clone())))
     };
     let grid = tile_grid()
-        .columns(columns)
+        .live_columns(move || columns.get())
         .metrics(unit_px, gap)
         .turnstile(true)
         .replay(replay.read_only())

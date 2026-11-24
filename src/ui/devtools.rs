@@ -38,7 +38,7 @@ pub fn panel(ui: &Ui) -> AnyElement {
             // panel of its own (⌘L, #103); in the sandbox these rows are the
             // controls themselves.
             .child(when(move || mode.get() == Mode::Sandbox, move || sessions(&r)))
-            .child(hint("T toggles this panel · ⌘L lists the sessions · Esc closes"))
+            .child(hint("⌘T toggles this panel · ⌘L lists the sessions · Esc closes"))
             .into_element()
     })
 }

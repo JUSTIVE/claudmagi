@@ -11,7 +11,7 @@ license = "MIT"
 # nsh-metro's, the design system rebuilt on it.
 nsh-core = { version = "0.6.1", features = ["svg"] }
 nsh-platform-macos = { version = "0.6.1", default-features = false, features = ["svg"] }
-nsh-metro = { git = "https://github.com/JUSTIVE/nsh-metro", rev = "d8145c8583c06780ba9a949ec3e2f5c78fb99be8" }
+nsh-metro = { git = "https://github.com/JUSTIVE/nsh-metro", rev = "73b70b6e8a97b2e845bde9eb97955992ef1db001" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
