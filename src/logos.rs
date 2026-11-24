@@ -23,6 +23,7 @@ const LINEAR: &[u8] = include_bytes!("../assets/logos/linear.svg");
 const CLAUDE: &[u8] = include_bytes!("../assets/logos/claude.svg");
 const WARP: &[u8] = include_bytes!("../assets/logos/warp.svg");
 const ORCA: &[u8] = include_bytes!("../assets/logos/orca.svg");
+const HERDR: &[u8] = include_bytes!("../assets/logos/herdr.svg");
 const ANTHROPIC: &[u8] = include_bytes!("../assets/logos/anthropic.svg");
 const CLOUD: &[u8] = include_bytes!("../assets/logos/cloud.svg");
 const ARTIFACT: &[u8] = include_bytes!("../assets/logos/artifact.svg");
@@ -32,6 +33,7 @@ pub const LINEAR_PATH: &str = "logos/linear.svg";
 pub const CLAUDE_PATH: &str = "logos/claude.svg";
 pub const WARP_PATH: &str = "logos/warp.svg";
 pub const ORCA_PATH: &str = "logos/orca.svg";
+pub const HERDR_PATH: &str = "logos/herdr.svg";
 pub const ANTHROPIC_PATH: &str = "logos/anthropic.svg";
 pub const CLOUD_PATH: &str = "logos/cloud.svg";
 pub const ARTIFACT_PATH: &str = "logos/artifact.svg";
@@ -49,6 +51,8 @@ pub enum Mark {
     /// Claude one says what a node is; these say where it is.
     Warp,
     Orca,
+    /// Herdr, whose terminals outlive the window they are shown in (#189).
+    Herdr,
     /// The Claude desktop app. Anthropic's own mark rather than Claude's,
     /// because Claude's is already in the slot next door and two of them
     /// side by side read as a mistake.
@@ -62,12 +66,13 @@ pub enum Mark {
 }
 
 impl Mark {
-    pub const ALL: [Mark; 8] = [
+    pub const ALL: [Mark; 9] = [
         Mark::Claude,
         Mark::GitHub,
         Mark::Linear,
         Mark::Warp,
         Mark::Orca,
+        Mark::Herdr,
         Mark::ClaudeApp,
         Mark::Cloud,
         Mark::Artifact,
@@ -79,6 +84,7 @@ impl Mark {
         match host {
             "warp" => Some(Mark::Warp),
             "orca" => Some(Mark::Orca),
+            "herdr" => Some(Mark::Herdr),
             "desktop" => Some(Mark::ClaudeApp),
             "cloud" => Some(Mark::Cloud),
             _ => None,
@@ -92,6 +98,7 @@ impl Mark {
             Mark::Linear => LINEAR_PATH,
             Mark::Warp => WARP_PATH,
             Mark::Orca => ORCA_PATH,
+            Mark::Herdr => HERDR_PATH,
             Mark::ClaudeApp => ANTHROPIC_PATH,
             Mark::Cloud => CLOUD_PATH,
             Mark::Artifact => ARTIFACT_PATH,
@@ -105,6 +112,7 @@ impl Mark {
             Mark::Linear => LINEAR,
             Mark::Warp => WARP,
             Mark::Orca => ORCA,
+            Mark::Herdr => HERDR,
             Mark::ClaudeApp => ANTHROPIC,
             Mark::Cloud => CLOUD,
             Mark::Artifact => ARTIFACT,

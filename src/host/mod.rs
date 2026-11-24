@@ -121,8 +121,8 @@ pub(super) fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration
 /// The hosts a board can name, with the word the test panel labels each by
 /// (#124). A plain terminal is not here: it has a seat but nothing to show
 /// for it, which is the honest answer rather than a fifth mark.
-pub const NAMED: [(&str, &str); 4] =
-    [("warp", "WARP"), ("orca", "ORCA"), ("desktop", "APP"), ("cloud", "CLOUD")];
+pub const NAMED: [(&str, &str); 5] =
+    [("warp", "WARP"), ("orca", "ORCA"), ("herdr", "HERDR"), ("desktop", "APP"), ("cloud", "CLOUD")];
 
 /// Every host, in the order they get asked. The desktop one claims whatever
 /// is left, so it goes last.
@@ -250,6 +250,21 @@ mod tests {
         // share one group, which is the honest answer rather than a guess.
         let desk = Seat { host: "desktop", handle: String::new(), window: None, focus_url: None };
         assert_eq!(group_key(&desk), "desktop");
+    }
+
+    /// Every host this list names has something to name it with (#190). The
+    /// test panel labels its buttons from here and a demo render shows one
+    /// session per host so every mark the board can draw turns up in it, so a
+    /// host listed with no mark draws an empty badge — which reads as a bug
+    /// in the board rather than as "a terminal, and that is all we know".
+    #[test]
+    fn every_named_host_has_a_mark_to_wear() {
+        use crate::logos::Mark;
+        for (host, label) in NAMED {
+            assert!(Mark::host(host).is_some(), "{label} is named but has no mark");
+        }
+        assert_eq!(Mark::host("herdr"), Some(Mark::Herdr));
+        assert_eq!(Mark::host("term"), None, "a plain terminal has a seat and nothing to show for it");
     }
 
     /// Every key the hosts can make has to read as a sentence, since the

@@ -3,8 +3,9 @@
 Two kinds of mark. One says what a node *is* — `claude.svg` for a session,
 `github.svg` for a pull request, `linear.svg` for an issue (#79, #80). The
 other rides beside the Claude one and says where that session is *running*:
-`warp.svg`, `orca.svg`, `anthropic.svg` for the Claude desktop app, and
-`cloud.svg` for a session that is not on this machine at all (#120, #122).
+`warp.svg`, `orca.svg`, `herdr.svg`, `anthropic.svg` for the Claude desktop
+app, and `cloud.svg` for a session that is not on this machine at all
+(#120, #122).
 `artifact.svg` is of the first kind: a page the session made (#137).
 
 The desktop app wears Anthropic's mark rather than Claude's. Claude's is
@@ -15,6 +16,7 @@ rather than as an answer.
 |------|--------------------|
 | `claude.svg`, `github.svg`, `linear.svg`, `warp.svg`, `anthropic.svg` | [simple-icons](https://github.com/simple-icons/simple-icons), whose icon files are CC0-1.0. |
 | `orca.svg` | Orca's own `Contents/Resources/app.asar.unpacked/resources/logo.svg`, which simple-icons does not carry. |
+| `herdr.svg` | Herdr's own ram, `https://herdr.dev/live/icons/ram.svg`; simple-icons does not carry it either, and the copy in the app bundle is a 160 px PNG (#190). |
 | `cloud.svg` | Drawn here. It stands for a place rather than a product, so there is no mark to borrow. |
 | `artifact.svg` | Drawn here, for the same reason: a window, for a page the session published on claude.ai (#137). Its hole is a second subpath wound the other way round, which is how both the board's own filler and an `--svg` export (`fill-rule="nonzero"`) leave it empty. |
 
