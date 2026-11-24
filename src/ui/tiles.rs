@@ -111,6 +111,12 @@ pub enum Kind {
 /// tiles: the issue once, the sessions each followed by their subagents,
 /// then everything they produced, each thing once.
 pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
+    keyed_groups(model).into_iter().map(|(_, title, tiles)| (title, tiles)).collect()
+}
+
+/// [`groups`], each with the work it is the group of (`work_unit`): what a
+/// group is known by from one poll to the next.
+pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
     let mut units: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in model.chips.iter().enumerate() {
         if c.anim.gone {
@@ -124,7 +130,7 @@ pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
     }
     units
         .into_iter()
-        .map(|(_, members)| {
+        .map(|(unit, members)| {
             let title = section_name(members.iter().map(|&i| &model.chips[i].info));
             let mut tiles = Vec::new();
             if let Some(&i) = members.iter().find(|&&i| model.chips[i].info.ticket.is_some()) {
@@ -163,7 +169,7 @@ pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
                     }
                 }
             }
-            (title, tiles)
+            (unit, title, tiles)
         })
         .collect()
 }
@@ -550,18 +556,18 @@ fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
     })
 }
 
-/// The shape of the start screen: which groups, in which rows, holding which
-/// tiles, and where it stands. Built again only when this changes; what a
-/// tile shows changes under it without the screen being built again.
+/// How the start screen is set out: how wide a group is, how many stand in
+/// a row, where the screen stands and at what zoom. The screen is built
+/// again only when this changes; groups and tiles come and go inside it.
 #[derive(Clone, Debug, PartialEq)]
-struct Shape {
-    rows: Vec<Vec<(String, Vec<TileKey>)>>,
+struct Frame {
     columns: usize,
+    per_row: usize,
     inset: f32,
     zoom: f32,
 }
 
-fn shape_of(b: &Board) -> Shape {
+fn frame_of(b: &Board) -> Frame {
     let groups = groups(&b.model);
     let columns = columns(&groups);
     let zoom = b.layout.zoom;
@@ -571,24 +577,29 @@ fn shape_of(b: &Board) -> Shape {
     let per_row = groups_per_row(room, columns);
     // On a wide window the screen stands in the middle (#179).
     let inset = centring(room, columns, groups.len(), per_row);
-    let keyed: Vec<(String, Vec<TileKey>)> = groups
-        .iter()
-        .map(|(title, kinds)| {
-            // One short of the room: the last group of a row wraps instead.
-            let title = clip(title, columns * TITLE_CHARS_PER_UNIT - 1);
-            (title, kinds.iter().filter_map(|k| TileKey::of(k, &b.model)).collect())
-        })
-        .collect();
-    Shape { rows: keyed.chunks(per_row).map(|r| r.to_vec()).collect(), columns, inset, zoom }
+    Frame { columns, per_row, inset, zoom }
+}
+
+/// One group as the screen shows it: its title and its tiles' keys.
+#[derive(Clone, Debug, PartialEq)]
+struct Group {
+    title: String,
+    tiles: Vec<TileKey>,
+}
+
+fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
+    let (_, title, kinds) = keyed_groups(&b.model).into_iter().find(|(u, ..)| u == unit)?;
+    Some(Group {
+        // One short of the room: the last group of a row wraps instead.
+        title: clip(&title, columns * TITLE_CHARS_PER_UNIT - 1),
+        tiles: kinds.iter().filter_map(|k| TileKey::of(k, &b.model)).collect(),
+    })
 }
 
 /// The tiles view: a page header and the start screen under it, scrolling
 /// in the space above the status bar.
 pub fn start_screen(ui: Ui) -> AnyElement {
-    let shape = {
-        let ui = ui.clone();
-        computed(move || ui.read(shape_of))
-    };
+    let frame = ui.memo(frame_of);
     // Bumped after a tile's press, so the screen turns back in (#176).
     let replay = signal(0usize);
     {
@@ -602,50 +613,67 @@ pub fn start_screen(ui: Ui) -> AnyElement {
     scroll()
         .flex_1()
         .bg(move || bg.read(|b| theme::hsla(b.palette().bg)))
+        // A press on the bare screen moves the window, as on gpui (#166);
+        // the tiles keep their own presses.
         .window_drag(true)
-        .child(
-            view()
-                // A press on the bare screen moves the window, as on gpui
-                // (#166); the tiles keep their own presses.
-                .window_drag(true)
-                .child(dynamic(move || screen(ui.clone(), shape.get(), replay))),
-        )
+        .child(view().window_drag(true).child(dynamic(move || screen(ui.clone(), frame.get(), replay))))
         .into_element()
 }
 
-fn screen(ui: Ui, shape: Shape, replay: Signal<usize>) -> AnyElement {
-    let z = shape.zoom;
-    let (unit, gap) = (UNIT * z, GAP * z);
-    let group_w = group_width(shape.columns) * z;
+fn screen(ui: Ui, frame: Frame, replay: Signal<usize>) -> AnyElement {
+    let z = frame.zoom;
+    let (tile_unit, gap) = (UNIT * z, GAP * z);
+    let group_w = group_width(frame.columns) * z;
+    let row_w = frame.per_row as f32 * group_w + (frame.per_row as f32 - 1.0) * GROUP_GAP * z;
     let header = label("start")
         .text_size(px(size::HUGE * z))
         .font_weight(LIGHT)
         .line_height(nsh_core::LineHeight::Points(px((size::HUGE + 8.) * z)))
         .text_color(move || metro_palette().foreground);
-    let empty = shape.rows.is_empty();
-    let mut body = view().pl(px(MARGIN * z)).gap(px(ROW_GAP * z));
-    for row in shape.rows {
-        let mut line = view().flex_row().items_start().gap(px(GROUP_GAP * z));
-        for (g, (title, keys)) in row.into_iter().enumerate() {
-            let hinge = (MARGIN + shape.inset) * z + g as f32 * (group_w + GROUP_GAP * z);
-            line = line.child(group(ui.clone(), title, keys, shape.columns, unit, gap, z, hinge, replay));
-        }
-        body = body.child(line);
+    let units = ui.memo(|b| keyed_groups(&b.model).into_iter().map(|(unit, ..)| unit).collect::<Vec<_>>());
+    // The group whose tile was just pressed: it swings away on its own, the
+    // tapped tile last, and every other group swings away with it, as the
+    // start screen did when it was one grid (#176).
+    let tapped: Signal<Option<String>> = signal(None);
+    {
+        let ui = ui.clone();
+        effect(move || {
+            // The screen comes back in after the press has landed.
+            ui.read(|b| b.tiles_replay);
+            untracked(|| tapped.set(None));
+        });
     }
-    let body = if empty {
-        view()
-            .pl(px(MARGIN * z))
-            .child(label("no claude code sessions").text_size(px(size::NORMAL * z)).text_color(move || metro_palette().subtle))
-    } else {
-        body
+    let groups = {
+        let ui = ui.clone();
+        each(
+            move || units.get(),
+            |unit: &String| unit.clone(),
+            move |unit, at| {
+                let unit = untracked(|| unit.get());
+                let at = untracked(|| at.get());
+                let hinge = (MARGIN + frame.inset) * z + (at % frame.per_row) as f32 * (group_w + GROUP_GAP * z);
+                group(ui.clone(), unit, frame.columns, (tile_unit, gap), z, hinge, replay, tapped)
+            },
+        )
     };
+    let empty = units;
     view()
         .pt(px(TOP * z))
         .pb(px(MARGIN * z))
         .pr(px(MARGIN * z))
-        .pl(px(shape.inset * z))
+        .pl(px(frame.inset * z))
         .child(view().pt(px(12. * z)).pb(px(20. * z)).px(px(MARGIN * z)).child(view().ml(px(-3. * z)).child(header)))
-        .child(body)
+        .child(when(move || empty.get().is_empty(), move || {
+            view()
+                .pl(px(MARGIN * z))
+                .child(label("no claude code sessions").text_size(px(size::NORMAL * z)).text_color(move || metro_palette().subtle))
+        }))
+        // The groups wrap at `per_row` to a line, as the rows of grids did
+        // (#177); a group that comes or goes moves the ones after it along,
+        // and the rest stay where they are.
+        .child(view().pl(px(MARGIN * z)).child(
+            view().flex_row().flex_wrap().items_start().w(px(row_w)).gap_x(px(GROUP_GAP * z)).gap_y(px(ROW_GAP * z)).child(groups),
+        ))
         .into_element()
 }
 
@@ -655,21 +683,43 @@ fn screen(ui: Ui, shape: Shape, replay: Signal<usize>) -> AnyElement {
 #[allow(clippy::too_many_arguments)]
 fn group(
     ui: Ui,
-    title: String,
-    keys: Vec<TileKey>,
+    unit: String,
     columns: usize,
-    unit: f32,
-    gap: f32,
+    metrics: (f32, f32),
     z: f32,
     hinge: f32,
     replay: Signal<usize>,
+    tapped: Signal<Option<String>>,
 ) -> View {
-    let keys = Rc::new(keys);
-    let grid = tile_grid().columns(columns).metrics(unit, gap).turnstile(true).replay(replay.read_only()).hinge(hinge).source({
-        let ui = ui.clone();
-        let keys = keys.clone();
-        move || keys.iter().map(|k| tile_for(ui.clone(), k.clone(), unit, gap, z)).collect()
-    });
+    let (unit_px, gap) = metrics;
+    let shown = {
+        let unit = unit.clone();
+        ui.memo(move |b| group_of(b, &unit, columns))
+    };
+    // Every other group swings away while a tile of this one is pressed.
+    let leave = signal(false);
+    {
+        let unit = unit.clone();
+        effect(move || {
+            let away = tapped.get().is_some_and(|t| t != unit);
+            untracked(|| leave.set(away));
+        });
+    }
+    let down: Rc<dyn Fn()> = {
+        let unit = unit.clone();
+        Rc::new(move || tapped.set(Some(unit.clone())))
+    };
+    let grid = tile_grid()
+        .columns(columns)
+        .metrics(unit_px, gap)
+        .turnstile(true)
+        .replay(replay.read_only())
+        .leave(leave.read_only())
+        .hinge(hinge)
+        .source(move || {
+            let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
+            keys.into_iter().map(|k| tile_for(ui.clone(), k, unit_px, gap, z, down.clone())).collect()
+        });
     view()
         .flex_shrink_0()
         // The title runs on over the gap to the next group, as nsh-metro's
@@ -677,7 +727,7 @@ fn group(
         // next one's.
         .child(
             view().relative().h(px(GROUP_HEADER * z)).child(
-                label(SharedString::from(title.to_lowercase()))
+                label(move || SharedString::from(shown.get().map(|g| g.title.to_lowercase()).unwrap_or_default()))
                     .absolute()
                     .left_0()
                     .top_0()
@@ -694,7 +744,7 @@ fn group(
 /// shows: a session (or its subagent) jumps to its terminal, an issue
 /// opens in Linear, a pull request or a page in the browser. The grid
 /// swings away first and the press lands after.
-fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
+fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32, down: Rc<dyn Fn()>) -> Tile {
     let initial = ui.peek(|b| shows(b, &key));
     let live = initial.as_ref().is_some_and(|s| s.back.is_some());
     let phase = match &key {
@@ -732,11 +782,12 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
         .on_click(press);
     let front = {
         let menu = menu.clone();
-        move |_: TileSize| face(data, false, z, menu.clone())
+        let down = down.clone();
+        move |_: TileSize| face(data, false, z, menu.clone(), down.clone())
     };
     t = t.front(front);
     if live {
-        t = t.back(move |_: TileSize| face(data, true, z, menu.clone())).period(PERIOD);
+        t = t.back(move |_: TileSize| face(data, true, z, menu.clone(), down.clone())).period(PERIOD);
         if let Some(p) = phase {
             t = t.phase(p);
         }
@@ -746,7 +797,7 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
 
 /// A tile's face, bound to what the tile shows: its fill, its ink and its
 /// words follow the board without the tile being built again.
-fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32)) + Clone + 'static) -> View {
+fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32)) + Clone + 'static, down: Rc<dyn Fn()>) -> View {
     let get = move || data.get();
     let fill = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.fill));
     let ink = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.ink));
@@ -757,7 +808,9 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
         .size_full()
         .relative()
         .bg(fill)
-        .on_context_menu(move |e: &ContextMenuEvent| menu((f32::from(e.page_position.x), f32::from(e.page_position.y))));
+        .on_context_menu(move |e: &ContextMenuEvent| menu((f32::from(e.page_position.x), f32::from(e.page_position.y))))
+        // The moment a tile goes down, the other groups start to swing away.
+        .on_press_down(move |_: &PressEvent| down());
     if small_tile {
         let text = move || SharedString::from(get().and_then(|s| s.agent).map(|a| a.0).unwrap_or_default());
         let over = untracked(get).and_then(|s| s.agent).is_some_and(|a| a.1);
