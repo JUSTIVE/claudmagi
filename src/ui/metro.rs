@@ -23,6 +23,9 @@ pub const PAD: f32 = 16.;
 pub const BODY: f32 = 12.;
 /// Captions and section headers.
 pub const SMALL: f32 = 11.;
+/// Seconds between the live tiles' waves of slides: gpui-metro's own
+/// catalog runs on the same 3 s.
+const LIVE_TILE_BEAT: f32 = 3.0;
 
 pub fn accent_of(name: &str) -> Accent {
     let find = |n: &str| Accent::ALL.into_iter().find(|a| a.name() == n);
@@ -44,6 +47,9 @@ pub fn mode_of(theme: BoardTheme) -> Mode {
 pub fn init(settings: &Settings, cx: &mut App) {
     gpui_metro::init(cx);
     cx.global_mut::<Theme>().font_family = crate::theme::UI_FONT.into();
+    // The live tiles slide in waves on one beat, and between waves the
+    // start screen draws no frames at all (#184).
+    gpui_metro::motion::set_live_tile_beat(Some(LIVE_TILE_BEAT), cx);
     sync(settings, cx);
 }
 
