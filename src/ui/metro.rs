@@ -40,8 +40,10 @@ pub fn mode_of(theme: BoardTheme) -> Mode {
 /// Call before the first component is built.
 pub fn init(settings: &Settings) {
     nsh_metro::theme::set_font_family(crate::theme::UI_FONT);
-    // The live tiles slide in waves on one beat (#184).
+    // The live tiles slide in waves on one beat (#184), at the screen's own
+    // rate: the compositor moves them, so a 120 Hz screen gets 120 (#208).
     nsh_metro::set_live_tile_beat(Some(LIVE_TILE_BEAT));
+    nsh_metro::motion::set_ambient_fps(None);
     sync(settings);
 }
 
