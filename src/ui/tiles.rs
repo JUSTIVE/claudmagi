@@ -720,8 +720,32 @@ fn group(
             let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
             keys.into_iter().map(|k| tile_for(ui.clone(), k, unit_px, gap, z, down.clone())).collect()
         });
+    // A group that the layout moves — one came in ahead of it, or the group
+    // above grew a row — slides to its new place the way a tile slides
+    // inside a grid, instead of jumping there (#199).
+    let (dx, dy) = (animated_value(0.), animated_value(0.));
+    let seen: Rc<std::cell::Cell<Option<(f32, f32)>>> = Rc::default();
     view()
         .flex_shrink_0()
+        .bind_translate_x(&dx)
+        .bind_translate_y(&dy)
+        .on_layout(move |r: &Bounds<Points>| {
+            let at = (f32::from(r.origin.x), f32::from(r.origin.y));
+            let Some(was) = seen.replace(Some(at)) else { return };
+            let (ox, oy) = (was.0 - at.0, was.1 - at.1);
+            if ox.abs() < 0.5 && oy.abs() < 0.5 {
+                return;
+            }
+            dx.set(ox);
+            dy.set(oy);
+            if nsh_metro::theme::reduced_motion() {
+                dx.set(0.);
+                dy.set(0.);
+            } else {
+                let _ = dx.timing(0., nsh_metro::tile::REFLOW, nsh_metro::motion::EXP6_OUT);
+                let _ = dy.timing(0., nsh_metro::tile::REFLOW, nsh_metro::motion::EXP6_OUT);
+            }
+        })
         // The title runs on over the gap to the next group, as nsh-metro's
         // own group headers do; `clip` has already kept it short of the
         // next one's.
