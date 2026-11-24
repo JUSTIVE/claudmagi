@@ -76,6 +76,10 @@ pub struct Board {
     pub window: (f32, f32),
     /// The ⌘K search over everything on the board (#71).
     pub palette: PaletteState,
+    /// Bumped whenever the board is read in hand (`Ui::sync_sandbox`): a
+    /// poll that started before then is holding an older snapshot, and
+    /// laying it down would undo what was just done.
+    pub generation: u64,
 }
 
 impl Board {
@@ -100,6 +104,7 @@ impl Board {
             source_note: None,
             window: (zoom::DESIGN_W, zoom::DESIGN_H),
             palette: PaletteState::default(),
+            generation: 0,
         }
     }
 
@@ -158,6 +163,18 @@ impl Board {
         self.model.tick(dt, now);
     }
 
+    /// A snapshot of the sessions, laid on the board: what a poll does with
+    /// what it read.
+    pub fn take(&mut self, mut list: Vec<crate::model::SessionInfo>, note: Option<&'static str>) {
+        let now = Instant::now();
+        self.sandbox.churn(now);
+        self.drop_dismissed(&mut list);
+        self.model.apply(list, now);
+        self.source_note = note;
+        crate::ui::palette::refresh(self);
+        self.frame();
+    }
+
     /// Pull requests put away by hand never reach the board again (#194).
     pub fn drop_dismissed(&self, list: &mut [crate::model::SessionInfo]) {
         crate::ui::tiles::without_dismissed(list, &self.settings.dismissed);
@@ -209,6 +226,25 @@ impl Ui {
     /// Changes the board quietly: for what no binding shows.
     pub fn quietly<R>(&self, f: impl FnOnce(&mut Board) -> R) -> R {
         f(&mut self.board.borrow_mut())
+    }
+
+    /// Reads the sandbox now rather than at the next poll, so what the test
+    /// tools just did is on the board — and on their own buttons — at once.
+    /// The sandbox is in memory; reading it costs nothing.
+    pub fn sync_sandbox(&self) {
+        let sandbox = self.peek(|b| (b.mode == Mode::Sandbox).then(|| b.sandbox.clone()));
+        match sandbox {
+            Some(sb) => {
+                let (list, note) = (sb.snapshot(), sb.note());
+                self.update(|b| {
+                    b.generation += 1;
+                    b.take(list, note)
+                });
+            }
+            // Out of the sandbox: whatever a poll is holding was read from
+            // the source just left.
+            None => self.update(|b| b.generation += 1),
+        }
     }
 
     /// A line in the status bar.

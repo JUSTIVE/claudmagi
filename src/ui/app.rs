@@ -147,17 +147,14 @@ fn quit_app() {
 fn poll_sessions(ui: Ui) {
     spawn(async move {
         loop {
-            let source = ui.peek(|b| b.source());
+            let (source, generation) = ui.peek(|b| (b.source(), b.generation));
             let read = background(async move { (source.snapshot(), source.note()) }).await;
-            if let Ok((mut list, note)) = read {
-                let now = Instant::now();
+            if let Ok((list, note)) = read {
                 ui.update(|b| {
-                    b.sandbox.churn(now);
-                    b.drop_dismissed(&mut list);
-                    b.model.apply(list, now);
-                    b.source_note = note;
-                    crate::ui::palette::refresh(b);
-                    b.frame();
+                    // Read in hand meanwhile: this snapshot is the older one.
+                    if b.generation == generation {
+                        b.take(list, note)
+                    }
                 });
             }
             timer(Duration::from_millis(POLL_MS)).await;
