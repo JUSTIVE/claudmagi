@@ -114,8 +114,13 @@ pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
     keyed_groups(model).into_iter().map(|(_, title, tiles)| (title, tiles)).collect()
 }
 
-/// [`groups`], each with the work it is the group of (`work_unit`): what a
-/// group is known by from one poll to the next.
+/// [`groups`], each with what it is known by from one poll to the next: its
+/// first session's id. Not the work it is the group of (`work_unit`): that
+/// changes as the work does — a session that opens a pull request or picks
+/// up a Linear issue moves from its directory's group to the issue's — and
+/// a group known by it would be dropped and built again each time, where
+/// the same group should take the new tile in and push the rest along
+/// (#200).
 pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
     let mut units: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in model.chips.iter().enumerate() {
@@ -130,7 +135,8 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
     }
     units
         .into_iter()
-        .map(|(unit, members)| {
+        .map(|(_, members)| {
+            let unit = model.chips[members[0]].info.session_id.clone();
             let title = section_name(members.iter().map(|&i| &model.chips[i].info));
             let mut tiles = Vec::new();
             if let Some(&i) = members.iter().find(|&&i| model.chips[i].info.ticket.is_some()) {
