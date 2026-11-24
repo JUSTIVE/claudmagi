@@ -124,7 +124,7 @@ fn main() -> ExitCode {
         platform::AppSource::Rust(platform::Root::of::<ui::app::App>()),
         platform::AppOptions {
             title: "claudmagi".to_owned(),
-            app_id: "dev.justive.claudmagi".to_owned(),
+            app_id: "io.github.justive.claudmagi".to_owned(),
             size: (win_w, win_h),
             ..Default::default()
         },
