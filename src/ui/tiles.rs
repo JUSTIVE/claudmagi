@@ -736,9 +736,29 @@ fn group(
             move || tapped.set(Some(unit.clone()))
         })
         .hinge(hinge)
-        .source(move || {
-            let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
-            keys.into_iter().map(|k| tile_for(ui.clone(), k, unit_px, gap, z)).collect()
+        .source({
+            // What each tile shows, one memo per tile, made under the group
+            // rather than in this closure: the grid reads the closure again
+            // whenever the group's tiles change, and what a run makes is
+            // dropped at the next. A tile is built once, from the first run's
+            // memo, so a dropped one left it showing the colours and words
+            // it had then — a theme change missed it (#211).
+            let owner = Owner::current();
+            let memos: Rc<std::cell::RefCell<std::collections::HashMap<TileKey, Memo<Option<Shows>>>>> = Rc::default();
+            move || {
+                let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
+                let mut memos = memos.borrow_mut();
+                memos.retain(|k, _| keys.contains(k));
+                keys.into_iter()
+                    .map(|k| {
+                        let data = *memos.entry(k.clone()).or_insert_with(|| {
+                            let (ui, key) = (ui.clone(), k.clone());
+                            owner.run(|| computed(move || ui.read(|b| shows(b, &key))))
+                        });
+                        tile_for(ui.clone(), k, data, unit_px, gap, z)
+                    })
+                    .collect()
+            }
         });
     // A group that the layout moves — one came in ahead of it, or the group
     // above grew a row — slides to its new place the way a tile slides
@@ -788,16 +808,12 @@ fn group(
 /// shows: a session (or its subagent) jumps to its terminal, an issue
 /// opens in Linear, a pull request or a page in the browser. The grid
 /// swings away first and the press lands after.
-fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
+fn tile_for(ui: Ui, key: TileKey, data: Memo<Option<Shows>>, unit: f32, gap: f32, z: f32) -> Tile {
     let initial = ui.peek(|b| shows(b, &key));
     let live = initial.as_ref().is_some_and(|s| s.back.is_some());
     let phase = match &key {
         TileKey::Session(id) => ui.peek(|b| b.model.chips.iter().find(|c| c.info.session_id == *id).map(|c| phase_of(&c.info))),
         _ => None,
-    };
-    let data = {
-        let (ui, key) = (ui.clone(), key.clone());
-        computed(move || ui.read(|b| shows(b, &key)))
     };
     let press = {
         let (ui, key) = (ui.clone(), key.clone());
