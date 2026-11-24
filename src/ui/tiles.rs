@@ -43,6 +43,9 @@ const ROW_GAP: f32 = 28.0;
 const PERIOD: f32 = 12.0;
 /// The mark in a tile's free corner (#187), in design px.
 const MARK: f32 = 11.0;
+/// A session's source mark, alone in the middle of a front with nothing
+/// else on it: Metro's 64 px tile glyph, at this board's tile size.
+const SOURCE: f32 = 40.0;
 /// The most letters a group's title runs to before it is cut, per small
 /// tile of the group's width: the title is set in one line over the group.
 const TITLE_CHARS_PER_UNIT: usize = 6;
@@ -402,6 +405,9 @@ struct Shows {
     /// A session's back face: it is live.
     back: Option<Face>,
     mark: Option<Mark>,
+    /// A session's source — the app it runs in, or Claude where it sits in
+    /// none — set large in the middle of a front with nothing else to say.
+    source: Option<Mark>,
     /// A review still pending, said in a band across the top (#153).
     waiting: bool,
     /// A small tile: a subagent's name, or `+n` for the rest.
@@ -465,6 +471,7 @@ fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
         front,
         back: None,
         mark,
+        source: None,
         waiting: false,
         agent: None,
     };
@@ -488,6 +495,7 @@ fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
                 back: Some(Face { big, small, title: name, ..Face::default() }),
                 // Where it runs, in the same mark the cell wore (#123).
                 mark: info.seat.as_ref().and_then(|s| Mark::host(s.host)),
+                source: Some(info.seat.as_ref().and_then(|s| Mark::host(s.host)).unwrap_or(Mark::Claude)),
                 waiting: false,
                 agent: None,
             }
@@ -769,6 +777,11 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
         };
     }
     let mark = untracked(get).and_then(|s| s.mark);
+    let source = untracked(get).and_then(|s| s.source).filter(|_| !back);
+    // A front with nothing on it but the name: no `!`, no count of
+    // subagents at work. It shows where the session runs, large in the
+    // middle as a Metro tile shows its glyph, and the corner mark makes way.
+    let plain = move || !back && get().is_some_and(|s| s.source.is_some() && s.front.corner.is_none() && s.front.big.is_empty());
     base.p(px(9. * z))
         .gap(px(3. * z))
         .child(
@@ -805,6 +818,16 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .bottom(px(7. * z))
                 .size(px(MARK * z))
                 .text_color(soft)
+                .opacity(move || if plain() { 0.0_f32 } else { 1.0 })
+        }))
+        .children(source.map(|m| {
+            view()
+                .absolute()
+                .inset_0()
+                .items_center()
+                .justify_center()
+                .opacity(move || if plain() { 1.0_f32 } else { 0.0 })
+                .child(svg(ImageSrc::svg_markup(crate::logos::markup(m))).size(px(SOURCE * z)).text_color(ink))
         }))
         // A review still pending, in a band across the top (#153).
         .child(
