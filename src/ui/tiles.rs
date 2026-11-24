@@ -868,8 +868,11 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
             )
         };
     }
-    let mark = untracked(get).and_then(|s| s.mark);
-    let source = untracked(get).and_then(|s| s.source).filter(|_| !back);
+    // The marks are bound like everything else on the face: the host a
+    // session sits in can change under it (#205).
+    let has_mark = untracked(get).is_some_and(|s| s.mark.is_some() || s.source.is_some());
+    let mark_now = move || get().and_then(|s| s.mark);
+    let source_now = move || get().and_then(|s| s.source).filter(|_| !back);
     // A front with nothing on it but the name: no `!`, no count of
     // subagents at work. It shows where the session runs, large in the
     // middle as a Metro tile shows its glyph, and the corner mark makes way.
@@ -903,23 +906,27 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
         )
         // What the tile is a tile *of*, in the one corner nothing else uses
         // (#187), in the ink the state line is drawn in.
-        .children(mark.map(|m| {
-            svg(ImageSrc::svg_markup(crate::logos::markup(m)))
+        .children(has_mark.then(|| {
+            svg(move || ImageSrc::svg_markup(crate::logos::markup(mark_now().unwrap_or(Mark::Claude))))
                 .absolute()
                 .right(px(8. * z))
                 .bottom(px(7. * z))
                 .size(px(MARK * z))
                 .text_color(soft)
-                .opacity(move || if plain() { 0.0_f32 } else { 1.0 })
+                .opacity(move || if plain() || mark_now().is_none() { 0.0_f32 } else { 1.0 })
         }))
-        .children(source.map(|m| {
+        .children((has_mark && !back).then(|| {
             view()
                 .absolute()
                 .inset_0()
                 .items_center()
                 .justify_center()
                 .opacity(move || if plain() { 1.0_f32 } else { 0.0 })
-                .child(svg(ImageSrc::svg_markup(crate::logos::markup(m))).size(px(SOURCE * z)).text_color(ink))
+                .child(
+                    svg(move || ImageSrc::svg_markup(crate::logos::markup(source_now().unwrap_or(Mark::Claude))))
+                        .size(px(SOURCE * z))
+                        .text_color(ink),
+                )
         }))
         // A review still pending, in a band across the top (#153).
         .child(
