@@ -1444,7 +1444,7 @@ dependencies = [
 [[package]]
 name = "nsh-metro"
 version = "0.1.0"
-source = "git+https://github.com/JUSTIVE/nsh-metro?rev=8e6160b480dca2958136e96d9b70fe38bc0ffdb5#8e6160b480dca2958136e96d9b70fe38bc0ffdb5"
+source = "git+https://github.com/JUSTIVE/nsh-metro?rev=1f71904f0f356a3fc9c629bebf6e17687e7e978e#1f71904f0f356a3fc9c629bebf6e17687e7e978e"
 dependencies = [
  "nsh-core",
 ]
