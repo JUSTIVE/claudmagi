@@ -25,6 +25,8 @@ pub struct Warp {
     tabs: Mutex<Option<WarpTabs>>,
     /// Set once the first snapshot has waited on Warp; it never waits again.
     tabs_tried: std::sync::atomic::AtomicBool,
+    /// When each pane was first missing from a good answer (#186).
+    missing: Mutex<HashMap<String, Instant>>,
 }
 
 impl Host for Warp {
@@ -49,6 +51,23 @@ impl Host for Warp {
             .iter()
             .filter_map(|h| tabs.get(&h.replace('-', "")).map(|tab| ((*h).to_string(), tab.clone())))
             .collect()
+    }
+
+    /// The panes Warp has stopped listing (#186).
+    ///
+    /// Warp keeps its open panes in the same table the tabs are read from, so
+    /// a pane that is no longer there is a pane that was closed. The session
+    /// in it can outlive that — a background job keeps running, and the board
+    /// went on drawing it under a tab that no longer opens.
+    ///
+    /// Two things hold this back from being wrong. Only a **good** answer can
+    /// condemn a pane: a database that is missing, locked or refused (#67)
+    /// means we do not know, and nothing is dropped on not knowing. And a
+    /// pane has to be missing for a whole minute before it counts, because a
+    /// pane Warp has only just opened is not in the file yet — a session
+    /// would otherwise blink out of the board in the moment it was started.
+    fn gone(&self, handles: &[&str]) -> Vec<String> {
+        self.gone_at(handles, Instant::now())
     }
 
     fn focus(&self, seat: &Seat) -> Result<Outcome> {
@@ -108,6 +127,30 @@ impl Warp {
         guard.as_ref().map(|t| t.map.clone()).unwrap_or_default()
     }
 
+    /// `gone`, with the clock handed in so it can be tested (#186).
+    fn gone_at(&self, handles: &[&str], now: Instant) -> Vec<String> {
+        let answered = self.tabs.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| (t.map.clone(), t.good));
+        let Some((map, true)) = answered else {
+            // Nothing was read, so nothing is missing: forget what was.
+            self.missing.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            return Vec::new();
+        };
+        let mut missing = self.missing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        for handle in handles {
+            if map.contains_key(&handle.replace('-', "")) {
+                missing.remove(*handle);
+                continue;
+            }
+            let since = *missing.entry((*handle).to_string()).or_insert(now);
+            if now.duration_since(since) >= GONE_AFTER {
+                out.push((*handle).to_string());
+            }
+        }
+        missing.retain(|h, _| handles.contains(&h.as_str()));
+        out
+    }
+
     /// Why the last fetch came up empty, for the status bar (#67).
     pub(crate) fn tabs_miss(&self) -> Option<TabsMiss> {
         self.tabs.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|t| t.miss)
@@ -145,6 +188,14 @@ impl Warp {
 //  2. The Warp Control CLI (`warpctrl pane list`), which needs Warp's local
 //     control server to be turned on.
 // ---------------------------------------------------------------------------
+
+/// How long a pane has to be missing from Warp's own list before the board
+/// takes the session out of the window it was sitting in (#186).
+///
+/// Long enough to cover a pane Warp has opened but not written down yet, and
+/// short enough that a tab closed by hand is off the board before anyone
+/// goes looking for it.
+const GONE_AFTER: Duration = Duration::from_secs(60);
 
 /// How often to ask Warp for its pane → tab map.
 const WARP_TABS_TTL: Duration = Duration::from_secs(5);
@@ -413,6 +464,63 @@ mod tests {
         assert_eq!(m.get("80602dab57304503b001386bf769bcd9").map(String::as_str), Some("1-1"), "dashes and case are normalised");
         assert_eq!(m.get("0bd9a62647ef4dc3ab9a54e9966df502").map(String::as_str), Some("1-2"));
         assert!(parse_pane_rows("").is_empty());
+    }
+
+    /// A pane Warp has stopped listing is a tab that was closed, and the
+    /// session in it may well still be running (#186). Two things keep that
+    /// from being read too eagerly: nothing is dropped unless Warp actually
+    /// answered, and a pane has to stay missing for a minute first.
+    #[test]
+    fn a_pane_warp_has_stopped_listing_is_gone_after_a_minute() {
+        let warp = Warp::default();
+        let here = "0762e1f78808469c8809535d4eb65068";
+        let closed = "0bd9a62647ef4dc3ab9a54e9966df502";
+        let handles = [here, closed];
+        let t0 = Instant::now();
+
+        // Nothing read: nothing is gone, however long it is missing.
+        assert!(warp.gone_at(&handles, t0).is_empty(), "nothing was read, so nothing is missing");
+        assert!(warp.gone_at(&handles, t0 + GONE_AFTER * 2).is_empty());
+
+        // A denial is not an answer either — the database is right there and
+        // macOS will not open it (#67).
+        *warp.tabs.lock().unwrap() = Some(WarpTabs {
+            map: HashMap::new(),
+            fetched: Instant::now(),
+            good: false,
+            miss: Some(TabsMiss::Denied),
+        });
+        assert!(warp.gone_at(&handles, t0 + GONE_AFTER * 2).is_empty(), "a refusal is not an empty Warp");
+
+        // A good answer with one of them in it.
+        *warp.tabs.lock().unwrap() = Some(WarpTabs {
+            map: HashMap::from([(here.to_string(), "1-1".to_string())]),
+            fetched: Instant::now(),
+            good: true,
+            miss: None,
+        });
+        assert!(warp.gone_at(&handles, t0).is_empty(), "a pane that has only just gone missing is not gone");
+        assert!(warp.gone_at(&handles, t0 + GONE_AFTER / 2).is_empty());
+        assert_eq!(warp.gone_at(&handles, t0 + GONE_AFTER), vec![closed.to_string()]);
+        assert_eq!(warp.gone_at(&handles, t0 + GONE_AFTER * 3), vec![closed.to_string()], "and stays gone");
+
+        // A pane that comes back forgets it was ever missing, so the minute
+        // starts again rather than condemning it on the next blink.
+        *warp.tabs.lock().unwrap() = Some(WarpTabs {
+            map: HashMap::from([(here.to_string(), "1-1".to_string()), (closed.to_string(), "1-2".to_string())]),
+            fetched: Instant::now(),
+            good: true,
+            miss: None,
+        });
+        assert!(warp.gone_at(&handles, t0 + GONE_AFTER * 3).is_empty());
+        *warp.tabs.lock().unwrap() = Some(WarpTabs {
+            map: HashMap::from([(here.to_string(), "1-1".to_string())]),
+            fetched: Instant::now(),
+            good: true,
+            miss: None,
+        });
+        assert!(warp.gone_at(&handles, t0 + GONE_AFTER * 3).is_empty(), "the clock starts again");
+
     }
 
     #[test]

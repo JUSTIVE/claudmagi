@@ -63,6 +63,18 @@ pub trait Host: Send + Sync {
         HashMap::new()
     }
 
+    /// Which of these handles the host no longer has a seat for (#186).
+    ///
+    /// A pane whose tab was closed leaves its session running — a background
+    /// job, or a shell the terminal let go of — and the board went on drawing
+    /// a tile for it, grouped under a tab nobody can open any more. The host
+    /// is the only one who can say so, and only when it is sure: a host that
+    /// cannot read its own state says nothing here, because a board that
+    /// drops sessions on a maybe is worse than one that keeps a stale tile.
+    fn gone(&self, _handles: &[&str]) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Brings the seat to the front.
     fn focus(&self, seat: &Seat) -> Result<Outcome>;
 

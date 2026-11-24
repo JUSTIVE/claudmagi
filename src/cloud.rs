@@ -187,13 +187,7 @@ fn phase_of(raw: &Raw) -> Phase {
         return Phase::Working;
     }
     let summary = raw.external_metadata.post_turn_summary.as_ref();
-    let said = raw
-        .status_bucket
-        .as_deref()
-        .or_else(|| summary.and_then(|s| s.status_category.as_deref()))
-        .unwrap_or("")
-        .trim();
-    match said {
+    match said(raw) {
         "working" => return Phase::Working,
         "blocked" | "failed" => return Phase::NeedsUser,
         "review_ready" => return if raw.unread { Phase::NeedsUser } else { Phase::Idle },
@@ -205,6 +199,16 @@ fn phase_of(raw: &Raw) -> Phase {
         return Phase::NeedsUser;
     }
     Phase::Idle
+}
+
+/// The service's own word for the session: the live one, or the last turn's
+/// where there is no live one (#155).
+fn said(raw: &Raw) -> &str {
+    raw.status_bucket
+        .as_deref()
+        .or_else(|| raw.external_metadata.post_turn_summary.as_ref().and_then(|s| s.status_category.as_deref()))
+        .unwrap_or("")
+        .trim()
 }
 
 /// What the session says it is waiting for, in its own words (#155).
@@ -294,6 +298,19 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
         // it outranks the clock below and the container being up, and a
         // session archived while it is still running goes too (#136).
         if raw.status.as_deref() == Some(ARCHIVED) {
+            continue;
+        }
+        // Finished, and the person has already looked: there is nothing left
+        // for a tile to say (#186). The board went on showing these because
+        // their container was still up, so a session closed in the app sat
+        // there pointing at work that was over.
+        //
+        // What nobody has opened yet still waits out the clock below, which
+        // is exactly what that window was for: cloud work finishes while
+        // nobody is looking (#120). The service draws the line between a run
+        // that left something to look at and one that did not (#155), so
+        // this takes its word rather than the container's.
+        if said(&raw) == "completed" && !raw.unread {
             continue;
         }
         let connected = raw.connection_status.as_deref() == Some("connected");
@@ -614,6 +631,39 @@ mod tests {
         model.settle();
         model.hovered = Some(crate::model::Target::Session(0));
         assert!(model.detail().contains("review_ready"), "the detail line said: {}", model.detail());
+    }
+
+    /// A session that is finished and has been looked at is not going on
+    /// (#186). The board kept these because their container was still up, so
+    /// a session closed in the app sat on the board pointing at work that
+    /// was over.
+    #[test]
+    fn a_finished_session_somebody_has_looked_at_is_not_on_the_board() {
+        let row = |extra: &str| {
+            format!(
+                r#"{{"id":"cse_1","title":"t","connection_status":"connected","last_event_at":"{}",{extra}}}"#,
+                at(60)
+            )
+        };
+        let kept = |extra: &str| parse(&body(&row(extra)), NOW).len();
+
+        assert_eq!(kept(r#""status_bucket":"completed","unread":false"#), 0, "finished and seen");
+        assert_eq!(
+            kept(r#""status_bucket":"completed","unread":true"#),
+            1,
+            "finished while nobody was looking is the whole point of the window (#120)"
+        );
+        // Only the word `completed` means there is nothing to look at. The
+        // service draws that line itself (#155).
+        for busy in ["working", "blocked", "failed", "review_ready"] {
+            assert_eq!(kept(&format!(r#""status_bucket":"{busy}","unread":false"#)), 1, "{busy} is not finished");
+        }
+        // And the last turn's word does just as well when there is no live
+        // one, which is the order `said` already reads them in.
+        assert_eq!(
+            kept(r#""unread":false,"external_metadata":{"post_turn_summary":{"status_category":"completed"}}"#),
+            0
+        );
     }
 
     /// A board is for what is going on now. The cloud remembers every

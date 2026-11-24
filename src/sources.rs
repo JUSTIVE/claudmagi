@@ -105,6 +105,10 @@ impl SessionSource for ClaudeSource {
                 continue;
             }
             let windows = host.windows(&handles);
+            // And which of them the host no longer has a seat for: a pane
+            // whose tab was closed leaves its session running, and the board
+            // was drawing it under a window nobody can open (#186).
+            let gone = host.gone(&handles);
             for s in &mut list {
                 let Some(seat) = s.seat.as_mut() else { continue };
                 if seat.host != host.id() || seat.window.is_some() {
@@ -114,6 +118,12 @@ impl SessionSource for ClaudeSource {
                     seat.window = Some(w.clone());
                     s.group = crate::host::group_key(seat);
                 }
+            }
+            if !gone.is_empty() {
+                list.retain(|s| match s.seat.as_ref() {
+                    Some(seat) if seat.host == host.id() => !gone.contains(&seat.handle),
+                    _ => true,
+                });
             }
         }
         for s in &mut list {
