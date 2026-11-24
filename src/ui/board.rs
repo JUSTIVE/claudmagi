@@ -79,6 +79,8 @@ pub struct Board {
     /// The id rather than the index: sessions come and go while the list is
     /// open, and an index would quietly become somebody else's.
     pub(crate) pr_menu: Option<String>,
+    /// The tile whose little menu is open (#194), and where it was opened.
+    pub(crate) tile_menu: Option<TileMenu>,
     /// A press on bare board that has not moved yet: the first drag hands the
     /// window to AppKit's own move loop.
     drag_pending: bool,
@@ -126,6 +128,8 @@ impl Board {
                 let now = Instant::now();
                 let ok = this.update(cx, |board, cx| {
                     board.sandbox.churn(now);
+                    let mut list = list;
+                    board.drop_dismissed(&mut list);
                     board.model.apply(list, now);
                     board.source_note = note;
                     board.palette_refresh();
@@ -205,6 +209,7 @@ impl Board {
             mouse: None,
             pressed: None,
             pr_menu: None,
+            tile_menu: None,
             drag_pending: false,
             press_at: None,
             tiles_replay: 0,
@@ -571,6 +576,7 @@ impl Render for Board {
                 }
                 match ev.keystroke.key.as_str() {
                     "l" if cmd => this.toggle_list(),
+                    "escape" if this.tile_menu.is_some() => this.tile_menu = None,
                     "escape" if this.pr_menu.is_some() => this.pr_menu = None,
                     "escape" if this.list_panel.open => this.list_panel.open = false,
                     "escape" if this.settings_panel.open => this.settings_panel.open = false,
@@ -644,6 +650,9 @@ impl Render for Board {
                         this.palette.results.clear();
                         this.panels_view.update(cx, |_, cx| cx.notify());
                     }
+                    // A press anywhere puts the tile's menu away; the menu
+                    // keeps its own presses to itself (#194).
+                    this.tile_menu = None;
                     cx.notify();
                 }),
             )
@@ -804,6 +813,7 @@ impl Render for Board {
             // in the comb view they would sit over the honeycomb at
             // positions nothing is drawn at (#115, #134).
             .children(self.render_pr_menu(cx))
+            .children(self.render_tile_menu(cx))
     }
 }
 
@@ -910,6 +920,14 @@ impl Board {
         self.tiles_view.update(cx, |_, cx| cx.notify());
         self.panels_view.update(cx, |_, cx| cx.notify());
     }
+}
+
+/// A tile's own little menu (#194): where the pointer opened it, and the
+/// pull request it is about.
+pub(crate) struct TileMenu {
+    pub at: gpui::Point<Pixels>,
+    pub url: String,
+    pub label: String,
 }
 
 /// Where the cached views stand: the window above the status bar.

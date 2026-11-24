@@ -81,13 +81,26 @@ pub struct Settings {
     /// Metro accent for the panels and the status bar, by name ("orange",
     /// "cobalt", …). An unknown name falls back to the default.
     pub accent: String,
+    /// Pull requests put away by hand (#194), by url.
+    ///
+    /// The url rather than the number: a number belongs to a repository, and
+    /// two repositories have a #1. It is kept rather than forgotten on quit
+    /// because what gets put away is work that has landed — a merged pull
+    /// request is not going to change its mind and want the board back.
+    pub dismissed: Vec<String>,
 }
 
 pub const DEFAULT_ACCENT: &str = "orange";
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: BoardTheme::White, zoom: 1.0, view: BoardView::Tiles, accent: DEFAULT_ACCENT.into() }
+        Self {
+            theme: BoardTheme::White,
+            zoom: 1.0,
+            view: BoardView::Tiles,
+            accent: DEFAULT_ACCENT.into(),
+            dismissed: Vec::new(),
+        }
     }
 }
 
@@ -121,7 +134,13 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_tolerate_missing_fields() {
-        let s = Settings { theme: BoardTheme::Dark, zoom: 1.5, view: BoardView::Comb, accent: "lime".into() };
+        let s = Settings {
+            theme: BoardTheme::Dark,
+            zoom: 1.5,
+            view: BoardView::Comb,
+            accent: "lime".into(),
+            dismissed: vec!["https://github.com/o/r/pull/7".into()],
+        };
         let text = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), s);
         let tiles = Settings { view: BoardView::Tiles, ..s.clone() };
@@ -131,6 +150,7 @@ mod tests {
         assert_eq!(partial.zoom, 1.0);
         assert_eq!(partial.accent, DEFAULT_ACCENT, "an old settings file keeps the default accent");
         assert_eq!(partial.view, BoardView::Tiles, "an old settings file opens on the start screen");
+        assert!(partial.dismissed.is_empty(), "a file written before #194 has put nothing away");
         // The views that went (#183) open on the default, and the rest of
         // the file still counts.
         for gone in ["circuit", "blob", "nonsense"] {

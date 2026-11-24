@@ -131,6 +131,18 @@ impl Board {
                     )
                     .child(presets),
             )
+            // The way back for anything put away by hand (#194). Only when
+            // there is something to bring back: a row saying "0" would be a
+            // setting for nothing.
+            .when(!self.settings.dismissed.is_empty(), |d| {
+                let n = self.settings.dismissed.len();
+                d.child(
+                    section("put away").child(hint(format!("{n} merged pull request(s) hidden"))).child(
+                        button("restore-dismissed", "bring back", false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restore_dismissed(cx))),
+                    ),
+                )
+            })
             .child(hint("⌘+ ⌘− ⌘0 · ⌘+wheel zoom · ⌘, toggles this panel · settings persist"));
         self.flyout(Which::Settings, "settings", body, cx)
     }

@@ -15,7 +15,7 @@
 //! as live tiles (with their subagents as small tiles after them), and what
 //! the work produced, a tile per pull request or page.
 
-use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*, svg};
+use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*, px, svg};
 use gpui_metro::{Theme, Tile, TileSize, page_header, scaled, tile, tile_grid, u};
 
 use crate::logos::Mark;
@@ -320,6 +320,128 @@ fn face(
         .into_any_element()
 }
 
+/// The little menu a merged tile drops, and what putting one away means
+/// (#194).
+impl Board {
+    /// Pull requests put away by hand never reach the board again, in any
+    /// view: a start-screen tile, a honeycomb floor and a ⌘K row are the
+    /// same pull request, and putting it away puts it away.
+    pub(crate) fn drop_dismissed(&self, list: &mut [crate::model::SessionInfo]) {
+        without_dismissed(list, &self.settings.dismissed);
+    }
+
+    /// Puts one away: written down first, so a board that is killed in the
+    /// next second comes back without it, then taken off the board in hand
+    /// rather than at the next poll.
+    fn put_pr_away(&mut self, url: String, cx: &mut Context<Self>) {
+        if !self.settings.dismissed.contains(&url) {
+            self.settings.dismissed.push(url.clone());
+            self.settings.save();
+        }
+        for c in self.model.chips.iter_mut() {
+            c.info.prs.retain(|p| p.url() != url);
+        }
+        self.tile_menu = None;
+        self.palette_refresh();
+        self.tiles_replay += 1;
+        self.touch(cx);
+    }
+
+    /// Brings every put-away pull request back (#194). They land on the
+    /// board again at the next poll, which is where they come from.
+    pub(crate) fn restore_dismissed(&mut self, cx: &mut Context<Self>) {
+        self.settings.dismissed.clear();
+        self.settings.save();
+        self.touch(cx);
+    }
+
+    /// The menu itself: one thing to do, at the pointer that asked for it.
+    pub(crate) fn render_tile_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.tile_menu.as_ref()?;
+        let (at, url, label) = (menu.at, menu.url.clone(), menu.label.clone());
+        let theme = self.palette();
+        let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
+        let rule = if self.settings.theme == crate::settings::BoardTheme::Orange {
+            ink(1.0)
+        } else {
+            gpui_metro::Theme::palette(cx).accent
+        };
+        let card = div()
+            .w(px(MENU_W))
+            .flex()
+            .flex_col()
+            // The same sheet the pull-request drop-down wears (#134): square,
+            // flat, an accent rule along the top.
+            .border_1()
+            .border_color(ink(0.35))
+            .bg(theme::hsla(crate::ui::palette::card_bg(theme)))
+            .font_family(gpui_metro::Theme::font(cx))
+            .text_size(px(11.))
+            .text_color(ink(0.85))
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(div().h(px(2.)).bg(rule))
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(4.))
+                    .text_size(px(10.))
+                    .text_color(ink(0.45))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .id("tile-menu-dismiss")
+                    .px(px(8.))
+                    .py(px(5.))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ink(0.08)))
+                    .child("치우기")
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.put_pr_away(url.clone(), cx);
+                    })),
+            );
+        Some(
+            gpui::deferred(
+                gpui::anchored()
+                    .position(at)
+                    .snap_to_window_with_margin(gpui::Edges {
+                        top: px(MENU_EDGE),
+                        right: px(MENU_EDGE),
+                        bottom: px(crate::ui::board::STATUS_H + MENU_EDGE),
+                        left: px(MENU_EDGE),
+                    })
+                    .child(card),
+            )
+            .priority(2)
+            .into_any_element(),
+        )
+    }
+}
+
+/// The tile menu's width, and how close to the window's edges it may come.
+const MENU_W: f32 = 140.0;
+const MENU_EDGE: f32 = 8.0;
+
+/// Whether a pull request can be put away (#194): only one that has landed.
+///
+/// Everything else is work in flight, and the board is for work in flight —
+/// a draft, an open one, a red one and even a closed one can still change
+/// what they say, so hiding them would be hiding the board from itself.
+pub fn can_put_away(p: &crate::pr::Pr) -> bool {
+    p.look() == crate::pr::Look::Merged
+}
+
+/// Takes the pull requests somebody put away out of a snapshot (#194), by
+/// url: a number belongs to its repository, and two repositories have a #1.
+pub fn without_dismissed(list: &mut [SessionInfo], dismissed: &[String]) {
+    if dismissed.is_empty() {
+        return;
+    }
+    for s in list.iter_mut() {
+        s.prs.retain(|p| !dismissed.iter().any(|d| *d == p.url()));
+    }
+}
+
 const WHITE: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
 
 /// The colours of the board the tiles stand on.
@@ -457,6 +579,21 @@ impl Board {
                 });
             }
         };
+        // A merged pull request is work that has landed, and the board is
+        // for work in flight: right-clicking its tile offers to put it away
+        // (#194). Only merged ones — nothing in flight can be hidden by a
+        // slip of the hand.
+        let put_away = |p: &crate::pr::Pr| {
+            let board = board.clone();
+            let (url, label) = (p.url(), p.label());
+            move |ev: &gpui::MouseDownEvent, _: &mut gpui::Window, cx: &mut gpui::App| {
+                let (url, label, at) = (url.clone(), label.clone(), ev.position);
+                let _ = board.update(cx, |this, cx| {
+                    this.tile_menu = Some(crate::ui::board::TileMenu { at, url, label });
+                    this.touch(cx);
+                });
+            }
+        };
         match *kind {
             Kind::Session(i) => {
                 let chip = self.model.chips.get(i)?;
@@ -571,6 +708,8 @@ impl Board {
                 let waiting = p.awaiting_review();
                 let (label, title, state) = (p.label(), p.title.clone(), p.look().short().to_lowercase());
                 let act = Press::Link { label: p.label(), first: None, then: Some(p.url()), what: "pull request" };
+                let landed = can_put_away(p);
+                let offer = put_away(p);
                 Some(
                     tile(SharedString::from(format!("p-{}", p.url())), TileSize::Medium)
                         .metrics(UNIT, GAP)
@@ -579,6 +718,7 @@ impl Board {
                             div()
                                 .size_full()
                                 .relative()
+                                .when(landed, |d| d.on_mouse_down(gpui::MouseButton::Right, offer))
                                 .child(face(ink, None, label, wrap_lines(&title), String::new(), Some(state), Some(Mark::GitHub)))
                                 .when(waiting, |d| {
                                     d.child(
@@ -709,6 +849,35 @@ mod tests {
     /// and the next tab along each keep their own heading — while a ticket
     /// or a pull request still gathers them whatever window they run in
     /// (#162).
+    /// What is put away stays away, and only what landed can be (#194).
+    /// The key is the url: a pull request number belongs to a repository,
+    /// and the board watches several.
+    #[test]
+    fn only_a_merged_pull_request_can_be_put_away_and_it_goes_by_url() {
+        use crate::pr::{Look, Pr};
+        assert!(can_put_away(&Pr::synthetic(1, Look::Merged)));
+        for live in [Look::Draft, Look::Open, Look::Failing, Look::Closed] {
+            assert!(!can_put_away(&Pr::synthetic(1, live)), "{live:?} can still change what it says");
+        }
+
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        s.prs = vec![Pr::synthetic(7, Look::Merged), Pr::synthetic(8, Look::Open)];
+        let (gone, kept) = (s.prs[0].url(), s.prs[1].url());
+        assert_ne!(gone, kept);
+
+        let mut list = [s.clone()];
+        without_dismissed(&mut list, &[]);
+        assert_eq!(list[0].prs.len(), 2, "with nothing put away nothing goes");
+
+        let mut list = [s.clone()];
+        without_dismissed(&mut list, &[gone.clone()]);
+        assert_eq!(list[0].prs.iter().map(|p| p.url()).collect::<Vec<_>>(), vec![kept], "only the one put away");
+
+        let mut list = [s];
+        without_dismissed(&mut list, &["https://github.com/someone/else/pull/7".into()]);
+        assert_eq!(list[0].prs.len(), 2, "the same number in another repository is another pull request");
+    }
+
     #[test]
     fn a_shared_folder_alone_does_not_make_one_section() {
         let mut a = SessionInfo::synthetic(1, "A", Phase::Idle);
