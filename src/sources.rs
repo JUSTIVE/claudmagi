@@ -94,21 +94,28 @@ impl SessionSource for ClaudeSource {
         let mut list = read_sessions(&self.hosts);
         // A host that has to go and ask which window a seat is in is asked
         // once for all of them, rather than once per session.
+        let now_ms = millis(SystemTime::now());
         for host in &self.hosts {
-            let handles: Vec<&str> = list
+            let seats: Vec<crate::host::Seated> = list
                 .iter()
-                .filter_map(|s| s.seat.as_ref())
-                .filter(|seat| seat.host == host.id() && seat.window.is_none())
-                .map(|seat| seat.handle.as_str())
+                .filter(|s| s.seat.as_ref().is_some_and(|seat| seat.host == host.id() && seat.window.is_none()))
+                .map(|s| crate::host::Seated {
+                    handle: s.seat.as_ref().map(|seat| seat.handle.as_str()).unwrap_or_default(),
+                    // How long the session has been running, which is what
+                    // says whether its seat can still be too new to have been
+                    // written down (#192).
+                    running_for: std::time::Duration::from_millis(now_ms.saturating_sub(s.started_at)),
+                })
                 .collect();
-            if handles.is_empty() {
+            if seats.is_empty() {
                 continue;
             }
+            let handles: Vec<&str> = seats.iter().map(|s| s.handle).collect();
             let windows = host.windows(&handles);
             // And which of them the host no longer has a seat for: a pane
             // whose tab was closed leaves its session running, and the board
             // was drawing it under a window nobody can open (#186).
-            let gone = host.gone(&handles);
+            let gone = host.gone(&seats);
             for s in &mut list {
                 let Some(seat) = s.seat.as_mut() else { continue };
                 if seat.host != host.id() || seat.window.is_some() {

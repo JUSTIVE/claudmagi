@@ -46,6 +46,18 @@ pub struct Seat {
     pub focus_url: Option<String>,
 }
 
+/// A seat the board is asking a host about, and how long the session sitting
+/// in it has been running (#192).
+///
+/// The age is here because the only reason to wait before believing a host
+/// that a seat is gone is that the seat may be too new to have been written
+/// down yet. A session older than that wait cannot be in that position.
+#[derive(Clone, Copy, Debug)]
+pub struct Seated<'a> {
+    pub handle: &'a str,
+    pub running_for: Duration,
+}
+
 #[derive(Debug)]
 pub enum Outcome {
     Focused(String),
@@ -66,7 +78,7 @@ pub trait Host: Send + Sync {
         HashMap::new()
     }
 
-    /// Which of these handles the host no longer has a seat for (#186).
+    /// Which of these seats the host no longer has a place for (#186).
     ///
     /// A pane whose tab was closed leaves its session running — a background
     /// job, or a shell the terminal let go of — and the board went on drawing
@@ -74,7 +86,7 @@ pub trait Host: Send + Sync {
     /// is the only one who can say so, and only when it is sure: a host that
     /// cannot read its own state says nothing here, because a board that
     /// drops sessions on a maybe is worse than one that keeps a stale tile.
-    fn gone(&self, _handles: &[&str]) -> Vec<String> {
+    fn gone(&self, _seats: &[Seated]) -> Vec<String> {
         Vec::new()
     }
 

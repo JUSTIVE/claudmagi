@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use super::{Host, Outcome, Seat, run_with_timeout};
+use super::{Host, Outcome, Seat, Seated, run_with_timeout};
 
 
 #[derive(Default)]
@@ -65,8 +65,8 @@ impl Host for Warp {
     /// pane has to be missing for a whole minute before it counts, because a
     /// pane Warp has only just opened is not in the file yet — a session
     /// would otherwise blink out of the board in the moment it was started.
-    fn gone(&self, handles: &[&str]) -> Vec<String> {
-        self.gone_at(handles, Instant::now())
+    fn gone(&self, seats: &[Seated]) -> Vec<String> {
+        self.gone_at(seats, Instant::now())
     }
 
     fn focus(&self, seat: &Seat) -> Result<Outcome> {
@@ -127,7 +127,7 @@ impl Warp {
     }
 
     /// `gone`, with the clock handed in so it can be tested (#186).
-    fn gone_at(&self, handles: &[&str], now: Instant) -> Vec<String> {
+    fn gone_at(&self, seats: &[Seated], now: Instant) -> Vec<String> {
         let answered = self.tabs.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| (t.map.clone(), t.good));
         let Some((map, true)) = answered else {
             // Nothing was read, so nothing is missing: forget what was.
@@ -136,17 +136,17 @@ impl Warp {
         };
         let mut missing = self.missing.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
-        for handle in handles {
-            if map.contains_key(&handle.replace('-', "")) {
-                missing.remove(*handle);
+        for seat in seats {
+            if map.contains_key(&seat.handle.replace('-', "")) {
+                missing.remove(seat.handle);
                 continue;
             }
-            let since = *missing.entry((*handle).to_string()).or_insert(now);
-            if now.duration_since(since) >= GONE_AFTER {
-                out.push((*handle).to_string());
+            let since = *missing.entry(seat.handle.to_string()).or_insert(now);
+            if now.duration_since(since) >= wait_for(seat.running_for) {
+                out.push(seat.handle.to_string());
             }
         }
-        missing.retain(|h, _| handles.contains(&h.as_str()));
+        missing.retain(|h, _| seats.iter().any(|s| s.handle == h));
         out
     }
 
@@ -195,6 +195,29 @@ impl Warp {
 /// short enough that a tab closed by hand is off the board before anyone
 /// goes looking for it.
 const GONE_AFTER: Duration = Duration::from_secs(60);
+
+/// The same wait for a session that was already running before this board
+/// started (#192).
+///
+/// The minute above buys one thing: a pane Warp has only just opened and has
+/// not written down yet. A session that has been running for longer than
+/// that minute was not opened in it a moment ago, so the excuse cannot
+/// apply, and holding its tile for a further minute after every launch only
+/// puts a week-old background job back on the board — loudest tile first,
+/// since what it last said was that it wanted a person.
+///
+/// It is not zero. Age is never a reason to drop anything on its own: the
+/// only thing that condemns a pane is Warp not listing it, and this wait is
+/// what keeps one unlucky read from being enough. It spans more than one
+/// fetch (`WARP_TABS_TTL`), so a list that is briefly short of a pane — a
+/// restore, a write in flight — has to say the same thing twice.
+const GONE_AFTER_SETTLED: Duration = Duration::from_secs(6);
+
+/// How long a seat waits before a missing pane counts, by how long its
+/// session has been running.
+fn wait_for(running_for: Duration) -> Duration {
+    if running_for > GONE_AFTER { GONE_AFTER_SETTLED } else { GONE_AFTER }
+}
 
 /// How often to ask Warp for its pane → tab map.
 const WARP_TABS_TTL: Duration = Duration::from_secs(5);
@@ -443,7 +466,10 @@ mod tests {
         let warp = Warp::default();
         let here = "0762e1f78808469c8809535d4eb65068";
         let closed = "0bd9a62647ef4dc3ab9a54e9966df502";
-        let handles = [here, closed];
+        // Both only just started, so both get the newcomer's whole minute
+        // (#192).
+        let seat = |h: &'static str| Seated { handle: h, running_for: Duration::from_secs(3) };
+        let handles = [seat(here), seat(closed)];
         let t0 = Instant::now();
 
         // Nothing read: nothing is gone, however long it is missing.
@@ -489,6 +515,53 @@ mod tests {
         });
         assert!(warp.gone_at(&handles, t0 + GONE_AFTER * 3).is_empty(), "the clock starts again");
 
+    }
+
+    /// The minute above buys one thing: a pane Warp has opened and not
+    /// written down yet. Only a session young enough to be in that position
+    /// gets it (#192) — otherwise every launch put a week-old background job
+    /// back on the board for a minute, wearing the colour that calls for a
+    /// person.
+    ///
+    /// Age still condemns nothing on its own. What drops a pane is Warp not
+    /// listing it, and an old seat has to be missing from more than one
+    /// look at that list before the board believes it.
+    #[test]
+    fn a_session_that_has_been_up_for_a_week_does_not_get_the_newcomers_minute() {
+        let here = "0762e1f78808469c8809535d4eb65068";
+        let gone = "0bd9a62647ef4dc3ab9a54e9966df502";
+        let listed = |warp: &Warp| {
+            *warp.tabs.lock().unwrap() = Some(WarpTabs {
+                map: HashMap::from([(here.to_string(), "1-1".to_string())]),
+                fetched: Instant::now(),
+                good: true,
+                miss: None,
+            });
+        };
+        let t0 = Instant::now();
+        let week = Duration::from_secs(60 * 60 * 24 * 7);
+
+        let old = Warp::default();
+        listed(&old);
+        let seats = [Seated { handle: here, running_for: week }, Seated { handle: gone, running_for: week }];
+        assert!(old.gone_at(&seats, t0).is_empty(), "one unlucky read is never enough");
+        assert!(old.gone_at(&seats, t0 + GONE_AFTER_SETTLED / 2).is_empty());
+        assert_eq!(old.gone_at(&seats, t0 + GONE_AFTER_SETTLED), vec![gone.to_string()]);
+        assert!(
+            GONE_AFTER_SETTLED > WARP_TABS_TTL,
+            "the short wait has to span more than one look at Warp's list, or a single stale read condemns a pane"
+        );
+
+        // The pane of a session that started a moment ago may be the one
+        // Warp has not written down yet, so that one keeps the minute.
+        let young = Warp::default();
+        listed(&young);
+        let new_seat = [Seated { handle: gone, running_for: Duration::from_secs(3) }];
+        // Its clock starts here, at the first answer that does not list it.
+        let first = t0 + GONE_AFTER_SETTLED * 2;
+        assert!(young.gone_at(&new_seat, first).is_empty(), "a pane this new may simply be unwritten");
+        assert!(young.gone_at(&new_seat, first + GONE_AFTER / 2).is_empty());
+        assert_eq!(young.gone_at(&new_seat, first + GONE_AFTER), vec![gone.to_string()]);
     }
 
     #[test]
