@@ -9,7 +9,6 @@
 //! environment and needs none of this machinery.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -17,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use super::{Host, Outcome, Seat};
+use super::{Host, Outcome, Seat, run_with_timeout};
 
 
 #[derive(Default)]
@@ -243,37 +242,6 @@ impl TabsMiss {
             Self::NoDatabase | Self::Unreadable => None,
         }
     }
-}
-
-/// Runs a command with a wall-clock limit and returns its stdout on success.
-/// Stdout is drained on a helper thread so a chatty child never blocks on a
-/// full pipe.
-fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
-    let mut child = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut text = String::new();
-        stdout.read_to_string(&mut text).ok().map(|_| text)
-    });
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) => return None,
-            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    reader.join().ok().flatten()
 }
 
 /// Warp's state databases, most likely first. Warp writes the live one under

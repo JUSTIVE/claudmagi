@@ -17,6 +17,8 @@
 //! help here.
 
 use std::collections::HashMap;
+use std::io::Read;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
@@ -24,6 +26,7 @@ use crate::model::SessionInfo;
 
 pub mod cloud;
 pub mod desktop;
+pub mod herdr;
 pub mod orca;
 pub mod warp;
 
@@ -84,6 +87,37 @@ pub trait Host: Send + Sync {
     }
 }
 
+/// Runs a command with a wall-clock limit and returns its stdout on success.
+/// Stdout is drained on a helper thread so a chatty child never blocks on a
+/// full pipe.
+pub(super) fn run_with_timeout(mut cmd: std::process::Command, timeout: Duration) -> Option<String> {
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).ok().map(|_| text)
+    });
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) => return None,
+            Ok(None) if start.elapsed() < timeout => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    reader.join().ok().flatten()
+}
+
 /// The hosts a board can name, with the word the test panel labels each by
 /// (#124). A plain terminal is not here: it has a seat but nothing to show
 /// for it, which is the honest answer rather than a fifth mark.
@@ -96,6 +130,7 @@ pub fn all() -> Vec<Box<dyn Host>> {
     vec![
         Box::new(warp::Warp::default()),
         Box::new(orca::Orca),
+        Box::new(herdr::Herdr::default()),
         // Claims nothing from an environment; it is here so a cloud seat has
         // somewhere to be focused from (#120).
         Box::new(cloud::Cloud),
@@ -167,6 +202,18 @@ mod tests {
             Some("tab_9"),
             "Orca hands the tab over, so grouping costs nothing (#118)"
         );
+
+        // Herdr draws with Ghostty's engine and says so, so the host that
+        // names a plain terminal would take its sessions — every one of them
+        // into one `term:ghostty` group — if Herdr were not asked first
+        // (#189).
+        let herdr = seat(&[
+            ("HC_TERMINAL_ID", "t4"),
+            ("HC_TERMINAL_SOCKET", "/Users/x/.local/state/herdr-core/default/default.sock"),
+            ("TERM_PROGRAM", "ghostty"),
+        ]);
+        assert_eq!((herdr.host, herdr.handle.as_str()), ("herdr", "t4"));
+        assert_eq!(herdr.window, None, "the window holds the tab, and is asked for it (#42)");
 
         // A terminal nobody wrote a host for still names itself.
         assert_eq!(seat(&[("TERM_PROGRAM", "iTerm.app")]).host, "term");
