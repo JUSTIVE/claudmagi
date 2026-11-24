@@ -175,6 +175,17 @@ impl Board {
         self.frame();
     }
 
+    /// What a poll read, laid on the board unless the board was read in hand
+    /// since the poll set out (`generation`): then it is the older snapshot,
+    /// and laying it down would undo what was just done (#197).
+    pub fn take_polled(&mut self, generation: u64, list: Vec<crate::model::SessionInfo>, note: Option<&'static str>) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.take(list, note);
+        true
+    }
+
     /// Pull requests put away by hand never reach the board again (#194).
     pub fn drop_dismissed(&self, list: &mut [crate::model::SessionInfo]) {
         crate::ui::tiles::without_dismissed(list, &self.settings.dismissed);
@@ -332,5 +343,30 @@ trait DetachQuietly {
 impl<T> DetachQuietly for Spawned<T> {
     fn detach_quietly(self) {
         drop(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Phase, SessionInfo};
+
+    /// A test-tools button reads the sandbox in hand and bumps the
+    /// generation; a poll that set out before then holds the older snapshot
+    /// and is dropped, or it would undo what was just done (#197).
+    #[test]
+    fn a_poll_that_set_out_before_a_change_in_hand_is_dropped() {
+        let mut b = Board::new();
+        let s = SessionInfo::synthetic(1, "S-1", Phase::Working);
+        assert!(b.take_polled(0, vec![s.clone()], None), "a poll of the same generation lands");
+        assert_eq!(b.model.live().count(), 1);
+
+        b.generation += 1;
+        assert!(!b.take_polled(0, Vec::new(), None), "an older one does not");
+        assert_eq!(b.model.live().count(), 1, "and leaves the board as it was");
+
+        let mut idle = s;
+        idle.status = "idle".into();
+        assert!(b.take_polled(1, vec![idle], None), "the next one lands again");
     }
 }

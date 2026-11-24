@@ -117,27 +117,48 @@ fn on_key(ui: &Ui, ev: &KeyEvent) {
         crate::ui::palette::key(ui, ev);
         return;
     }
+    let Some(command) = command(key, cmd) else { return };
     let quit = ui.update(|b| {
-        match key {
-            "l" if cmd => panel::toggle(b, Which::List),
-            "Escape" if b.tile_menu.is_some() => b.tile_menu = None,
-            "Escape" if b.list_panel.open => b.list_panel.open = false,
-            "Escape" if b.settings_panel.open => b.settings_panel.open = false,
-            "Escape" if b.dev.open => b.dev.open = false,
-            "Escape" => return true,
-            // ⌘T, or T alone as it always was.
-            "t" | "T" => panel::toggle(b, Which::Dev),
-            "," if cmd => panel::toggle(b, Which::Settings),
-            "=" | "+" => b.zoom_by(zoom::USER_ZOOM_STEP),
-            "-" | "_" => b.zoom_by(1.0 / zoom::USER_ZOOM_STEP),
-            "0" if cmd => b.zoom_by(0.0),
-            _ => {}
+        match command {
+            Command::Panel(which) => panel::toggle(b, which),
+            Command::Zoom(factor) => b.zoom_by(factor),
+            // Esc puts away whatever is up, the topmost first, and quits
+            // when nothing is.
+            Command::Back if b.tile_menu.is_some() => b.tile_menu = None,
+            Command::Back if b.list_panel.open => b.list_panel.open = false,
+            Command::Back if b.settings_panel.open => b.settings_panel.open = false,
+            Command::Back if b.dev.open => b.dev.open = false,
+            Command::Back => return true,
         }
         false
     });
     if quit {
         quit_app();
     }
+}
+
+/// What a key does on the board, when the search is not open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Command {
+    Panel(Which),
+    /// Multiply the zoom by this, or reset it at 0.
+    Zoom(f32),
+    /// Esc.
+    Back,
+}
+
+fn command(key: &str, cmd: bool) -> Option<Command> {
+    Some(match key {
+        "l" if cmd => Command::Panel(Which::List),
+        // ⌘T, or T alone as it always was (#202).
+        "t" | "T" => Command::Panel(Which::Dev),
+        "," if cmd => Command::Panel(Which::Settings),
+        "=" | "+" => Command::Zoom(zoom::USER_ZOOM_STEP),
+        "-" | "_" => Command::Zoom(1.0 / zoom::USER_ZOOM_STEP),
+        "0" if cmd => Command::Zoom(0.0),
+        "Escape" => Command::Back,
+        _ => return None,
+    })
 }
 
 fn quit_app() {
@@ -151,12 +172,7 @@ fn poll_sessions(ui: Ui) {
             let (source, generation) = ui.peek(|b| (b.source(), b.generation));
             let read = background(async move { (source.snapshot(), source.note()) }).await;
             if let Ok((list, note)) = read {
-                ui.update(|b| {
-                    // Read in hand meanwhile: this snapshot is the older one.
-                    if b.generation == generation {
-                        b.take(list, note)
-                    }
-                });
+                ui.update(|b| b.take_polled(generation, list, note));
             }
             timer(Duration::from_millis(POLL_MS)).await;
         }
@@ -348,4 +364,26 @@ fn status_button(text: &'static str, active: bool, colors: (Hsla, Hsla, Hsla), o
         .active(move |s| s.bg(fill))
         .on_press(move || on_press())
         .child(label(text).text_size(px(BODY)).text_color(if active { fill_ink } else { ink }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ⌘T opens the test tools, as T alone always did (#202); the other
+    /// panels keep their keys, and a bare letter that is not one does
+    /// nothing.
+    #[test]
+    fn the_board_keys() {
+        assert_eq!(command("t", true), Some(Command::Panel(Which::Dev)), "⌘T");
+        assert_eq!(command("t", false), Some(Command::Panel(Which::Dev)), "T alone");
+        assert_eq!(command("T", false), Some(Command::Panel(Which::Dev)), "with Shift held");
+        assert_eq!(command("l", true), Some(Command::Panel(Which::List)), "⌘L");
+        assert_eq!(command(",", true), Some(Command::Panel(Which::Settings)), "⌘,");
+        assert_eq!(command("0", true), Some(Command::Zoom(0.0)), "⌘0 resets the zoom");
+        assert_eq!(command("Escape", false), Some(Command::Back));
+        assert_eq!(command("l", false), None, "L alone is not ⌘L");
+        assert_eq!(command("0", false), None, "nor 0 ⌘0");
+        assert_eq!(command("x", false), None);
+    }
 }

@@ -474,9 +474,13 @@ fn inks_of(b: &Board) -> Inks {
 
 /// What the tile `key` shows, or `None` once it is no longer on the board.
 fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
-    let inks = inks_of(b);
-    let chip_of = |id: &str| b.model.chips.iter().find(|c| c.info.session_id == id && !c.anim.gone);
-    let infos = || b.model.live().map(|c| &c.info);
+    shows_in(&b.model, inks_of(b), key)
+}
+
+/// [`shows`], from the model and the inks themselves.
+fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
+    let chip_of = |id: &str| model.chips.iter().find(|c| c.info.session_id == id && !c.anim.gone);
+    let infos = || model.live().map(|c| &c.info);
     let plain = |fill: Rgba, ink: Rgba, front: Face, mark: Option<Mark>| Shows {
         fill,
         ink,
@@ -817,9 +821,7 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
         }
     };
     let mut t = tile(key.id(), key.size()).metrics(unit, gap).color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)));
-    // A subagent's tile says what its session has at work; it is not a way
-    // anywhere, so it takes no press — no tilt, no turnstile (#204).
-    if !matches!(key, TileKey::Agent(..)) {
+    if pressable(&key) {
         t = t.on_click(press);
     }
     let front = {
@@ -876,7 +878,7 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
     // A front with nothing on it but the name: no `!`, no count of
     // subagents at work. It shows where the session runs, large in the
     // middle as a Metro tile shows its glyph, and the corner mark makes way.
-    let plain = move || !back && get().is_some_and(|s| s.source.is_some() && s.front.corner.is_none() && s.front.big.is_empty());
+    let plain = move || !back && get().is_some_and(|s| plain_front(&s));
     base.p(px(9. * z))
         .gap(px(3. * z))
         .child(
@@ -938,6 +940,19 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .h(px(5. * z))
                 .bg(move || if get().is_some_and(|s| s.waiting) { ink().opacity(0.5) } else { Hsla::transparent_black() }),
         )
+}
+
+/// A front with nothing on it but the name: no `!`, no count of subagents
+/// at work. It shows where the session runs, large in the middle (#196).
+fn plain_front(s: &Shows) -> bool {
+    s.source.is_some() && s.front.corner.is_none() && s.front.big.is_empty()
+}
+
+/// Whether a tile takes a press. A subagent's tile says what its session
+/// has at work; it is not a way anywhere, so it takes none — no tilt, no
+/// turnstile (#204).
+fn pressable(key: &TileKey) -> bool {
+    !matches!(key, TileKey::Agent(..))
 }
 
 /// Puts a merged pull request away: written down first, so a board that is
@@ -1239,4 +1254,110 @@ mod tests {
         assert_eq!(clip("abcdef", 4), "abc…");
         assert_eq!(clip("abc", 4), "abc");
     }
+
+    /// One live session, settled on a fresh board.
+    fn board_of(infos: Vec<SessionInfo>) -> BoardModel {
+        let mut model = BoardModel::new();
+        model.apply(infos, Instant::now());
+        model.settle();
+        model
+    }
+
+    fn inks() -> Inks {
+        Inks { pal: theme::PALETTE, accent: Rgba { r: 1.0, g: 0.44, b: 0.0, a: 1.0 } }
+    }
+
+    fn seat(host: &'static str) -> Option<crate::host::Seat> {
+        Some(crate::host::Seat { host, handle: String::new(), window: None, focus_url: None })
+    }
+
+    fn session_tile(model: &BoardModel, i: usize) -> Shows {
+        shows_in(model, inks(), &TileKey::Session(model.chips[i].info.session_id.clone())).expect("the session is on the board")
+    }
+
+    /// A front with nothing to say but the name carries the session's
+    /// source in the middle: the app it runs in, or Claude where it sits in
+    /// none (#196). A `!` or a count of subagents at work is something to
+    /// say, and the source makes way for it.
+    #[test]
+    fn a_quiet_session_tile_shows_where_it_runs() {
+        let mut idle = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        idle.subagents.clear();
+        let mut warp = SessionInfo::synthetic(2, "S-2", Phase::Working);
+        warp.subagents.clear();
+        warp.seat = seat("warp");
+        let asking = SessionInfo::synthetic(3, "S-3", Phase::NeedsUser);
+        let mut busy = SessionInfo::synthetic(4, "S-4", Phase::Working);
+        busy.subagents = vec![crate::model::SubagentInfo::synthetic(1, "AGENT", "", true)];
+        let model = board_of(vec![idle, warp, asking, busy]);
+
+        let quiet = session_tile(&model, 0);
+        assert!(plain_front(&quiet), "nothing on the front but the name");
+        assert_eq!(quiet.source, Some(Mark::Claude), "no seat: Claude's mark");
+        assert_eq!(quiet.mark, None, "and no corner mark to stand in for it");
+
+        let seated = session_tile(&model, 1);
+        assert!(plain_front(&seated));
+        assert_eq!((seated.source, seated.mark), (Some(Mark::Warp), Some(Mark::Warp)), "the app it runs in");
+
+        assert!(!plain_front(&session_tile(&model, 2)), "a session asking says `!` instead");
+        assert!(!plain_front(&session_tile(&model, 3)), "one with subagents at work counts them instead");
+    }
+
+    /// A tile is looked up again by its key, so a session whose host changes
+    /// shows the new one without the tile being built again (#205, #206).
+    #[test]
+    fn a_change_of_host_reaches_the_tile() {
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        s.seat = seat("warp");
+        let mut model = board_of(vec![s.clone()]);
+        assert_eq!(session_tile(&model, 0).mark, Some(Mark::Warp));
+        s.seat = seat("orca");
+        model.apply(vec![s], Instant::now());
+        assert_eq!(session_tile(&model, 0).mark, Some(Mark::Orca), "the same tile, the new host");
+    }
+
+    /// A subagent's tile is not a way anywhere (#204); everything else is.
+    #[test]
+    fn only_a_subagent_tile_takes_no_press() {
+        assert!(!pressable(&TileKey::Agent("s".into(), 0)));
+        for key in [
+            TileKey::Session("s".into()),
+            TileKey::Issue("PJM-1".into()),
+            TileKey::Pr("https://github.com/o/r/pull/1".into()),
+            TileKey::Unanswered("https://github.com/o/r/pull/2".into()),
+            TileKey::Page("https://claude.ai/artifact/x".into()),
+        ] {
+            assert!(pressable(&key), "{key:?}");
+        }
+    }
+
+    /// A session that picks up a Linear issue or opens a pull request moves
+    /// to other work (`work_unit`), but its group is the same group: it keeps
+    /// its key, so the new tile is pushed in rather than the group being
+    /// dropped and built again (#200).
+    #[test]
+    fn a_group_keeps_its_key_when_its_session_takes_up_work() {
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Working);
+        s.ticket = None;
+        s.prs.clear();
+        s.prs_unanswered.clear();
+        s.artifacts.clear();
+        s.subagents.clear();
+        let key_of = |model: &BoardModel| keyed_groups(model)[0].0.clone();
+        let mut model = board_of(vec![s.clone()]);
+        let (before, unit) = (key_of(&model), work_unit(&s));
+
+        s.ticket = Some(crate::ticket::Ticket::synthetic(7, Some(crate::ticket::Status::Started)));
+        model.apply(vec![s.clone()], Instant::now());
+        assert_ne!(work_unit(&s), unit, "the work it is on changed");
+        assert_eq!(key_of(&model), before, "the group did not");
+        assert_eq!(keyed_groups(&model)[0].2.first(), Some(&Kind::Issue(0)), "the issue joins at the head of it");
+
+        s.prs.push(crate::pr::Pr::synthetic(1, crate::pr::Look::Open));
+        model.apply(vec![s], Instant::now());
+        assert_eq!(key_of(&model), before, "nor when it opens a pull request");
+        assert!(keyed_groups(&model)[0].2.contains(&Kind::Pr(0, 0)), "which joins it too");
+    }
+
 }

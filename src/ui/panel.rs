@@ -11,7 +11,7 @@ use crate::ui::metro::{BODY, PAD};
 use crate::ui::state::{Board, Ui};
 
 /// Which panel a header drag belongs to.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
     Dev,
     Settings,
