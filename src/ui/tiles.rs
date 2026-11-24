@@ -816,10 +816,12 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
             }
         }
     };
-    let mut t = tile(key.id(), key.size())
-        .metrics(unit, gap)
-        .color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)))
-        .on_click(press);
+    let mut t = tile(key.id(), key.size()).metrics(unit, gap).color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)));
+    // A subagent's tile says what its session has at work; it is not a way
+    // anywhere, so it takes no press — no tilt, no turnstile (#204).
+    if !matches!(key, TileKey::Agent(..)) {
+        t = t.on_click(press);
+    }
     let front = {
         let menu = menu.clone();
         move |_: TileSize| face(data, false, z, menu.clone())
