@@ -15,9 +15,10 @@
 //! as live tiles (with their subagents as small tiles after them), and what
 //! the work produced, a tile per pull request or page.
 
-use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*};
+use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*, svg};
 use gpui_metro::{Theme, Tile, TileSize, page_header, scaled, tile, tile_grid, u};
 
+use crate::logos::Mark;
 use crate::model::{BoardModel, ChipState, Phase, SessionInfo, Target};
 use crate::render::comb;
 use crate::theme::{self, Palette};
@@ -38,6 +39,8 @@ const TOP: f32 = 22.0;
 const ROW_GAP: f32 = 28.0;
 /// A live tile's cycle, gpui-metro's own default.
 const PERIOD: f32 = 12.0;
+/// The mark in a tile's free corner (#187), in design px.
+const MARK: f32 = 11.0;
 /// The most letters a group's title runs to before it is cut, per small
 /// tile of the group's width: the title is set in one line over the group.
 const TITLE_CHARS_PER_UNIT: usize = 6;
@@ -257,7 +260,16 @@ fn back_lines(info: &SessionInfo, chip: &ChipState) -> (String, Vec<String>) {
 
 /// A medium tile's face: a corner mark, a large line, small lines under it,
 /// and the tile's title at the bottom-left where Metro keeps it.
-fn face(ink: Rgba, corner: Option<String>, big: String, small: Vec<String>, title: String, foot: Option<String>) -> AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn face(
+    ink: Rgba,
+    corner: Option<String>,
+    big: String,
+    small: Vec<String>,
+    title: String,
+    foot: Option<String>,
+    mark: Option<Mark>,
+) -> AnyElement {
     let soft = gpui::Hsla::from(ink).opacity(0.72);
     div()
         .size_full()
@@ -276,13 +288,28 @@ fn face(ink: Rgba, corner: Option<String>, big: String, small: Vec<String>, titl
             div()
                 .absolute()
                 .left(u(9.))
-                .right(u(9.))
+                .right(u(MARK + 12.))
                 .bottom(u(7.))
                 .flex()
                 .flex_col()
                 .child(div().text_size(u(13.)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(title))
                 .children(foot.map(|f| div().text_size(u(10.)).text_color(soft).child(f))),
         )
+        // What the tile is a tile *of*, in the one corner nothing else uses
+        // (#187). The badge has the top right, the label the top left, the
+        // name and its state the bottom left; this sits opposite the name,
+        // in the ink at the same weight the state line is drawn in, so it
+        // reads as a mark on the tile rather than another thing on it.
+        .children(mark.map(|m| {
+            svg()
+                .absolute()
+                .right(u(8.))
+                .bottom(u(7.))
+                .size(u(MARK))
+                .flex_none()
+                .path(m.path())
+                .text_color(soft)
+        }))
         .into_any_element()
 }
 
@@ -432,6 +459,9 @@ impl Board {
                 let state = info.phase().label().to_lowercase();
                 let (big, small) = back_lines(info, chip);
                 let back_name = name.clone();
+                // Where it runs, in the same mark the cell wore (#123): the
+                // Claude mark would be on every session tile and say nothing.
+                let mark = info.seat.as_ref().and_then(|s| Mark::host(s.host));
                 // Everything the two faces show: with it the tile keeps its
                 // last drawing while it slides, instead of every slide of
                 // every tile redrawing the whole screen (#182).
@@ -441,6 +471,7 @@ impl Board {
                     &corner,
                     &big,
                     &small,
+                    mark,
                     [fill, ink].map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits)),
                 );
                 let key = {
@@ -454,8 +485,8 @@ impl Board {
                         .metrics(UNIT, GAP)
                         .color(theme::hsla(fill))
                         .content_key(key)
-                        .front(move |_, _| face(ink, corner, String::new(), Vec::new(), name, Some(state)))
-                        .back(move |_, _| face(ink, None, big, small, back_name, None))
+                        .front(move |_, _| face(ink, corner, String::new(), Vec::new(), name, Some(state), mark))
+                        .back(move |_, _| face(ink, None, big, small, back_name, None, mark))
                         .period(PERIOD)
                         .phase(phase_of(info))
                         .on_click(press(Press::Session(i))),
@@ -514,7 +545,7 @@ impl Board {
                     tile(SharedString::from(format!("i-{}", t.key)), TileSize::Medium)
                         .metrics(UNIT, GAP)
                         .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some(state)))
+                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some(state), Some(Mark::Linear)))
                         .on_click(press(act)),
                 )
             }
@@ -535,7 +566,7 @@ impl Board {
                             div()
                                 .size_full()
                                 .relative()
-                                .child(face(ink, None, label, wrap_lines(&title), String::new(), Some(state)))
+                                .child(face(ink, None, label, wrap_lines(&title), String::new(), Some(state), Some(Mark::GitHub)))
                                 .when(waiting, |d| {
                                     d.child(
                                         div()
@@ -561,7 +592,7 @@ impl Board {
                     tile(SharedString::from(format!("u-{}", r.url())), TileSize::Medium)
                         .metrics(UNIT, GAP)
                         .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, Vec::new(), String::new(), Some("github did not answer".into())))
+                        .front(move |_, _| face(ink, None, label, Vec::new(), String::new(), Some("github did not answer".into()), Some(Mark::GitHub)))
                         .on_click(press(act)),
                 )
             }
@@ -575,7 +606,7 @@ impl Board {
                     tile(SharedString::from(format!("g-{}", a.url())), TileSize::Medium)
                         .metrics(UNIT, GAP)
                         .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some("published".into())))
+                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some("published".into()), Some(Mark::Artifact)))
                         .on_click(press(act)),
                 )
             }
