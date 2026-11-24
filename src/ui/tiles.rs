@@ -609,9 +609,9 @@ pub fn start_screen(ui: Ui) -> AnyElement {
     // Bumped after a tile's press, so the screen turns back in (#176).
     let replay = signal(0usize);
     {
-        let ui = ui.clone();
+        let r = ui.memo(|b| b.tiles_replay);
         effect(move || {
-            let r = ui.read(|b| b.tiles_replay);
+            let r = r.get();
             untracked(|| replay.set(r));
         });
     }
@@ -645,10 +645,11 @@ fn screen(ui: Ui, z: f32, replay: Signal<usize>) -> AnyElement {
     // start screen did when it was one grid (#176).
     let tapped: Signal<Option<String>> = signal(None);
     {
-        let ui = ui.clone();
+        // The screen comes back in after the press has landed — and only
+        // then: a memo, since a poll changes the board without a press.
+        let landed = ui.memo(|b| b.tiles_replay);
         effect(move || {
-            // The screen comes back in after the press has landed.
-            ui.read(|b| b.tiles_replay);
+            landed.get();
             untracked(|| tapped.set(None));
         });
     }
@@ -718,20 +719,22 @@ fn group(
             untracked(|| leave.set(away));
         });
     }
-    let down: Rc<dyn Fn()> = {
-        let unit = unit.clone();
-        Rc::new(move || tapped.set(Some(unit.clone())))
-    };
     let grid = tile_grid()
         .live_columns(move || columns.get())
         .metrics(unit_px, gap)
         .turnstile(true)
         .replay(replay.read_only())
         .leave(leave.read_only())
+        // The moment a tile of this group is tapped, the others start to
+        // swing away with it.
+        .on_tap({
+            let unit = unit.clone();
+            move || tapped.set(Some(unit.clone()))
+        })
         .hinge(hinge)
         .source(move || {
             let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
-            keys.into_iter().map(|k| tile_for(ui.clone(), k, unit_px, gap, z, down.clone())).collect()
+            keys.into_iter().map(|k| tile_for(ui.clone(), k, unit_px, gap, z)).collect()
         });
     // A group that the layout moves — one came in ahead of it, or the group
     // above grew a row — slides to its new place the way a tile slides
@@ -781,7 +784,7 @@ fn group(
 /// shows: a session (or its subagent) jumps to its terminal, an issue
 /// opens in Linear, a pull request or a page in the browser. The grid
 /// swings away first and the press lands after.
-fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32, down: Rc<dyn Fn()>) -> Tile {
+fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
     let initial = ui.peek(|b| shows(b, &key));
     let live = initial.as_ref().is_some_and(|s| s.back.is_some());
     let phase = match &key {
@@ -819,12 +822,11 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32, down: Rc<dyn Fn()
         .on_click(press);
     let front = {
         let menu = menu.clone();
-        let down = down.clone();
-        move |_: TileSize| face(data, false, z, menu.clone(), down.clone())
+        move |_: TileSize| face(data, false, z, menu.clone())
     };
     t = t.front(front);
     if live {
-        t = t.back(move |_: TileSize| face(data, true, z, menu.clone(), down.clone())).period(PERIOD);
+        t = t.back(move |_: TileSize| face(data, true, z, menu.clone())).period(PERIOD);
         if let Some(p) = phase {
             t = t.phase(p);
         }
@@ -834,7 +836,7 @@ fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32, down: Rc<dyn Fn()
 
 /// A tile's face, bound to what the tile shows: its fill, its ink and its
 /// words follow the board without the tile being built again.
-fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32)) + Clone + 'static, down: Rc<dyn Fn()>) -> View {
+fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32)) + Clone + 'static) -> View {
     let get = move || data.get();
     let fill = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.fill));
     let ink = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.ink));
@@ -845,9 +847,7 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
         .size_full()
         .relative()
         .bg(fill)
-        .on_context_menu(move |e: &ContextMenuEvent| menu((f32::from(e.page_position.x), f32::from(e.page_position.y))))
-        // The moment a tile goes down, the other groups start to swing away.
-        .on_press_down(move |_: &PressEvent| down());
+        .on_context_menu(move |e: &ContextMenuEvent| menu((f32::from(e.page_position.x), f32::from(e.page_position.y))));
     if small_tile {
         let text = move || SharedString::from(get().and_then(|s| s.agent).map(|a| a.0).unwrap_or_default());
         let over = untracked(get).and_then(|s| s.agent).is_some_and(|a| a.1);
