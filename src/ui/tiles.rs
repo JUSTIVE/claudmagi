@@ -737,27 +737,11 @@ fn group(
         })
         .hinge(hinge)
         .source({
-            // What each tile shows, one memo per tile, made under the group
-            // rather than in this closure: the grid reads the closure again
-            // whenever the group's tiles change, and what a run makes is
-            // dropped at the next. A tile is built once, from the first run's
-            // memo, so a dropped one left it showing the colours and words
-            // it had then — a theme change missed it (#211).
-            let owner = Owner::current();
-            let memos: Rc<std::cell::RefCell<std::collections::HashMap<TileKey, Memo<Option<Shows>>>>> = Rc::default();
+            let memos = TileMemos::new();
             move || {
                 let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
-                let mut memos = memos.borrow_mut();
-                memos.retain(|k, _| keys.contains(k));
-                keys.into_iter()
-                    .map(|k| {
-                        let data = *memos.entry(k.clone()).or_insert_with(|| {
-                            let (ui, key) = (ui.clone(), k.clone());
-                            owner.run(|| computed(move || ui.read(|b| shows(b, &key))))
-                        });
-                        tile_for(ui.clone(), k, data, unit_px, gap, z)
-                    })
-                    .collect()
+                memos.keep(&keys);
+                keys.into_iter().map(|k| tile_for(ui.clone(), k.clone(), memos.of(&ui, &k), unit_px, gap, z)).collect()
             }
         });
     // A group that the layout moves — one came in ahead of it, or the group
@@ -956,6 +940,37 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .h(px(5. * z))
                 .bg(move || if get().is_some_and(|s| s.waiting) { ink().opacity(0.5) } else { Hsla::transparent_black() }),
         )
+}
+
+/// What each tile of a group shows, one memo per tile, made under the group
+/// rather than in the grid's `source` closure: the grid runs that closure
+/// again whenever the group's tiles change, and what a run makes is dropped
+/// at the next. A tile is built once, from the first run's memo, so a dropped
+/// one left it showing the colours and words it had then — a theme change
+/// missed it (#211).
+struct TileMemos {
+    owner: Owner,
+    memos: std::cell::RefCell<std::collections::HashMap<TileKey, Memo<Option<Shows>>>>,
+}
+
+impl TileMemos {
+    /// Made under the current owner, which the memos then belong to.
+    fn new() -> Self {
+        Self { owner: Owner::current(), memos: Default::default() }
+    }
+
+    /// The tile `key`'s memo, the same one every time it is asked for.
+    fn of(&self, ui: &Ui, key: &TileKey) -> Memo<Option<Shows>> {
+        *self.memos.borrow_mut().entry(key.clone()).or_insert_with(|| {
+            let (ui, key) = (ui.clone(), key.clone());
+            self.owner.run(|| computed(move || ui.read(|b| shows(b, &key))))
+        })
+    }
+
+    /// Forgets the tiles that are no longer in the group.
+    fn keep(&self, keys: &[TileKey]) {
+        self.memos.borrow_mut().retain(|k, _| keys.contains(k));
+    }
 }
 
 /// A front with nothing on it but the name: no `!`, no count of subagents
@@ -1374,6 +1389,121 @@ mod tests {
         model.apply(vec![s], Instant::now());
         assert_eq!(key_of(&model), before, "nor when it opens a pull request");
         assert!(keyed_groups(&model)[0].2.contains(&Kind::Pr(0, 0)), "which joins it too");
+    }
+
+
+    /// A board with these sessions on it, laid out in a 980 pt window.
+    fn board_with(infos: Vec<SessionInfo>) -> Board {
+        let mut b = Board::new();
+        b.model.apply(infos, Instant::now());
+        b.model.settle();
+        b.resize(980.0, 620.0);
+        b
+    }
+
+    fn bare(n: u32, dir: &str) -> SessionInfo {
+        let mut s = SessionInfo::synthetic(n, &format!("S-{n}"), Phase::Working);
+        s.cwd = dir.into();
+        s.ticket = None;
+        s.prs.clear();
+        s.prs_unanswered.clear();
+        s.artifacts.clear();
+        s.subagents.clear();
+        s
+    }
+
+    /// A session that comes in makes a group of its own and leaves the
+    /// others as they were: their keys stay, so they are not built again
+    /// and turned in from scratch (#198).
+    #[test]
+    fn a_new_group_leaves_the_others_where_they_are() {
+        let (a, b) = (bare(1, "/w/a"), bare(2, "/w/b"));
+        let before: Vec<String> = keyed_groups(&board_of(vec![a.clone(), b.clone()])).into_iter().map(|g| g.0).collect();
+        let after: Vec<String> = keyed_groups(&board_of(vec![a, b, bare(3, "/w/c")])).into_iter().map(|g| g.0).collect();
+        assert_eq!(after.len(), 3);
+        assert_eq!(&after[..2], &before[..], "the two that were there keep their keys and their order");
+    }
+
+    /// When one group outgrows a single tile every group widens (#173), and
+    /// the frame the screen is laid out in follows: the width, how many go
+    /// to a row and the centring, read from the board each time rather than
+    /// fixed when the screen was built (#201).
+    #[test]
+    fn the_frame_follows_a_group_that_outgrows_one_tile() {
+        let mut b = board_with(vec![bare(1, "/w/a"), bare(2, "/w/b")]);
+        let narrow = frame_of(&b);
+        assert_eq!(narrow.columns, NARROW);
+
+        let mut grown = bare(1, "/w/a");
+        grown.ticket = Some(crate::ticket::Ticket::synthetic(7, Some(crate::ticket::Status::Started)));
+        grown.prs.push(crate::pr::Pr::synthetic(1, crate::pr::Look::Open));
+        b.model.apply(vec![grown, bare(2, "/w/b")], Instant::now());
+        let wide = frame_of(&b);
+        assert_eq!(wide.columns, WIDE, "an issue, a session and a pull request are three tiles' worth");
+        let room = b.window.0 / b.layout.zoom - 2.0 * MARGIN;
+        assert_eq!(wide.per_row, groups_per_row(room, WIDE), "and the groups to a row are worked out again");
+        assert_eq!(wide.inset, centring(room, WIDE, 2, wide.per_row), "as is the centring");
+    }
+
+    /// A press lands on what its tile is a tile of: a session jumps to its
+    /// terminal, an issue opens in Linear (its app first), a pull request,
+    /// a number GitHub did not answer for, and a page in the browser (#203).
+    #[test]
+    fn a_press_goes_where_its_tile_points() {
+        let mut s = bare(1, "/w/a");
+        s.ticket = Some(crate::ticket::Ticket::synthetic(7, Some(crate::ticket::Status::Started)));
+        s.prs.push(crate::pr::Pr::synthetic(1, crate::pr::Look::Open));
+        s.prs_unanswered.push(crate::pr::PrRef { repo: "sandbox/demo".into(), number: 2 });
+        let b = board_with(vec![s.clone()]);
+        let t = s.ticket.clone().unwrap();
+        let pr = s.prs[0].clone();
+        let unanswered = s.prs_unanswered[0].clone();
+
+        assert!(matches!(press_of(&b, &TileKey::Session(s.session_id.clone())), Some(Press::Session(id)) if id == s.session_id));
+        assert!(matches!(
+            press_of(&b, &TileKey::Issue(t.key.clone())),
+            Some(Press::Link { first, then, what: "Linear issue", .. }) if first == t.app_url() && then == t.url()
+        ));
+        assert!(matches!(
+            press_of(&b, &TileKey::Pr(pr.url())),
+            Some(Press::Link { then: Some(url), what: "pull request", .. }) if url == pr.url()
+        ));
+        assert!(matches!(
+            press_of(&b, &TileKey::Unanswered(unanswered.url())),
+            Some(Press::Link { then: Some(url), .. }) if url == unanswered.url()
+        ));
+        assert!(press_of(&b, &TileKey::Pr("https://github.com/o/r/pull/999".into())).is_none(), "a tile of nothing on the board goes nowhere");
+    }
+
+    /// The grid runs its tile list again and drops what the last run made;
+    /// the tile's memo has to outlive that, or a tile built on the first run
+    /// keeps the colours it had then (#211).
+    #[test]
+    fn a_tiles_memo_outlives_the_run_that_asked_for_it() {
+        use crate::settings::BoardTheme;
+        use nsh_core::element::{Runtime, create_root};
+        // The engine's reactive graph, entered here as a running app has it.
+        let runtime = Runtime::default();
+        let _entered = runtime.enter();
+        let (_root, ()) = create_root(|| {
+            let s = bare(1, "/w/a");
+            let mut board = board_with(vec![s.clone()]);
+            board.settings.theme = BoardTheme::White;
+            let ui = Ui::new(board);
+            let key = TileKey::Session(s.session_id.clone());
+            let memos = TileMemos::new();
+
+            // The grid's first run asks for the memo, and is then dropped.
+            let (run, first) = create_root(|| memos.of(&ui, &key));
+            run.dispose();
+            let white = first.get().unwrap().fill;
+
+            ui.update(|b| b.settings.theme = BoardTheme::Orange);
+            let orange = first.get().unwrap().fill;
+            assert_ne!(white, orange, "the tile built on that run still follows the theme");
+            assert_eq!(orange, theme::ORANGE.ink, "a board that prints paints every tile in its ink");
+            assert!(memos.of(&ui, &key) == first, "and a later run gets the same memo");
+        });
     }
 
 }
