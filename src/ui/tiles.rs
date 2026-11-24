@@ -337,13 +337,19 @@ impl Inks {
 
     /// Working tiles wear the board's chip colour; one waiting on you is the
     /// one in the accent; an idle one goes grey (#161).
+    ///
+    /// The accent is the session's own voice (#188). A pull request with red
+    /// checks wants a person too, and the comb's cell had to say so — there
+    /// the pull request is a row *inside* the cell, and the cell's colour is
+    /// the only thing that carries across the board. On a start screen it is
+    /// a tile of its own, already alarm-coloured and lettered `fail`, so the
+    /// session saying it again only put the loudest colour on a tile whose
+    /// own word is `idle`, while the status bar counted nobody waiting.
     fn session(self, info: &SessionInfo) -> Rgba {
-        if comb::wants_a_person(info) {
-            return self.accent;
-        }
         match info.phase() {
+            Phase::NeedsUser => self.accent,
             Phase::Working => self.pal.chip,
-            Phase::Idle | Phase::NeedsUser => self.quiet(),
+            Phase::Idle => self.quiet(),
         }
     }
 
@@ -753,6 +759,27 @@ mod tests {
         assert_eq!(centring(1000.0, NARROW, 7, 4), (1000.0 - four) / 2.0);
         assert_eq!(centring(300.0, NARROW, 3, 1), 82.0, "one to a row on a narrow window, still centred");
         assert_eq!(centring(100.0, WIDE, 1, 1), 0.0, "never pushed off the left");
+    }
+
+    /// The accent calls you over, so only the session may use it (#188). A
+    /// pull request with red checks is its own tile on a start screen and
+    /// says `fail` there; a session that is not asking anything stays grey
+    /// however that tile reads, which is what the status bar counts.
+    #[test]
+    fn a_sleeping_session_is_not_coloured_for_its_pull_request() {
+        let inks = Inks { pal: theme::PALETTE, accent: Rgba { r: 1.0, g: 0.44, b: 0.0, a: 1.0 } };
+        let red = crate::pr::Pr::synthetic(1, crate::pr::Look::Failing);
+
+        let mut idle = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        idle.prs.push(red.clone());
+        assert_eq!(inks.session(&idle), inks.quiet(), "a red pull request does not wake its session's tile");
+
+        let mut busy = SessionInfo::synthetic(2, "S-2", Phase::Working);
+        busy.prs.push(red);
+        assert_eq!(inks.session(&busy), theme::PALETTE.chip, "nor does it stop one working");
+
+        let asking = SessionInfo::synthetic(3, "S-3", Phase::NeedsUser);
+        assert_eq!(inks.session(&asking), inks.accent, "the accent is for a session asking");
     }
 
     #[test]
