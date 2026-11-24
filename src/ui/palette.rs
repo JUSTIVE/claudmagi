@@ -10,13 +10,16 @@
 //! on top of the base. Typing `pjm-20` puts the tickets that carry it whole
 //! above anything that merely owns those six letters somewhere.
 
-use gpui::{ClickEvent, Context, KeyDownEvent, SharedString, div, prelude::*, px, svg};
+use nsh_core::element::ImageSrc;
+use nsh_core::prelude::*;
+use nsh_metro::{FlyoutWidth, label, palette as metro_palette};
 
+use crate::logos::{self, Mark};
 use crate::model::{Phase, Target};
 use crate::theme::{self, Palette, Rgba};
-use crate::{logos, pr, ticket};
-use crate::ui::board::Board;
-use crate::ui::panel::Which;
+use crate::ui::panel::{Which, flyout};
+use crate::ui::state::{Board, Ui};
+use crate::{pr, ticket};
 
 /// How tall one row comes out, for working out how many of them fit.
 const ROW_H: f32 = 26.0;
@@ -32,7 +35,7 @@ const HEADER_H: f32 = 80.0;
 /// height down the right, and what bounds the list is the window itself —
 /// the flyout's header, the query line, the hints and the status bar.
 fn rows_that_fit(h: f32) -> usize {
-    let room = h - HEADER_H - CHROME_H - crate::ui::board::STATUS_H;
+    let room = h - HEADER_H - CHROME_H - crate::ui::state::STATUS_H;
     ((room / ROW_H).floor().max(1.0) as usize).min(MAX_ROWS)
 }
 /// One size for every chip in the list, whatever it stands for (#79). On the
@@ -171,9 +174,9 @@ pub enum Style {
 /// the board leaves it off, which is how filled reads as further along than
 /// outlined (#58).
 pub struct Body {
-    pub fill: Option<gpui::Hsla>,
-    pub border: Option<gpui::Hsla>,
-    pub text: gpui::Hsla,
+    pub fill: Option<Hsla>,
+    pub border: Option<Hsla>,
+    pub text: Hsla,
 }
 
 impl Style {
@@ -230,12 +233,12 @@ pub enum Kind {
 
 impl Kind {
     /// The mark that goes inside the chip: whose thing this is (#79).
-    fn logo(self) -> &'static str {
+    fn logo(self) -> Mark {
         match self {
-            Kind::Session => logos::CLAUDE_PATH,
-            Kind::Ticket => logos::LINEAR_PATH,
-            Kind::Pr => logos::GITHUB_PATH,
-            Kind::Artifact => logos::ARTIFACT_PATH,
+            Kind::Session => Mark::Claude,
+            Kind::Ticket => Mark::Linear,
+            Kind::Pr => Mark::GitHub,
+            Kind::Artifact => Mark::Artifact,
         }
     }
 }
@@ -342,313 +345,303 @@ fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
     out
 }
 
-impl Board {
-    pub(crate) fn toggle_palette(&mut self) {
-        // Through the panels, so opening the search puts away whatever panel
-        // was up and opening one of those puts the search away (#163, #193).
-        self.toggle_panel(Which::Search);
-        self.palette.query.clear();
-        self.palette.selected = 0;
-        self.palette_refresh();
-    }
+/// Opens or closes the search, through the panels: opening it puts away
+/// whatever panel was up and opening one of those puts it away (#163, #193).
+pub fn toggle(b: &mut Board) {
+    crate::ui::panel::toggle(b, Which::Search);
+    b.palette.query.clear();
+    b.palette.selected = 0;
+    refresh(b);
+}
 
-    /// Rebuilds the rows. Cheap enough to call on every keystroke and every
-    /// session poll, which between them cover everything that can change it.
-    pub(crate) fn palette_refresh(&mut self) {
-        if !self.palette.open {
-            self.palette.results.clear();
-            return;
-        }
-        let query = self.palette.query.clone();
-        self.palette.results = rank(self.palette_entries(), &query);
-        self.palette.selected = self.palette.selected.min(self.palette.results.len().saturating_sub(1));
+/// Rebuilds the rows. Cheap enough to call on every keystroke and every
+/// session poll, which between them cover everything that can change it.
+pub fn refresh(b: &mut Board) {
+    if !b.palette.open {
+        b.palette.results.clear();
+        return;
     }
+    let query = b.palette.query.clone();
+    b.palette.results = rank(entries(b), &query);
+    b.palette.selected = b.palette.selected.min(b.palette.results.len().saturating_sub(1));
+}
 
-    /// Everything on the board, as rows: each session, then the ticket and the
-    /// pull requests on its lane. A key or a number that two lanes share is
-    /// listed once, under the first lane that carries it.
-    fn palette_entries(&self) -> Vec<Entry> {
-        let mut out: Vec<Entry> = Vec::new();
-        let mut seen: Vec<(Kind, String)> = Vec::new();
-        for (i, chip) in self.model.chips.iter().enumerate() {
-            let info = &chip.info;
-            let label = info.label();
-            out.push(Entry {
-                kind: Kind::Session,
-                style: Style::Chip(info.phase()),
+/// Everything on the board, as rows: each session, then the ticket and the
+/// pull requests on its lane. A key or a number that two lanes share is
+/// listed once, under the first lane that carries it.
+fn entries(b: &Board) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    let mut seen: Vec<(Kind, String)> = Vec::new();
+    for (i, chip) in b.model.chips.iter().enumerate() {
+        let info = &chip.info;
+        let label = info.label();
+        out.push(Entry {
+            kind: Kind::Session,
+            style: Style::Chip(info.phase()),
+                owner: i,
+                related: false,
+            detail: info.short_cwd(),
+            action: Action::Session(i),
+            fields: vec![label.clone(), info.short_cwd(), info.group_label()],
+            label,
+        });
+        if let Some(t) = &info.ticket {
+            let key = (Kind::Ticket, t.key.clone());
+            if !seen.contains(&key) {
+                seen.push(key);
+                out.push(Entry {
+                    kind: Kind::Ticket,
+                    label: t.key.clone(),
                     owner: i,
                     related: false,
-                detail: info.short_cwd(),
-                action: Action::Session(i),
-                fields: vec![label.clone(), info.short_cwd(), info.group_label()],
+                    style: Style::Ticket(t.status),
+                    detail: t.title.clone(),
+                    action: Action::Open {
+                        label: t.key.clone(),
+                        first: t.app_url(),
+                        then: t.url(),
+                        what: "Linear issue",
+                    },
+                    fields: vec![t.key.clone(), t.title.clone()],
+                });
+            }
+        }
+        for pr in &info.prs {
+            let label = pr.label();
+            let key = (Kind::Pr, format!("{}#{}", pr.id.repo, pr.id.number));
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(Entry {
+                kind: Kind::Pr,
+                style: Style::Pr { look: pr.look(), running: pr.running(), signed_off: pr.signed_off() },
+                owner: i,
+                related: false,
+                detail: format!("{} · {}", pr.id.repo, pr.title),
+                action: Action::Open {
+                    label: label.clone(),
+                    first: None,
+                    then: Some(pr.url()),
+                    what: "pull request",
+                },
+                // The bare number matters as much as `#1234`: nobody types
+                // the hash when they are after a PR.
+                fields: vec![label.clone(), pr.id.number.to_string(), pr.title.clone(), pr.id.repo.clone()],
                 label,
             });
-            if let Some(t) = &info.ticket {
-                let key = (Kind::Ticket, t.key.clone());
-                if !seen.contains(&key) {
-                    seen.push(key);
-                    out.push(Entry {
-                        kind: Kind::Ticket,
-                        label: t.key.clone(),
-                        owner: i,
-                        related: false,
-                        style: Style::Ticket(t.status),
-                        detail: t.title.clone(),
-                        action: Action::Open {
-                            label: t.key.clone(),
-                            first: t.app_url(),
-                            then: t.url(),
-                            what: "Linear issue",
-                        },
-                        fields: vec![t.key.clone(), t.title.clone()],
-                    });
-                }
-            }
-            for pr in &info.prs {
-                let label = pr.label();
-                let key = (Kind::Pr, format!("{}#{}", pr.id.repo, pr.id.number));
-                if seen.contains(&key) {
-                    continue;
-                }
-                seen.push(key);
-                out.push(Entry {
-                    kind: Kind::Pr,
-                    style: Style::Pr { look: pr.look(), running: pr.running(), signed_off: pr.signed_off() },
-                    owner: i,
-                    related: false,
-                    detail: format!("{} · {}", pr.id.repo, pr.title),
-                    action: Action::Open {
-                        label: label.clone(),
-                        first: None,
-                        then: Some(pr.url()),
-                        what: "pull request",
-                    },
-                    // The bare number matters as much as `#1234`: nobody types
-                    // the hash when they are after a PR.
-                    fields: vec![label.clone(), pr.id.number.to_string(), pr.title.clone(), pr.id.repo.clone()],
-                    label,
-                });
-            }
-            // And the pages it published, which the cell shows on the same
-            // line as the pull request and are otherwise only reachable by
-            // dropping that line's list (#137). Searching by name is the
-            // whole point here: a page is named after the work, not numbered.
-            for a in &info.artifacts {
-                let key = (Kind::Artifact, a.id.clone());
-                if seen.contains(&key) {
-                    continue;
-                }
-                seen.push(key);
-                let label = a.label();
-                out.push(Entry {
-                    kind: Kind::Artifact,
-                    style: Style::Artifact,
-                    owner: i,
-                    related: false,
-                    detail: a.version_label().map(|v| format!("artifact · {v}")).unwrap_or("artifact".into()),
-                    action: Action::Open {
-                        label: label.clone(),
-                        first: None,
-                        then: Some(a.url()),
-                        what: crate::made::ARTIFACT,
-                    },
-                    fields: vec![label.clone(), a.id.clone()],
-                    label,
-                });
-            }
         }
-        out
+        // And the pages it published, which the cell shows on the same
+        // line as the pull request and are otherwise only reachable by
+        // dropping that line's list (#137). Searching by name is the
+        // whole point here: a page is named after the work, not numbered.
+        for a in &info.artifacts {
+            let key = (Kind::Artifact, a.id.clone());
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let label = a.label();
+            out.push(Entry {
+                kind: Kind::Artifact,
+                style: Style::Artifact,
+                owner: i,
+                related: false,
+                detail: a.version_label().map(|v| format!("artifact · {v}")).unwrap_or("artifact".into()),
+                action: Action::Open {
+                    label: label.clone(),
+                    first: None,
+                    then: Some(a.url()),
+                    what: crate::made::ARTIFACT,
+                },
+                fields: vec![label.clone(), a.id.clone()],
+                label,
+            });
+        }
     }
+    out
+}
 
-    /// Keys while the palette is open. Everything lands here, so `t` types a
-    /// `t` instead of opening the test panel.
-    pub(crate) fn palette_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        let key = ev.keystroke.key.as_str();
-        let mods = &ev.keystroke.modifiers;
+/// Keys while the search is open. Everything lands here, so `t` types a `t`
+/// instead of opening the test panel.
+pub fn key(ui: &Ui, ev: &KeyEvent) {
+    let mods = &ev.modifiers;
+    let key = ev.key.as_ref();
+    let picked = ui.update(|b| {
         match key {
-            "escape" => {
-                self.palette.open = false;
-                self.palette.results.clear();
-                return;
+            "Escape" => {
+                b.palette.open = false;
+                b.palette.results.clear();
+                return None;
             }
-            "enter" => {
-                self.palette_activate(cx);
-                return;
+            "Enter" => return pick(b),
+            "ArrowUp" => {
+                b.palette.selected = b.palette.selected.saturating_sub(1);
+                return None;
             }
-            "up" => {
-                self.palette.selected = self.palette.selected.saturating_sub(1);
-                return;
+            "ArrowDown" => {
+                let last = b.palette.results.len().saturating_sub(1);
+                b.palette.selected = (b.palette.selected + 1).min(last);
+                return None;
             }
-            "down" => {
-                let last = self.palette.results.len().saturating_sub(1);
-                self.palette.selected = (self.palette.selected + 1).min(last);
-                return;
+            "Backspace" if mods.cmd || mods.alt => b.palette.query.clear(),
+            "Backspace" => {
+                b.palette.query.pop();
             }
-            "backspace" if mods.platform || mods.alt => self.palette.query.clear(),
-            "backspace" => {
-                self.palette.query.pop();
+            // A modified key is a command, not typing, and named keys never
+            // read as text.
+            text if !mods.cmd && !mods.ctrl && text.chars().count() == 1 && !text.chars().any(char::is_control) => {
+                b.palette.query.push_str(text)
             }
-            _ => match ev.keystroke.key_char.as_deref() {
-                // A modified key is a command, not typing; `key_char` is
-                // already `None` for ⌘-anything, and control keys never read
-                // as text.
-                Some(text) if !mods.platform && !mods.control && !text.chars().any(char::is_control) => {
-                    self.palette.query.push_str(text)
+            _ => return None,
+        }
+        b.palette.selected = 0;
+        refresh(b);
+        None
+    });
+    if let Some(action) = picked {
+        run(ui, action);
+    }
+}
+
+/// Takes the selected row and puts the search away.
+fn pick(b: &mut Board) -> Option<Action> {
+    let entry = b.palette.results.get(b.palette.selected).cloned()?;
+    b.palette.open = false;
+    b.palette.results.clear();
+    Some(entry.action)
+}
+
+fn run(ui: &Ui, action: Action) {
+    match action {
+        Action::Session(i) => ui.activate(Target::Session(i)),
+        Action::Open { label, first, then, what } => ui.open_link(label, first, then, what),
+    }
+}
+
+/// The search, as the panel it is since #193: the flyout down the right
+/// edge the settings and the test tools wear, at the wider of Metro's two
+/// widths because a row here is a node and a line about it.
+pub fn panel(ui: &Ui) -> AnyElement {
+    flyout(ui, Which::Search, FlyoutWidth::Wide, |_| "search".into(), |ui| {
+        let ui = ui.clone();
+        dynamic(move || body(&ui))
+    })
+}
+
+fn body(ui: &Ui) -> AnyElement {
+    let (fits, query, selected, results, theme, orange) = ui.read(|b| {
+        (
+            rows_that_fit(b.window.1),
+            b.palette.query.clone(),
+            b.palette.selected,
+            b.palette.results.clone(),
+            b.palette(),
+            b.settings.theme == crate::settings::BoardTheme::Orange,
+        )
+    });
+    // Only as many rows as the window has room for, keeping the selected
+    // one among them.
+    let first = selected.saturating_sub(fits.saturating_sub(1));
+    let rows: Vec<(usize, Entry)> = results.into_iter().enumerate().skip(first).take(fits).collect();
+    let empty = rows.is_empty();
+    let ink = theme.ink;
+    let at = move |a: f32| theme::hsla(theme::with_alpha(ink, a));
+    // The rows keep the board's colours, so a node reads here the way it
+    // reads there (#78); the sheet under them is the panel's.
+    let accent = if orange { theme::hsla(theme.packet) } else { untracked(metro_palette).accent };
+    let (rule, sel_bg, hover_bg) = (at(0.15), at(0.13), at(0.06));
+
+    let mut list = view();
+    for (i, entry) in rows {
+        let on = i == selected;
+        let body = entry.style.body(theme);
+        let go = ui.clone();
+        let mut chip = view()
+            .flex_shrink_0()
+            .flex_row()
+            .items_center()
+            .gap(px(5.))
+            .w(px(CHIP_W))
+            .h(px(CHIP_H))
+            .px(px(7.))
+            .rounded(px(4.))
+            .overflow_hidden()
+            .child(svg(ImageSrc::svg_markup(logos::markup(entry.kind.logo()))).size(px(LOGO)).flex_shrink_0().text_color(body.text))
+            .child(label(entry.label.clone()).text_size(px(11.)).truncate().text_color(body.text))
+            // Review's tick, beside the number it signed off on (#116).
+            .children(entry.signed_off().then(|| label("\u{2713}").flex_shrink_0().text_size(px(11.)).text_color(body.text)));
+        if let Some(c) = body.fill {
+            chip = chip.bg(c);
+        }
+        if let Some(c) = body.border {
+            chip = chip.border(px(1.)).border_color(c);
+        }
+        let row = view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(2.))
+            .cursor_pointer()
+            .border_l(px(2.))
+            .border_color(if on { accent } else { Hsla::transparent_black() })
+            .bg(if on { sel_bg } else { Hsla::transparent_black() })
+            .on_press(move || {
+                let picked = go.update(|b| {
+                    b.palette.selected = i;
+                    pick(b)
+                });
+                if let Some(action) = picked {
+                    run(&go, action);
                 }
-                _ => return,
-            },
-        }
-        self.palette.selected = 0;
-        self.palette_refresh();
-    }
-
-    fn palette_activate(&mut self, cx: &mut Context<Self>) {
-        let Some(entry) = self.palette.results.get(self.palette.selected).cloned() else { return };
-        self.palette.open = false;
-        self.palette.results.clear();
-        match entry.action {
-            Action::Session(i) => self.activate(Target::Session(i), cx),
-            Action::Open { label, first, then, what } => self.open_link(label, first, then, what, cx),
-        }
-    }
-
-    /// The search, as the panel it is since #193: gpui-metro's flyout down
-    /// the right edge, the same body the settings and the test tools wear,
-    /// at the wider of Metro's two widths because a row here is a node and
-    /// a line about it, not a setting.
-    pub(crate) fn render_palette(&mut self, cx: &mut Context<Self>) -> gpui_metro::SettingsFlyout {
-        let fits = rows_that_fit(self.window.1);
-        let query = self.palette.query.clone();
-        let selected = self.palette.selected;
-        // Only as many rows as the window has room for, keeping the selected
-        // one among them.
-        let first = self.palette.selected.saturating_sub(fits.saturating_sub(1));
-        let rows: Vec<(usize, Entry)> =
-            self.palette.results.iter().cloned().enumerate().skip(first).take(fits).collect();
-        let empty = rows.is_empty();
-
-        // `self.palette()` is the board's colours; `self.palette` is this
-        // search. Bind the colours once so the rest reads unambiguously.
-        let theme = self.palette();
-        let ink = theme.ink;
-        let at = |a: f32| theme::hsla(theme::with_alpha(ink, a));
-        // The rows keep the board's colours, so a node reads here the way it
-        // reads there (#78); the sheet under them is the panel's, which is
-        // Metro's and follows the board's mode.
-        let metro_accent = gpui_metro::Theme::palette(cx).accent;
-        let accent = if self.settings.theme == crate::settings::BoardTheme::Orange {
-            theme::hsla(theme.packet)
-        } else {
-            metro_accent
-        };
-        let (rule, sel_bg, hover_bg) = (at(0.15), at(0.13), at(0.06));
-
-        let mut list = div().flex().flex_col();
-        for (i, entry) in rows {
-            let on = i == selected;
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("palette-row-{i}")))
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_0p5()
-                    .cursor_pointer()
-                    .border_l_2()
-                    .border_color(if on { accent } else { gpui::transparent_black() })
-                    .when(on, |d| d.bg(sel_bg))
-                    .when(!on, |d| d.hover(move |s| s.bg(hover_bg)))
-                    // A row that came along with a hit is stepped in behind
-                    // it, so the thing actually searched for still leads
-                    // (#85).
-                    .child(
-                        div()
-                            .w(px(11.))
-                            .flex_none()
-                            .text_size(px(10.))
-                            .text_color(at(0.35))
-                            .child(if entry.related { "\u{21b3}" } else { "" }),
-                    )
-                    // The row *is* the node: the same body the board would
-                    // give it (#78), at one size for every kind, with the
-                    // mark of the service it belongs to inside (#79).
-                    .child({
-                        let body = entry.style.body(theme);
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(5.))
-                            .w(px(CHIP_W))
-                            .h(px(CHIP_H))
-                            .px(px(7.))
-                            .rounded(px(4.))
-                            .when_some(body.fill, |d, c| d.bg(c))
-                            .when_some(body.border, |d, c| d.border_1().border_color(c))
-                            .text_size(px(11.))
-                            .text_color(body.text)
-                            .overflow_hidden()
-                            .child(svg().path(entry.kind.logo()).size(px(LOGO)).flex_none().text_color(body.text))
-                            .child(entry.label.clone())
-                            // Review's tick, beside the number it signed off
-                            // on, exactly as the board draws it (#116).
-                            .when(entry.signed_off(), |d| {
-                                d.child(div().flex_none().text_color(body.text).child("\u{2713}"))
-                            })
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .overflow_hidden()
-                            .text_size(px(10.))
-                            .text_color(at(if entry.related { 0.4 } else { 0.55 }))
-                            .child(entry.detail.clone()),
-                    )
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.palette.selected = i;
-                        this.palette_activate(cx);
-                        this.touch(cx);
-                    })),
-            );
-        }
-
-        let body = div()
-            .flex()
-            .flex_col()
-            .text_size(px(11.))
-            .text_color(at(0.85))
-            // The query line reads as a field: the key that opened the panel,
-            // what has been typed, and the way back out of it.
+            })
+            // A row that came along with a hit is stepped in behind it, so
+            // the thing actually searched for still leads (#85).
+            .child(label(if entry.related { "\u{21b3}" } else { "" }).w(px(11.)).flex_shrink_0().text_size(px(10.)).text_color(at(0.35)))
+            // The row *is* the node: the same body the board would give it
+            // (#78), with the mark of the service it belongs to (#79).
+            .child(chip)
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rule)
-                    .child(div().flex_none().text_color(accent).child("⌘K"))
-                    .child(div().flex_1().child(format!("{query}▌")))
-                    .when(!query.is_empty(), |d| {
-                        d.child(div().flex_none().text_size(px(10.)).text_color(at(0.4)).child("⌫ 지우기"))
-                    }),
-            )
-            .when(empty, |d| d.child(div().px_3().py_2().text_color(at(0.45)).child("찾는 노드가 없습니다")))
-            .when(!empty, |d| d.child(list))
-            .child(
-                div()
-                    .px_3()
-                    .py_1p5()
-                    .border_t_1()
-                    .border_color(rule)
+                label(entry.detail.clone())
+                    .flex_1()
                     .text_size(px(10.))
-                    .text_color(at(0.45))
-                    .child("↑↓ 이동 · ⏎ 열기 · esc 닫기"),
+                    .truncate()
+                    .text_color(at(if entry.related { 0.4 } else { 0.55 })),
             );
-        self.flyout(Which::Search, "search", body, cx).width(gpui_metro::FlyoutWidth::Wide)
+        let row = if on { row } else { row.hover(move |s| s.bg(hover_bg)) };
+        list = list.child(row);
     }
+
+    // The query line reads as a field: the key that opened the panel, what
+    // has been typed, and the way back out of it.
+    let field = view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.))
+        .px(px(12.))
+        .py(px(8.))
+        .border_b(px(1.))
+        .border_color(rule)
+        .child(label("⌘K").flex_shrink_0().text_size(px(11.)).text_color(accent))
+        .child(label(format!("{query}▌")).flex_1().text_size(px(11.)).text_color(at(0.85)))
+        .children((!query.is_empty()).then(|| label("⌫ 지우기").flex_shrink_0().text_size(px(10.)).text_color(at(0.4))));
+    view()
+        .child(field)
+        .child(if empty {
+            view().px(px(12.)).py(px(8.)).child(label("찾는 노드가 없습니다").text_size(px(11.)).text_color(at(0.45)))
+        } else {
+            list
+        })
+        .child(
+            view()
+                .px(px(12.))
+                .py(px(6.))
+                .border_t(px(1.))
+                .border_color(rule)
+                .child(label("↑↓ 이동 · ⏎ 열기 · esc 닫기").text_size(px(10.)).text_color(at(0.45))),
+        )
+        .into_element()
 }
 
 #[cfg(test)]
@@ -764,7 +757,7 @@ mod tests {
     #[test]
     fn each_phase_gets_its_own_chip_colours() {
         for t in THEMES {
-            let bodies: Vec<(Option<gpui::Hsla>, gpui::Hsla)> =
+            let bodies: Vec<(Option<Hsla>, Hsla)> =
                 Phase::ALL.iter().map(|p| Style::Chip(*p).body(t)).map(|b| (b.fill, b.text)).collect();
             for (i, a) in bodies.iter().enumerate() {
                 for b in &bodies[i + 1..] {
@@ -808,7 +801,7 @@ mod tests {
             assert!(rows >= 1, "{h}: a search with no rows is no search");
             let used = HEADER_H + CHROME_H + rows as f32 * ROW_H;
             assert!(
-                used <= h - crate::ui::board::STATUS_H + 0.01 || rows == 1,
+                used <= h - crate::ui::state::STATUS_H + 0.01 || rows == 1,
                 "{h}: the rows run {used} into a window of {h}"
             );
         }
@@ -826,9 +819,9 @@ mod tests {
     #[test]
     fn the_boards_ink_reads_on_the_panels_sheet() {
         use crate::settings::BoardTheme;
-        use gpui_metro::Accent;
+        use nsh_metro::Accent;
         for (board, theme) in [(BoardTheme::White, theme::PALETTE), (BoardTheme::Orange, theme::ORANGE), (BoardTheme::Dark, theme::DARK)] {
-            let sheet = gpui_metro::Palette::resolve(crate::ui::metro::mode_of(board), Accent::Orange).background;
+            let sheet = nsh_metro::Palette::resolve(crate::ui::metro::mode_of(board), Accent::Orange).background;
             let sheet = Rgba::from(sheet);
             let ratio = contrast(theme.ink, sheet);
             assert!(ratio > 4.5, "{board:?}: the board's ink has to read on the panel (got {ratio:.1}:1)");

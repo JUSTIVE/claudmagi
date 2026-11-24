@@ -1,12 +1,10 @@
-//! The board as a Metro start screen (#157), built from gpui-metro's own
-//! `tile_grid` and live `tile` (#176).
+//! The board as a Metro start screen (#157), built from nsh-metro's own
+//! `tile_grid` and live `tile` (#176, #195).
 //!
 //! The panels around the board speak Windows Phone Metro (#156); this is the
-//! board in the same language, and since gpui-metro has the start screen
-//! itself, it is drawn by gpui-metro rather than by the board's canvas:
-//! the turnstile, the live tiles' peek (frames only while a tile slides, at
-//! the display's rate), the tilt under the pointer and the packing are all
-//! its own.
+//! board in the same language, drawn by nsh-metro: the turnstile, the live
+//! tiles' peek, the tilt under the pointer and the packing are all its own,
+//! and all of it is the platform's animation, not frames the app draws.
 //!
 //! Tiles are grouped by the *work*, not by the window (#162): everything on
 //! one Linear issue sits in that issue's group — failing an issue, one pull
@@ -15,14 +13,18 @@
 //! as live tiles (with their subagents as small tiles after them), and what
 //! the work produced, a tile per pull request or page.
 
-use gpui::{AnyElement, ClickEvent, Context, Rgba, SharedString, div, prelude::*, px, svg};
-use gpui_metro::{Theme, Tile, TileSize, page_header, scaled, tile, tile_grid, u};
+use std::rc::Rc;
 
+use nsh_core::element::ImageSrc;
+use nsh_core::prelude::*;
+use nsh_metro::theme::{LIGHT, SEMILIGHT, size};
+use nsh_metro::{Tile, TileSize, label, palette as metro_palette, tile, tile_grid};
+
+use crate::ink;
 use crate::logos::Mark;
-use crate::model::{BoardModel, ChipState, Phase, SessionInfo, Target};
-use crate::render::comb;
-use crate::theme::{self, Palette};
-use crate::ui::board::Board;
+use crate::model::{BoardModel, ChipState, Phase, SessionInfo};
+use crate::theme::{self, Palette, Rgba};
+use crate::ui::state::{Board, STATUS_H, TileMenu, Ui};
 
 /// A small tile's side and the gutter after it, in design px: a session is
 /// a medium tile, two of them and the gutter a side.
@@ -174,6 +176,11 @@ pub fn columns(groups: &[(String, Vec<Kind>)]) -> usize {
     if groups.iter().any(|(_, k)| worth(k) > 2) { WIDE } else { NARROW }
 }
 
+/// Between one group and the next, and the height of a group's title row:
+/// nsh-metro's own.
+const GROUP_GAP: f32 = nsh_metro::tile::GROUP_GAP;
+const GROUP_HEADER: f32 = nsh_metro::tile::GROUP_HEADER;
+
 /// The most groups — pieces of work — a row holds, however wide the
 /// window (#178).
 const MAX_PER_ROW: usize = 4;
@@ -181,7 +188,7 @@ const MAX_PER_ROW: usize = 4;
 /// How many groups `columns` small tiles wide stand side by side in `room`
 /// design px: as many as fit, never more than `MAX_PER_ROW`, and always one.
 pub fn groups_per_row(room: f32, columns: usize) -> usize {
-    let (group, gap) = (group_width(columns), gpui_metro::tile::GROUP_GAP);
+    let (group, gap) = (group_width(columns), GROUP_GAP);
     (((room + gap) / (group + gap)).floor() as usize).clamp(1, MAX_PER_ROW)
 }
 
@@ -195,7 +202,7 @@ fn group_width(columns: usize) -> f32 {
 /// when the row fills the room.
 pub fn centring(room: f32, columns: usize, groups: usize, per_row: usize) -> f32 {
     let k = per_row.min(groups).max(1) as f32;
-    let row = k * group_width(columns) + (k - 1.0) * gpui_metro::tile::GROUP_GAP;
+    let row = k * group_width(columns) + (k - 1.0) * GROUP_GAP;
     ((room - row) / 2.0).max(0.0)
 }
 
@@ -265,163 +272,6 @@ fn back_lines(info: &SessionInfo, chip: &ChipState) -> (String, Vec<String>) {
     }
 }
 
-/// A medium tile's face: a corner mark, a large line, small lines under it,
-/// and the tile's title at the bottom-left where Metro keeps it.
-#[allow(clippy::too_many_arguments)]
-fn face(
-    ink: Rgba,
-    corner: Option<String>,
-    big: String,
-    small: Vec<String>,
-    title: String,
-    foot: Option<String>,
-    mark: Option<Mark>,
-) -> AnyElement {
-    let soft = gpui::Hsla::from(ink).opacity(0.72);
-    div()
-        .size_full()
-        .relative()
-        .p(u(9.))
-        .flex()
-        .flex_col()
-        .gap(u(3.))
-        .text_color(theme::hsla(ink))
-        .children(corner.map(|c| div().absolute().top(u(6.)).right(u(9.)).text_size(u(20.)).child(c)))
-        .child(div().text_size(u(15.)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(big))
-        .children(small.into_iter().map(|line| {
-            div().text_size(u(10.)).text_color(soft).whitespace_nowrap().overflow_hidden().text_ellipsis().child(line)
-        }))
-        .child(
-            div()
-                .absolute()
-                .left(u(9.))
-                .right(u(MARK + 12.))
-                .bottom(u(7.))
-                .flex()
-                .flex_col()
-                .child(div().text_size(u(13.)).whitespace_nowrap().overflow_hidden().text_ellipsis().child(title))
-                .children(foot.map(|f| div().text_size(u(10.)).text_color(soft).child(f))),
-        )
-        // What the tile is a tile *of*, in the one corner nothing else uses
-        // (#187). The badge has the top right, the label the top left, the
-        // name and its state the bottom left; this sits opposite the name,
-        // in the ink at the same weight the state line is drawn in, so it
-        // reads as a mark on the tile rather than another thing on it.
-        .children(mark.map(|m| {
-            svg()
-                .absolute()
-                .right(u(8.))
-                .bottom(u(7.))
-                .size(u(MARK))
-                .flex_none()
-                .path(m.path())
-                .text_color(soft)
-        }))
-        .into_any_element()
-}
-
-/// The little menu a merged tile drops, and what putting one away means
-/// (#194).
-impl Board {
-    /// Pull requests put away by hand never reach the board again, in any
-    /// view: a start-screen tile, a honeycomb floor and a ⌘K row are the
-    /// same pull request, and putting it away puts it away.
-    pub(crate) fn drop_dismissed(&self, list: &mut [crate::model::SessionInfo]) {
-        without_dismissed(list, &self.settings.dismissed);
-    }
-
-    /// Puts one away: written down first, so a board that is killed in the
-    /// next second comes back without it, then taken off the board in hand
-    /// rather than at the next poll.
-    fn put_pr_away(&mut self, url: String, cx: &mut Context<Self>) {
-        if !self.settings.dismissed.contains(&url) {
-            self.settings.dismissed.push(url.clone());
-            self.settings.save();
-        }
-        for c in self.model.chips.iter_mut() {
-            c.info.prs.retain(|p| p.url() != url);
-        }
-        self.tile_menu = None;
-        self.palette_refresh();
-        self.tiles_replay += 1;
-        self.touch(cx);
-    }
-
-    /// Brings every put-away pull request back (#194). They land on the
-    /// board again at the next poll, which is where they come from.
-    pub(crate) fn restore_dismissed(&mut self, cx: &mut Context<Self>) {
-        self.settings.dismissed.clear();
-        self.settings.save();
-        self.touch(cx);
-    }
-
-    /// The menu itself: one thing to do, at the pointer that asked for it.
-    pub(crate) fn render_tile_menu(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let menu = self.tile_menu.as_ref()?;
-        let (at, url, label) = (menu.at, menu.url.clone(), menu.label.clone());
-        let theme = self.palette();
-        let ink = |a: f32| theme::hsla(theme::with_alpha(theme.ink, a));
-        let rule = if self.settings.theme == crate::settings::BoardTheme::Orange {
-            ink(1.0)
-        } else {
-            gpui_metro::Theme::palette(cx).accent
-        };
-        let card = div()
-            .w(px(MENU_W))
-            .flex()
-            .flex_col()
-            // The same sheet the pull-request drop-down wears (#134): square,
-            // flat, an accent rule along the top.
-            .border_1()
-            .border_color(ink(0.35))
-            .bg(theme::hsla(crate::ui::palette::card_bg(theme)))
-            .font_family(gpui_metro::Theme::font(cx))
-            .text_size(px(11.))
-            .text_color(ink(0.85))
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().h(px(2.)).bg(rule))
-            .child(
-                div()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .text_size(px(10.))
-                    .text_color(ink(0.45))
-                    .child(label),
-            )
-            .child(
-                div()
-                    .id("tile-menu-dismiss")
-                    .px(px(8.))
-                    .py(px(5.))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ink(0.08)))
-                    .child("치우기")
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.put_pr_away(url.clone(), cx);
-                    })),
-            );
-        Some(
-            gpui::deferred(
-                gpui::anchored()
-                    .position(at)
-                    .snap_to_window_with_margin(gpui::Edges {
-                        top: px(MENU_EDGE),
-                        right: px(MENU_EDGE),
-                        bottom: px(crate::ui::board::STATUS_H + MENU_EDGE),
-                        left: px(MENU_EDGE),
-                    })
-                    .child(card),
-            )
-            .priority(2)
-            .into_any_element(),
-        )
-    }
-}
-
-/// The tile menu's width, and how close to the window's edges it may come.
-const MENU_W: f32 = 140.0;
-const MENU_EDGE: f32 = 8.0;
-
 /// Whether a pull request can be put away (#194): only one that has landed.
 ///
 /// Everything else is work in flight, and the board is for work in flight —
@@ -460,7 +310,7 @@ impl Inks {
         }
         // White on the accent, which is what Metro sets on it whatever the
         // accent is; everything else is worked out against its own fill.
-        let ink = if fill == self.accent { WHITE } else { comb::legible(WHITE, fill, self.pal) };
+        let ink = if fill == self.accent { WHITE } else { ink::legible(WHITE, fill, self.pal) };
         (fill, ink)
     }
 
@@ -487,290 +337,557 @@ impl Inks {
     }
 }
 
-impl Board {
-    /// The tiles view: a page header and the start screen under it, scrolling
-    /// both ways in the space above the status bar.
-    pub(crate) fn render_tiles(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let pal = self.palette();
-        let accent = if self.settings.theme == crate::settings::BoardTheme::Orange {
-            pal.ink
-        } else {
-            Rgba::from(Theme::palette(cx).accent)
-        };
-        let inks = Inks { pal, accent };
-        let board = cx.entity().downgrade();
-        let replay = self.tiles_replay;
+/// A tile by what it is of, rather than by where it sits in the board's
+/// lists: a tile keeps its key from one poll to the next while the indices
+/// under it shift, so its faces and its press look it up again each time.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TileKey {
+    Issue(String),
+    Session(String),
+    Agent(String, usize),
+    Pr(String),
+    Unanswered(String),
+    Page(String),
+}
 
-        let groups = groups(&self.model);
-        let columns = columns(&groups);
-        // gpui-metro sets a start screen's groups side by side in one long
-        // row, the way Windows 8 scrolled sideways. A window is not a
-        // screen: the groups that fit across it make a row, and the rest
-        // go on in rows below, each a start screen of its own (#177).
-        let room = self.window.0 / self.layout.zoom.max(0.1) - 2.0 * MARGIN;
-        let per_row = groups_per_row(room, columns);
-        // On a wide window the screen stands in the middle, the title over
-        // its left edge, rather than hugging the left with the rest empty.
-        let inset = centring(room, columns, groups.len(), per_row);
-        let rows: Vec<AnyElement> = groups
-            .chunks(per_row)
-            .enumerate()
-            .map(|(r, row)| {
-                let mut grid = tile_grid()
-                    .id(("start", r))
-                    .metrics(UNIT, GAP)
-                    .columns(columns)
-                    .hinge(MARGIN + inset)
-                    .turnstile(true)
-                    .replay(replay);
-                for (title, kinds) in row {
-                    let tiles: Vec<Tile> = kinds.iter().filter_map(|k| self.tile_for(k, inks, &board)).collect();
-                    // One short of the room: the last group of a row has nothing to
-                    // its right for a long title to run into, and it wraps instead.
-                    grid = grid.group(clip(title, columns * TITLE_CHARS_PER_UNIT - 1), tiles);
-                }
-                grid.into_any_element()
-            })
-            .collect();
-        let body = if groups.is_empty() {
-            div().pl(u(MARGIN)).text_color(Theme::palette(cx).subtle).child("no claude code sessions").into_any_element()
-        } else {
-            div().pl(u(MARGIN)).flex().flex_col().gap(u(ROW_GAP)).children(rows).into_any_element()
-        };
-        div()
-            .id("tiles")
-            .size_full()
-            .bg(theme::hsla(pal.bg))
-            .overflow_scroll()
-            .child(
-                scaled(self.layout.zoom).child(
-                    div()
-                        .pt(u(TOP))
-                        .pb(u(MARGIN))
-                        .pr(u(MARGIN))
-                        .pl(u(inset))
-                        .flex()
-                        .flex_col()
-                        .child(page_header("start"))
-                        .child(body),
-                ),
-            )
-            .into_any_element()
+impl TileKey {
+    fn of(kind: &Kind, model: &BoardModel) -> Option<TileKey> {
+        let info = |i: usize| model.chips.get(i).map(|c| &c.info);
+        Some(match *kind {
+            Kind::Issue(i) => TileKey::Issue(info(i)?.ticket.as_ref()?.key.clone()),
+            Kind::Session(i) => TileKey::Session(info(i)?.session_id.clone()),
+            Kind::Agent(i, k) => TileKey::Agent(info(i)?.session_id.clone(), k),
+            Kind::Pr(i, k) => TileKey::Pr(info(i)?.prs.get(k)?.url()),
+            Kind::Unanswered(i, k) => TileKey::Unanswered(info(i)?.prs_unanswered.get(k)?.url()),
+            Kind::Page(i) => TileKey::Page(info(i)?.artifacts.last()?.url()),
+        })
     }
 
-    /// The tile for one of the start screen's things, pressing as what it
-    /// shows: a session (or its subagent) jumps to its terminal, an issue
-    /// opens in Linear, a pull request or a page in the browser. The grid
-    /// swings away first and the press lands after; the next frame brings
-    /// the screen back in.
-    fn tile_for(&self, kind: &Kind, inks: Inks, board: &gpui::WeakEntity<Board>) -> Option<Tile> {
-        let press = |act: Press| {
-            let board = board.clone();
-            move |_: &ClickEvent, _: &mut gpui::Window, cx: &mut gpui::App| {
-                let _ = board.update(cx, |this, cx| {
-                    match &act {
-                        Press::Session(i) => this.activate(Target::Session(*i), cx),
-                        Press::Link { label, first, then, what } => {
-                            this.open_link(label.clone(), first.clone(), then.clone(), what, cx)
-                        }
-                    }
-                    this.tiles_replay += 1;
-                    this.touch(cx);
-                });
-            }
-        };
-        // A merged pull request is work that has landed, and the board is
-        // for work in flight: right-clicking its tile offers to put it away
-        // (#194). Only merged ones — nothing in flight can be hidden by a
-        // slip of the hand.
-        let put_away = |p: &crate::pr::Pr| {
-            let board = board.clone();
-            let (url, label) = (p.url(), p.label());
-            move |ev: &gpui::MouseDownEvent, _: &mut gpui::Window, cx: &mut gpui::App| {
-                let (url, label, at) = (url.clone(), label.clone(), ev.position);
-                let _ = board.update(cx, |this, cx| {
-                    this.tile_menu = Some(crate::ui::board::TileMenu { at, url, label });
-                    this.touch(cx);
-                });
-            }
-        };
-        match *kind {
-            Kind::Session(i) => {
-                let chip = self.model.chips.get(i)?;
-                let info = &chip.info;
-                let (fill, ink) = inks.on(inks.session(info));
-                let running = chip.subs.iter().filter(|x| !x.anim.gone && x.info.running).count();
-                let corner = if info.phase() == Phase::NeedsUser {
-                    Some("!".to_string())
-                } else {
-                    (running > 0).then(|| running.to_string())
-                };
-                let name = info.label();
-                let state = info.phase().label().to_lowercase();
-                let (big, small) = back_lines(info, chip);
-                let back_name = name.clone();
-                // Where it runs, in the same mark the cell wore (#123): the
-                // Claude mark would be on every session tile and say nothing.
-                let mark = info.seat.as_ref().and_then(|s| Mark::host(s.host));
-                // Everything the two faces show: with it the tile keeps its
-                // last drawing while it slides, instead of every slide of
-                // every tile redrawing the whole screen (#182).
-                let shows = (
-                    &name,
-                    &state,
-                    &corner,
-                    &big,
-                    &small,
-                    mark,
-                    [fill, ink].map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits)),
-                );
-                let key = {
-                    use std::hash::{Hash, Hasher};
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    shows.hash(&mut h);
-                    h.finish()
-                };
-                Some(
-                    tile(SharedString::from(format!("s-{}", info.session_id)), TileSize::Medium)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .content_key(key)
-                        .front(move |_, _| face(ink, corner, String::new(), Vec::new(), name, Some(state), mark))
-                        .back(move |_, _| face(ink, None, big, small, back_name, None, mark))
-                        .period(PERIOD)
-                        .phase(phase_of(info))
-                        .on_click(press(Press::Session(i))),
-                )
-            }
-            Kind::Agent(i, k) => {
-                let chip = self.model.chips.get(i)?;
-                let agents: Vec<_> = chip.subs.iter().filter(|x| !x.anim.gone).collect();
-                let n = agents.len();
-                let agent = agents.get(k)?;
-                let over = k == 3 && n > 4;
-                let base = if inks.pal.screened { inks.pal.ink } else { inks.pal.chip };
-                // A finished one is the colour given back to the board.
-                let fill = if over || agent.info.running { base } else { theme::lerp(inks.pal.bg, base, 0.45) };
-                let ink = if inks.pal.screened { inks.pal.bg } else { comb::legible(WHITE, fill, inks.pal) };
-                let label = if over { format!("+{}", n - 3) } else { agent.info.label().to_lowercase() };
-                Some(
-                    tile(SharedString::from(format!("a-{}-{k}", chip.info.session_id)), TileSize::Small)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .front(move |_, _| {
-                            div()
-                                .size_full()
-                                .relative()
-                                .text_color(theme::hsla(ink))
-                                .child(if over {
-                                    div().absolute().left(u(7.)).top(u(18.)).text_size(u(20.)).child(label)
-                                } else {
-                                    div()
-                                        .absolute()
-                                        .left(u(6.))
-                                        .right(u(4.))
-                                        .bottom(u(5.))
-                                        .text_size(u(9.))
-                                        .whitespace_nowrap()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(label)
-                                })
-                        })
-                        .on_click(press(Press::Session(i))),
-                )
-            }
-            Kind::Issue(i) => {
-                let info = &self.model.chips.get(i)?.info;
-                let t = info.ticket.as_ref()?;
-                let (fill, ink) = inks.on(comb::floor_color(comb::ticket_color(t, inks.pal), inks.pal));
-                let state = if t.state_name.is_empty() {
-                    t.status.map(|st| st.short().to_lowercase()).unwrap_or_default()
-                } else {
-                    t.state_name.to_lowercase()
-                };
-                let (label, title) = (t.label(), t.title.clone());
-                let act = Press::Link { label: t.label(), first: t.app_url(), then: t.url(), what: "Linear issue" };
-                Some(
-                    tile(SharedString::from(format!("i-{}", t.key)), TileSize::Medium)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some(state), Some(Mark::Linear)))
-                        .on_click(press(act)),
-                )
-            }
-            Kind::Pr(i, k) => {
-                let info = &self.model.chips.get(i)?.info;
-                let p = info.prs.get(k)?;
-                let (fill, ink) = inks.on(comb::floor_color(comb::pr_color(p, inks.pal), inks.pal));
-                // A review still pending is said in a band across the top
-                // (#153): the fill already says the pull request's state.
-                let waiting = p.awaiting_review();
-                let (label, title, state) = (p.label(), p.title.clone(), p.look().short().to_lowercase());
-                let act = Press::Link { label: p.label(), first: None, then: Some(p.url()), what: "pull request" };
-                let landed = can_put_away(p);
-                let offer = put_away(p);
-                Some(
-                    tile(SharedString::from(format!("p-{}", p.url())), TileSize::Medium)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .front(move |_, _| {
-                            div()
-                                .size_full()
-                                .relative()
-                                .when(landed, |d| d.on_mouse_down(gpui::MouseButton::Right, offer))
-                                .child(face(ink, None, label, wrap_lines(&title), String::new(), Some(state), Some(Mark::GitHub)))
-                                .when(waiting, |d| {
-                                    d.child(
-                                        div()
-                                            .absolute()
-                                            .top_0()
-                                            .left_0()
-                                            .right_0()
-                                            .h(u(5.))
-                                            .bg(gpui::Hsla::from(ink).opacity(0.5)),
-                                    )
-                                })
-                        })
-                        .on_click(press(act)),
-                )
-            }
-            Kind::Unanswered(i, k) => {
-                let info = &self.model.chips.get(i)?.info;
-                let r = info.prs_unanswered.get(k)?;
-                let (fill, ink) = inks.on(inks.quiet());
-                let label = format!("#{}", r.number);
-                let act = Press::Link { label: label.clone(), first: None, then: Some(r.url()), what: "pull request" };
-                Some(
-                    tile(SharedString::from(format!("u-{}", r.url())), TileSize::Medium)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, Vec::new(), String::new(), Some("github did not answer".into()), Some(Mark::GitHub)))
-                        .on_click(press(act)),
-                )
-            }
-            Kind::Page(i) => {
-                let info = &self.model.chips.get(i)?.info;
-                let a = info.artifacts.last()?;
-                let (fill, ink) = inks.on(inks.quiet());
-                let (label, title) = (a.label(), a.title.clone());
-                let act = Press::Link { label: a.label(), first: None, then: Some(a.url()), what: "page" };
-                Some(
-                    tile(SharedString::from(format!("g-{}", a.url())), TileSize::Medium)
-                        .metrics(UNIT, GAP)
-                        .color(theme::hsla(fill))
-                        .front(move |_, _| face(ink, None, label, wrap_lines(&title), String::new(), Some("published".into()), Some(Mark::Artifact)))
-                        .on_click(press(act)),
-                )
-            }
+    fn id(&self) -> String {
+        match self {
+            TileKey::Issue(k) => format!("i-{k}"),
+            TileKey::Session(s) => format!("s-{s}"),
+            TileKey::Agent(s, k) => format!("a-{s}-{k}"),
+            TileKey::Pr(u) => format!("p-{u}"),
+            TileKey::Unanswered(u) => format!("u-{u}"),
+            TileKey::Page(u) => format!("g-{u}"),
+        }
+    }
+
+    fn size(&self) -> TileSize {
+        match self {
+            TileKey::Agent(..) => TileSize::Small,
+            _ => TileSize::Medium,
         }
     }
 }
 
+/// One face of a medium tile: a corner mark, a large line, small lines under
+/// it, and the tile's title at the bottom-left where Metro keeps it.
+#[derive(Clone, Debug, PartialEq, Default)]
+struct Face {
+    corner: Option<String>,
+    big: String,
+    small: Vec<String>,
+    title: String,
+    foot: Option<String>,
+}
+
+/// Everything a tile shows, looked up from the board by its key.
+#[derive(Clone, Debug, PartialEq)]
+struct Shows {
+    fill: Rgba,
+    ink: Rgba,
+    front: Face,
+    /// A session's back face: it is live.
+    back: Option<Face>,
+    mark: Option<Mark>,
+    /// A review still pending, said in a band across the top (#153).
+    waiting: bool,
+    /// A small tile: a subagent's name, or `+n` for the rest.
+    agent: Option<(String, bool)>,
+}
+
 /// What a press on a tile does, once the grid has swung away.
 enum Press {
-    Session(usize),
+    Session(String),
     Link { label: String, first: Option<String>, then: Option<String>, what: &'static str },
+}
+
+/// The pull request a tile is of, if it is one that can be put away (#194).
+fn landed(b: &Board, key: &TileKey) -> Option<(String, String)> {
+    let TileKey::Pr(url) = key else { return None };
+    b.model.live().flat_map(|c| c.info.prs.iter()).find(|p| p.url() == *url).filter(|p| can_put_away(p)).map(|p| (p.url(), p.label()))
+}
+
+fn press_of(b: &Board, key: &TileKey) -> Option<Press> {
+    let infos = || b.model.live().map(|c| &c.info);
+    Some(match key {
+        TileKey::Session(s) | TileKey::Agent(s, _) => Press::Session(s.clone()),
+        TileKey::Issue(k) => {
+            let t = infos().filter_map(|i| i.ticket.as_ref()).find(|t| t.key == *k)?;
+            Press::Link { label: t.label(), first: t.app_url(), then: t.url(), what: "Linear issue" }
+        }
+        TileKey::Pr(u) => {
+            let p = infos().flat_map(|i| i.prs.iter()).find(|p| p.url() == *u)?;
+            Press::Link { label: p.label(), first: None, then: Some(p.url()), what: "pull request" }
+        }
+        TileKey::Unanswered(u) => {
+            let r = infos().flat_map(|i| i.prs_unanswered.iter()).find(|r| r.url() == *u)?;
+            Press::Link { label: format!("#{}", r.number), first: None, then: Some(r.url()), what: "pull request" }
+        }
+        TileKey::Page(u) => {
+            let a = infos().flat_map(|i| i.artifacts.iter()).find(|a| a.url() == *u)?;
+            Press::Link { label: a.label(), first: None, then: Some(a.url()), what: "page" }
+        }
+    })
+}
+
+/// The inks the tiles are painted in now.
+fn inks_of(b: &Board) -> Inks {
+    let pal = b.palette();
+    let accent = if b.settings.theme == crate::settings::BoardTheme::Orange {
+        pal.ink
+    } else {
+        Rgba::from(untracked(metro_palette).accent)
+    };
+    Inks { pal, accent }
+}
+
+/// What the tile `key` shows, or `None` once it is no longer on the board.
+fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
+    let inks = inks_of(b);
+    let chip_of = |id: &str| b.model.chips.iter().find(|c| c.info.session_id == id && !c.anim.gone);
+    let infos = || b.model.live().map(|c| &c.info);
+    let plain = |fill: Rgba, ink: Rgba, front: Face, mark: Option<Mark>| Shows {
+        fill,
+        ink,
+        front,
+        back: None,
+        mark,
+        waiting: false,
+        agent: None,
+    };
+    Some(match key {
+        TileKey::Session(id) => {
+            let chip = chip_of(id)?;
+            let info = &chip.info;
+            let (fill, ink) = inks.on(inks.session(info));
+            let running = chip.subs.iter().filter(|x| !x.anim.gone && x.info.running).count();
+            let corner = if info.phase() == Phase::NeedsUser {
+                Some("!".to_string())
+            } else {
+                (running > 0).then(|| running.to_string())
+            };
+            let name = info.label();
+            let (big, small) = back_lines(info, chip);
+            Shows {
+                fill,
+                ink,
+                front: Face { corner, title: name.clone(), foot: Some(info.phase().label().to_lowercase()), ..Face::default() },
+                back: Some(Face { big, small, title: name, ..Face::default() }),
+                // Where it runs, in the same mark the cell wore (#123).
+                mark: info.seat.as_ref().and_then(|s| Mark::host(s.host)),
+                waiting: false,
+                agent: None,
+            }
+        }
+        TileKey::Agent(id, k) => {
+            let chip = chip_of(id)?;
+            let agents: Vec<_> = chip.subs.iter().filter(|x| !x.anim.gone).collect();
+            let n = agents.len();
+            let agent = agents.get(*k)?;
+            let over = *k == 3 && n > 4;
+            let base = if inks.pal.screened { inks.pal.ink } else { inks.pal.chip };
+            // A finished one is the colour given back to the board.
+            let fill = if over || agent.info.running { base } else { theme::lerp(inks.pal.bg, base, 0.45) };
+            let ink = if inks.pal.screened { inks.pal.bg } else { ink::legible(WHITE, fill, inks.pal) };
+            let text = if over { format!("+{}", n - 3) } else { agent.info.label().to_lowercase() };
+            Shows { agent: Some((text, over)), ..plain(fill, ink, Face::default(), None) }
+        }
+        TileKey::Issue(k) => {
+            let t = infos().filter_map(|i| i.ticket.as_ref()).find(|t| t.key == *k)?;
+            let (fill, ink) = inks.on(ink::floor_color(ink::ticket_color(t, inks.pal), inks.pal));
+            let state = if t.state_name.is_empty() {
+                t.status.map(|st| st.short().to_lowercase()).unwrap_or_default()
+            } else {
+                t.state_name.to_lowercase()
+            };
+            let front = Face { big: t.label(), small: wrap_lines(&t.title), foot: Some(state), ..Face::default() };
+            plain(fill, ink, front, Some(Mark::Linear))
+        }
+        TileKey::Pr(u) => {
+            let p = infos().flat_map(|i| i.prs.iter()).find(|p| p.url() == *u)?;
+            let (fill, ink) = inks.on(ink::floor_color(ink::pr_color(p, inks.pal), inks.pal));
+            let front = Face {
+                big: p.label(),
+                small: wrap_lines(&p.title),
+                foot: Some(p.look().short().to_lowercase()),
+                ..Face::default()
+            };
+            Shows { waiting: p.awaiting_review(), ..plain(fill, ink, front, Some(Mark::GitHub)) }
+        }
+        TileKey::Unanswered(u) => {
+            let r = infos().flat_map(|i| i.prs_unanswered.iter()).find(|r| r.url() == *u)?;
+            let (fill, ink) = inks.on(inks.quiet());
+            let front = Face { big: format!("#{}", r.number), foot: Some("github did not answer".into()), ..Face::default() };
+            plain(fill, ink, front, Some(Mark::GitHub))
+        }
+        TileKey::Page(u) => {
+            let a = infos().flat_map(|i| i.artifacts.iter()).find(|a| a.url() == *u)?;
+            let (fill, ink) = inks.on(inks.quiet());
+            let front = Face { big: a.label(), small: wrap_lines(&a.title), foot: Some("published".into()), ..Face::default() };
+            plain(fill, ink, front, Some(Mark::Artifact))
+        }
+    })
+}
+
+/// The shape of the start screen: which groups, in which rows, holding which
+/// tiles, and where it stands. Built again only when this changes; what a
+/// tile shows changes under it without the screen being built again.
+#[derive(Clone, Debug, PartialEq)]
+struct Shape {
+    rows: Vec<Vec<(String, Vec<TileKey>)>>,
+    columns: usize,
+    inset: f32,
+    zoom: f32,
+}
+
+fn shape_of(b: &Board) -> Shape {
+    let groups = groups(&b.model);
+    let columns = columns(&groups);
+    let zoom = b.layout.zoom;
+    // A window is not a screen: the groups that fit across it make a row,
+    // and the rest go on in rows below (#177).
+    let room = b.window.0 / zoom.max(0.1) - 2.0 * MARGIN;
+    let per_row = groups_per_row(room, columns);
+    // On a wide window the screen stands in the middle (#179).
+    let inset = centring(room, columns, groups.len(), per_row);
+    let keyed: Vec<(String, Vec<TileKey>)> = groups
+        .iter()
+        .map(|(title, kinds)| {
+            // One short of the room: the last group of a row wraps instead.
+            let title = clip(title, columns * TITLE_CHARS_PER_UNIT - 1);
+            (title, kinds.iter().filter_map(|k| TileKey::of(k, &b.model)).collect())
+        })
+        .collect();
+    Shape { rows: keyed.chunks(per_row).map(|r| r.to_vec()).collect(), columns, inset, zoom }
+}
+
+/// The tiles view: a page header and the start screen under it, scrolling
+/// in the space above the status bar.
+pub fn start_screen(ui: Ui) -> AnyElement {
+    let shape = {
+        let ui = ui.clone();
+        computed(move || ui.read(shape_of))
+    };
+    // Bumped after a tile's press, so the screen turns back in (#176).
+    let replay = signal(0usize);
+    {
+        let ui = ui.clone();
+        effect(move || {
+            let r = ui.read(|b| b.tiles_replay);
+            untracked(|| replay.set(r));
+        });
+    }
+    let bg = ui.clone();
+    scroll()
+        .flex_1()
+        .bg(move || bg.read(|b| theme::hsla(b.palette().bg)))
+        .window_drag(true)
+        .child(
+            view()
+                // A press on the bare screen moves the window, as on gpui
+                // (#166); the tiles keep their own presses.
+                .window_drag(true)
+                .child(dynamic(move || screen(ui.clone(), shape.get(), replay))),
+        )
+        .into_element()
+}
+
+fn screen(ui: Ui, shape: Shape, replay: Signal<usize>) -> AnyElement {
+    let z = shape.zoom;
+    let (unit, gap) = (UNIT * z, GAP * z);
+    let group_w = group_width(shape.columns) * z;
+    let header = label("start")
+        .text_size(px(size::HUGE * z))
+        .font_weight(LIGHT)
+        .line_height(nsh_core::LineHeight::Points(px((size::HUGE + 8.) * z)))
+        .text_color(move || metro_palette().foreground);
+    let empty = shape.rows.is_empty();
+    let mut body = view().pl(px(MARGIN * z)).gap(px(ROW_GAP * z));
+    for row in shape.rows {
+        let mut line = view().flex_row().items_start().gap(px(GROUP_GAP * z));
+        for (g, (title, keys)) in row.into_iter().enumerate() {
+            let hinge = (MARGIN + shape.inset) * z + g as f32 * (group_w + GROUP_GAP * z);
+            line = line.child(group(ui.clone(), title, keys, shape.columns, unit, gap, z, hinge, replay));
+        }
+        body = body.child(line);
+    }
+    let body = if empty {
+        view()
+            .pl(px(MARGIN * z))
+            .child(label("no claude code sessions").text_size(px(size::NORMAL * z)).text_color(move || metro_palette().subtle))
+    } else {
+        body
+    };
+    view()
+        .pt(px(TOP * z))
+        .pb(px(MARGIN * z))
+        .pr(px(MARGIN * z))
+        .pl(px(shape.inset * z))
+        .child(view().pt(px(12. * z)).pb(px(20. * z)).px(px(MARGIN * z)).child(view().ml(px(-3. * z)).child(header)))
+        .child(body)
+        .into_element()
+}
+
+/// One group: its title over its tiles. A grid of its own, so a tile that
+/// comes or goes reflows its group as nsh-metro does it — the new one swings
+/// open in place, the rest slide over — and the screen is not built again.
+#[allow(clippy::too_many_arguments)]
+fn group(
+    ui: Ui,
+    title: String,
+    keys: Vec<TileKey>,
+    columns: usize,
+    unit: f32,
+    gap: f32,
+    z: f32,
+    hinge: f32,
+    replay: Signal<usize>,
+) -> View {
+    let keys = Rc::new(keys);
+    let grid = tile_grid().columns(columns).metrics(unit, gap).turnstile(true).replay(replay.read_only()).hinge(hinge).source({
+        let ui = ui.clone();
+        let keys = keys.clone();
+        move || keys.iter().map(|k| tile_for(ui.clone(), k.clone(), unit, gap, z)).collect()
+    });
+    view()
+        .flex_shrink_0()
+        // The title runs on over the gap to the next group, as nsh-metro's
+        // own group headers do; `clip` has already kept it short of the
+        // next one's.
+        .child(
+            view().relative().h(px(GROUP_HEADER * z)).child(
+                label(SharedString::from(title.to_lowercase()))
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .number_of_lines(1u32)
+                    .text_size(px(size::MEDIUM_LARGE * z))
+                    .font_weight(SEMILIGHT)
+                    .text_color(move || metro_palette().foreground),
+            ),
+        )
+        .child(grid)
+}
+
+/// The tile for one of the start screen's things, pressing as what it
+/// shows: a session (or its subagent) jumps to its terminal, an issue
+/// opens in Linear, a pull request or a page in the browser. The grid
+/// swings away first and the press lands after.
+fn tile_for(ui: Ui, key: TileKey, unit: f32, gap: f32, z: f32) -> Tile {
+    let initial = ui.peek(|b| shows(b, &key));
+    let live = initial.as_ref().is_some_and(|s| s.back.is_some());
+    let phase = match &key {
+        TileKey::Session(id) => ui.peek(|b| b.model.chips.iter().find(|c| c.info.session_id == *id).map(|c| phase_of(&c.info))),
+        _ => None,
+    };
+    let data = {
+        let (ui, key) = (ui.clone(), key.clone());
+        computed(move || ui.read(|b| shows(b, &key)))
+    };
+    let press = {
+        let (ui, key) = (ui.clone(), key.clone());
+        move || {
+            match ui.peek(|b| press_of(b, &key)) {
+                Some(Press::Session(id)) => ui.activate_session(&id),
+                Some(Press::Link { label, first, then, what }) => ui.open_link(label, first, then, what),
+                None => {}
+            }
+            ui.update(|b| b.tiles_replay += 1);
+        }
+    };
+    let menu = {
+        let (ui, key) = (ui.clone(), key.clone());
+        move |at: (f32, f32)| {
+            // A merged pull request is work that has landed: right-clicking
+            // its tile offers to put it away (#194).
+            if let Some((url, label)) = ui.peek(|b| landed(b, &key)) {
+                ui.update(|b| b.tile_menu = Some(TileMenu { at, url, label }));
+            }
+        }
+    };
+    let mut t = tile(key.id(), key.size())
+        .metrics(unit, gap)
+        .color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)))
+        .on_click(press);
+    let front = {
+        let menu = menu.clone();
+        move |_: TileSize| face(data, false, z, menu.clone())
+    };
+    t = t.front(front);
+    if live {
+        t = t.back(move |_: TileSize| face(data, true, z, menu.clone())).period(PERIOD);
+        if let Some(p) = phase {
+            t = t.phase(p);
+        }
+    }
+    t
+}
+
+/// A tile's face, bound to what the tile shows: its fill, its ink and its
+/// words follow the board without the tile being built again.
+fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32)) + Clone + 'static) -> View {
+    let get = move || data.get();
+    let fill = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.fill));
+    let ink = move || get().map_or(Hsla::transparent_black(), |s| theme::hsla(s.ink));
+    let soft = move || ink().opacity(0.72);
+    let side = move || get().map(|s| if back { s.back.unwrap_or_default() } else { s.front }).unwrap_or_default();
+    let small_tile = untracked(get).is_some_and(|s| s.agent.is_some());
+    let base = view()
+        .size_full()
+        .relative()
+        .bg(fill)
+        .on_context_menu(move |e: &ContextMenuEvent| menu((f32::from(e.page_position.x), f32::from(e.page_position.y))));
+    if small_tile {
+        let text = move || SharedString::from(get().and_then(|s| s.agent).map(|a| a.0).unwrap_or_default());
+        let over = untracked(get).and_then(|s| s.agent).is_some_and(|a| a.1);
+        return if over {
+            base.child(label(text).absolute().left(px(7. * z)).top(px(18. * z)).text_size(px(20. * z)).text_color(ink))
+        } else {
+            base.child(
+                label(text)
+                    .absolute()
+                    .left(px(6. * z))
+                    .right(px(4. * z))
+                    .bottom(px(5. * z))
+                    .text_size(px(9. * z))
+                    .truncate()
+                    .text_color(ink),
+            )
+        };
+    }
+    let mark = untracked(get).and_then(|s| s.mark);
+    base.p(px(9. * z))
+        .gap(px(3. * z))
+        .child(
+            label(move || SharedString::from(side().corner.unwrap_or_default()))
+                .absolute()
+                .top(px(6. * z))
+                .right(px(9. * z))
+                .text_size(px(20. * z))
+                .text_color(ink),
+        )
+        .child(label(move || SharedString::from(side().big)).text_size(px(15. * z)).truncate().text_color(ink))
+        .child(dynamic(move || {
+            side()
+                .small
+                .into_iter()
+                .map(|line| label(line).text_size(px(10. * z)).truncate().text_color(soft).into_element())
+                .collect::<Vec<_>>()
+        }))
+        .child(
+            view()
+                .absolute()
+                .left(px(9. * z))
+                .right(px((MARK + 12.) * z))
+                .bottom(px(7. * z))
+                .child(label(move || SharedString::from(side().title)).text_size(px(13. * z)).truncate().text_color(ink))
+                .child(label(move || SharedString::from(side().foot.unwrap_or_default())).text_size(px(10. * z)).text_color(soft)),
+        )
+        // What the tile is a tile *of*, in the one corner nothing else uses
+        // (#187), in the ink the state line is drawn in.
+        .children(mark.map(|m| {
+            svg(ImageSrc::svg_markup(crate::logos::markup(m)))
+                .absolute()
+                .right(px(8. * z))
+                .bottom(px(7. * z))
+                .size(px(MARK * z))
+                .text_color(soft)
+        }))
+        // A review still pending, in a band across the top (#153).
+        .child(
+            view()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(5. * z))
+                .bg(move || if get().is_some_and(|s| s.waiting) { ink().opacity(0.5) } else { Hsla::transparent_black() }),
+        )
+}
+
+/// Puts a merged pull request away: written down first, so a board that is
+/// killed in the next second comes back without it, then taken off the
+/// board in hand rather than at the next poll (#194).
+fn put_pr_away(b: &mut Board, url: String) {
+    if !b.settings.dismissed.contains(&url) {
+        b.settings.dismissed.push(url.clone());
+        b.settings.save();
+    }
+    for c in b.model.chips.iter_mut() {
+        c.info.prs.retain(|p| p.url() != url);
+    }
+    b.tile_menu = None;
+    crate::ui::palette::refresh(b);
+}
+
+/// Brings every put-away pull request back (#194). They land on the board
+/// again at the next poll, which is where they come from.
+pub fn restore_dismissed(b: &mut Board) {
+    b.settings.dismissed.clear();
+    b.settings.save();
+}
+
+/// The tile menu's width, and how close to the window's edges it may come.
+const MENU_W: f32 = 140.0;
+const MENU_EDGE: f32 = 8.0;
+
+/// The little menu a merged tile drops (#194): one thing to do, at the
+/// pointer that asked for it, on the same sheet the search wears. A press
+/// anywhere else puts it away.
+pub fn menu(ui: Ui) -> AnyElement {
+    dynamic(move || {
+        let Some((m, pal, window, orange)) =
+            ui.read(|b| b.tile_menu.clone().map(|m| (m, b.palette(), b.window, b.settings.theme == crate::settings::BoardTheme::Orange)))
+        else {
+            return view().into_element();
+        };
+        let ink = move |a: f32| theme::hsla(theme::with_alpha(pal.ink, a));
+        let rule = move || if orange { ink(1.0) } else { metro_palette().accent };
+        let x = m.at.0.min(window.0 - MENU_W - MENU_EDGE).max(MENU_EDGE);
+        let y = m.at.1.min(window.1 - STATUS_H - MENU_EDGE - 60.0).max(MENU_EDGE);
+        let (away, go) = (ui.clone(), ui.clone());
+        let url = m.url.clone();
+        view()
+            .absolute()
+            .inset_0()
+            .on_press(move || away.update(|b| b.tile_menu = None))
+            .child(
+                view()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(y))
+                    .w(px(MENU_W))
+                    .border(px(1.))
+                    .border_color(ink(0.35))
+                    .bg(theme::hsla(crate::ui::palette::card_bg(pal)))
+                    .on_press(|| {})
+                    .child(view().h(px(2.)).bg(rule))
+                    .child(view().px(px(8.)).py(px(4.)).child(label(m.label).text_size(px(10.)).text_color(ink(0.45))))
+                    .child(
+                        view()
+                            .px(px(8.))
+                            .py(px(5.))
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(ink(0.08)))
+                            .on_press(move || go.update(|b| put_pr_away(b, url.clone())))
+                            .child(label("치우기").text_size(px(11.)).text_color(ink(0.85))),
+                    ),
+            )
+            .into_element()
+    })
 }
 
 /// A title in up to three short lines under a tile's large line.

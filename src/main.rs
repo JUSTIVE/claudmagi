@@ -1,165 +1,34 @@
 mod artifact;
 mod cloud;
 mod font;
-mod geom;
 mod host;
 mod logos;
 mod made;
 mod mac;
 mod model;
 mod pr;
-mod render;
+mod ink;
 mod settings;
 mod sources;
 mod theme;
 mod ticket;
 mod ui;
 mod usage;
+mod zoom;
 
 
-use std::time::Instant;
+use std::process::ExitCode;
 
-use gpui::{
-    App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, actions,
-    prelude::*, px, size,
-};
+use nsh_platform_macos as platform;
 
-use model::{BoardModel, Phase, SessionInfo};
-use render::scene;
-use sources::{ClaudeSource, FakeSource, SessionSource};
-use ui::board::Board;
+use sources::{ClaudeSource, SessionSource};
 
-actions!(claudmagi, [Quit]);
-
-fn main() {
+fn main() -> ExitCode {
     // Before anything else, and before any thread exists to race it: a bundle
     // launched from Finder has no `gh` on its `PATH` (#66).
     unsafe { mac::widen_path() };
     env_logger::init();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(i) = args.iter().position(|a| a == "--svg") {
-        let out = args.get(i + 1).cloned().unwrap_or_else(|| "claudmagi.svg".into());
-        let demo = args.iter().any(|a| a == "--demo");
-        let (w, h) = args
-            .iter()
-            .position(|a| a == "--size")
-            .and_then(|k| args.get(k + 1))
-            .and_then(|s| s.split_once('x'))
-            .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
-            .unwrap_or((scene::DESIGN_W, scene::DESIGN_H));
-        let count = args
-            .iter()
-            .position(|a| a == "--count")
-            .and_then(|k| args.get(k + 1))
-            .and_then(|n| n.parse().ok())
-            .unwrap_or(8usize);
-        let sessions = if demo {
-            let fake = FakeSource::new();
-            fake.fill(count);
-            let ids: Vec<String> = fake.snapshot().iter().map(|s| s.session_id.clone()).collect();
-            for (i, running) in [(0, true), (0, false), (3, true), (3, true), (4, false)] {
-                if let Some(id) = ids.get(i) {
-                    fake.add_sub(id, running);
-                }
-            }
-            // One connector per look, so a demo render shows the whole set (#56).
-            for (i, look) in pr::Look::ALL.into_iter().enumerate() {
-                if let Some(id) = ids.get(i) {
-                    fake.set_pr(id, Some(look));
-                }
-            }
-            // One ticket status per lane, so both edges show their whole
-            // vocabulary in a demo render (#57, #58).
-            for (i, st) in ticket::Status::ALL.into_iter().enumerate() {
-                if let Some(id) = ids.get(i) {
-                    fake.set_ticket(id, Some(Some(st)));
-                }
-            }
-            // One PR with CI in flight, for the yellow border (#62).
-            if let Some(id) = ids.get(1) {
-                fake.set_pr_running(id, true);
-            }
-            // One origin per session, so a demo render shows every mark the
-            // board can draw beside the Claude one (#122). Sandbox sessions
-            // have no seat of their own; this is only the badge, the group
-            // stays the sandbox's.
-            for (i, (host, _)) in host::NAMED.into_iter().enumerate() {
-                if let Some(id) = ids.get(i) {
-                    fake.set_host(id, Some(host));
-                }
-            }
-            // Review rides on top of the look rather than being one of them
-            // (#116), so the demo has to say it separately: one open pull
-            // request signed off, and one signed off with its checks red, the
-            // pair the old single enum could not show at once.
-            if let Some(id) = ids.get(pr::Look::ALL.len()) {
-                fake.set_pr(id, Some(pr::Look::Open));
-                fake.set_pr_approved(id, true);
-            }
-            if let Some(id) = ids.get(pr::Look::ALL.len() + 1) {
-                fake.set_pr(id, Some(pr::Look::Failing));
-                fake.set_pr_approved(id, true);
-            }
-            // One session with a chain of PRs, as a ticket often has (#63).
-            // Parked on a session the loop above left bare: the comb only
-            // ever draws a cell's newest pull request, so a chain laid on a
-            // session that is carrying one of the looks buries it, and the
-            // look never shows up in a comb render at all (#116).
-            if let Some(id) = ids.get(pr::Look::ALL.len() + 2) {
-                fake.set_pr(id, Some(pr::Look::Open));
-                fake.add_pr(id, pr::Look::Merged);
-                fake.add_pr(id, pr::Look::Closed);
-            }
-            // Pages the session published, which ride at the end of the pull
-            // request's own line (#137): one cell with a single page, so the
-            // mark stands alone, and one with several, so the count shows.
-            if let Some(id) = ids.get(0) {
-                fake.add_artifact(id);
-            }
-            if let Some(id) = ids.get(2) {
-                fake.add_artifact(id);
-                fake.add_artifact(id);
-            }
-            // And one cell whose only output is a page, where the line leads
-            // with it under its own name instead of standing empty. It sits
-            // past the sessions the looks above claim, so it wants a board
-            // wider than the default count to show up.
-            if let Some(id) = ids.get(pr::Look::ALL.len() + 3) {
-                fake.add_artifact(id);
-            }
-            // One lane finished end to end, so the bold trace shows up in a
-            // demo render (#61).
-            if let Some(id) = ids.get(4) {
-                fake.set_pr(id, Some(pr::Look::Merged));
-                fake.set_ticket(id, Some(Some(ticket::Status::Done)));
-                fake.set_phase(id, Phase::Idle);
-            }
-            fake.snapshot()
-        } else {
-            // Eager like `--prs`: a one-shot render should show every PR, not
-            // the two a single snapshot's ration happens to reach.
-            ClaudeSource::eager().snapshot()
-        };
-        let palette = match args.iter().position(|a| a == "--theme").and_then(|k| args.get(k + 1)).map(|s| s.as_str()) {
-            Some("orange") => theme::ORANGE,
-            Some("dark") => theme::DARK,
-            _ => theme::PALETTE,
-        };
-        let view = args.iter().position(|a| a == "--view").and_then(|k| args.get(k + 1)).cloned();
-        // The honeycomb is the one view drawn as shapes: the start screen is
-        // gpui-metro's elements (#176), and the circuit and the metaballs
-        // are gone (#183).
-        let svg = match view.as_deref() {
-            None | Some("comb") => render_comb_svg(&sessions, w, h, palette),
-            Some(other) => {
-                eprintln!("--view {other} has no SVG export: only the comb is drawn as shapes");
-                std::process::exit(2);
-            }
-        };
-        std::fs::write(&out, svg).expect("write svg");
-        println!("wrote {out} ({} sessions)", sessions.len());
-        return;
-    }
     if let Some(i) = args.iter().position(|a| a == "--focus") {
         let key = args.get(i + 1).cloned().unwrap_or_default().to_ascii_uppercase();
         let list = ClaudeSource::default().snapshot();
@@ -167,7 +36,7 @@ fn main() {
             Some(s) => println!("{:?}", host::focus(s)),
             None => eprintln!("no session matching {key:?}; try --list"),
         }
-        return;
+        return ExitCode::SUCCESS;
     }
     // Same idea as `--usage` (#48): check the PR resolution from the terminal
     // without opening a window (#56).
@@ -201,7 +70,7 @@ fn main() {
                 if pages.is_empty() { "-".to_string() } else { pages.join("  ·  ") }
             );
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
     if args.iter().any(|a| a == "--usage") {
@@ -212,10 +81,10 @@ fn main() {
             }
             Err(e) => {
                 eprintln!("{e}");
-                std::process::exit(1);
+                return ExitCode::FAILURE;
             }
         }
-        return;
+        return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--list") {
         let source = ClaudeSource::default();
@@ -243,77 +112,21 @@ fn main() {
                     .unwrap_or_else(|| "-".into())
             );
         }
-        return;
+        return ExitCode::SUCCESS;
     }
 
-    // The search's chips draw their marks through this (#79).
-    Application::with_platform(gpui_platform::current_platform(false))
-        // gpui-metro's glyphs first, the marks behind them (#79).
-        .with_assets(gpui_metro::Assets::with_fallback(logos::Logos))
-        .run(|cx: &mut App| {
-        base_gpui::init(cx);
-        ui::register_fonts(cx);
-        ui::metro::init(&settings::Settings::load(), cx);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus(vec![Menu {
-            name: "claudmagi".into(),
-            items: vec![MenuItem::action("Quit claudmagi", Quit)],
-            disabled: false,
-        }]);
-
-        // CLAUDMAGI_WINDOW=WxH opens at a given size (memory / layout checks).
-        let (win_w, win_h) = std::env::var("CLAUDMAGI_WINDOW")
-            .ok()
-            .and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))
-            .unwrap_or((scene::DESIGN_W, scene::DESIGN_H));
-        let bounds = Bounds::centered(None, size(px(win_w), px(win_h)), cx);
-        cx.open_window(
-            WindowOptions {
-                // A transparent titlebar rather than none: without one gpui
-                // leaves the close and minimise bits off the style mask, so
-                // those traffic lights showed but were greyed out (#167).
-                // The board still draws to the top edge.
-                titlebar: Some(TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: None }),
-                // The titlebar strip moves the window the way any Mac window's
-                // does, by AppKit (#185): handed over from the board's own
-                // press, the strip's drag took one try and not the next. The
-                // rest of the board still moves it itself (#166).
-                app_owns_titlebar_drag: false,
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(520.), px(340.))),
-                focus: true,
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| Board::new(window, cx)),
-        )
-        .expect("open window");
-
-        cx.on_window_closed(|cx, _| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
-        cx.activate(true);
-    });
-}
-
-/// Headless still frame with every animation settled.
-fn args_wave() -> Option<f32> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    args.iter().position(|a| a == "--wave").and_then(|k| args.get(k + 1)).and_then(|v| v.parse().ok())
-}
-
-/// The honeycomb as a one-shot SVG, for looking at it without a window (#86).
-fn render_comb_svg(list: &[SessionInfo], width: f32, height: f32, palette: theme::Palette) -> String {
-    let mut model = BoardModel::new();
-    model.apply(list.to_vec(), Instant::now());
-    model.settle();
-    let comb = render::comb::lay_out(&model, width, height);
-    // A one-shot render wants the view as it settles, not mid-arrival; pass
-    // `--wave <seconds>` to catch it partway (#92).
-    let t = args_wave().unwrap_or(1.0e3);
-    let shapes = render::comb::build_shapes(&model, &comb, palette, 0.0, geom::Pt::new(0.0, 0.0), t);
-    render::svg::to_svg(&shapes, width, comb.height.max(height))
+    // CLAUDMAGI_WINDOW=WxH opens at a given size (memory / layout checks).
+    let (win_w, win_h) = std::env::var("CLAUDMAGI_WINDOW")
+        .ok()
+        .and_then(|v| v.split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))))
+        .unwrap_or((zoom::DESIGN_W as i32, zoom::DESIGN_H as i32));
+    platform::run_app(
+        platform::AppSource::Rust(platform::Root::of::<ui::app::App>()),
+        platform::AppOptions {
+            title: "claudmagi".to_owned(),
+            app_id: "dev.justive.claudmagi".to_owned(),
+            size: (win_w, win_h),
+            ..Default::default()
+        },
+    )
 }

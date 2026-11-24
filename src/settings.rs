@@ -32,10 +32,12 @@ impl BoardTheme {
 #[serde(rename_all = "lowercase")]
 pub enum BoardView {
     /// A honeycomb of cells, one per session, clustered by the window
-    /// their host seats them in — a Warp tab, an Orca tab (#118).
+    /// their host seats them in — a Warp tab, an Orca tab (#118). This build
+    /// draws only the start screen, but the choice is still read and written
+    /// back: settings.json is shared with the build that has the comb (#186).
     Comb,
     /// The Metro start screen: a live tile per session, grouped by the work
-    /// it is on, drawn by gpui-metro (#157, #176).
+    /// it is on (#157, #176).
     #[default]
     Tiles,
 }
@@ -49,25 +51,6 @@ impl<'de> Deserialize<'de> for BoardView {
             "comb" => BoardView::Comb,
             _ => BoardView::Tiles,
         })
-    }
-}
-
-impl BoardView {
-    pub const ALL: [BoardView; 2] = [BoardView::Comb, BoardView::Tiles];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            BoardView::Comb => "COMB",
-            BoardView::Tiles => "TILES",
-        }
-    }
-
-    /// Whether this view lays its sessions out on the honeycomb's grid, which
-    /// is what the scroll, the presses and the drop-downs are keyed to (#86).
-    /// The tiles are gpui-metro's start screen, which seats, scrolls and
-    /// presses its own (#176).
-    pub fn seated(self) -> bool {
-        self == BoardView::Comb
     }
 }
 

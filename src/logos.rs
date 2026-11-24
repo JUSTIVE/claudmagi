@@ -1,22 +1,16 @@
-//! The marks the search draws inside each chip (#79).
+//! The marks the start screen and the search draw beside what they name (#79).
 //!
-//! gpui reads an SVG through an `AssetSource` and renders it as a mask: the
-//! silhouette is all that survives, and the colour comes from the element's
-//! `text_color`, which is how a logo takes its chip's label colour without
-//! being told. The files are compiled in the way the typeface is (#55), so an
-//! installed bundle carries them with no resources lookup at runtime.
+//! The platform draws an SVG as authored, its `currentColor` the element's
+//! text colour; [`markup`] hands it each mark recoloured that way, so a logo
+//! takes the colour of the text beside it without being told. The files are
+//! compiled in the way the typeface is (#55), so an installed bundle carries
+//! them with no resources lookup at runtime.
 //!
 //! See `assets/logos/README.md` for where they came from and what a
 //! replacement has to look like.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-
-use anyhow::Result;
-use gpui::{AssetSource, SharedString};
-
-use crate::font;
 
 const GITHUB: &[u8] = include_bytes!("../assets/logos/github.svg");
 const LINEAR: &[u8] = include_bytes!("../assets/logos/linear.svg");
@@ -27,16 +21,6 @@ const HERDR: &[u8] = include_bytes!("../assets/logos/herdr.svg");
 const ANTHROPIC: &[u8] = include_bytes!("../assets/logos/anthropic.svg");
 const CLOUD: &[u8] = include_bytes!("../assets/logos/cloud.svg");
 const ARTIFACT: &[u8] = include_bytes!("../assets/logos/artifact.svg");
-
-pub const GITHUB_PATH: &str = "logos/github.svg";
-pub const LINEAR_PATH: &str = "logos/linear.svg";
-pub const CLAUDE_PATH: &str = "logos/claude.svg";
-pub const WARP_PATH: &str = "logos/warp.svg";
-pub const ORCA_PATH: &str = "logos/orca.svg";
-pub const HERDR_PATH: &str = "logos/herdr.svg";
-pub const ANTHROPIC_PATH: &str = "logos/anthropic.svg";
-pub const CLOUD_PATH: &str = "logos/cloud.svg";
-pub const ARTIFACT_PATH: &str = "logos/artifact.svg";
 
 /// Which mark a node wears (#80).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,6 +50,8 @@ pub enum Mark {
 }
 
 impl Mark {
+    /// Every mark, for the tests that check the files themselves.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub const ALL: [Mark; 9] = [
         Mark::Claude,
         Mark::GitHub,
@@ -91,20 +77,6 @@ impl Mark {
         }
     }
 
-    pub fn path(self) -> &'static str {
-        match self {
-            Mark::Claude => CLAUDE_PATH,
-            Mark::GitHub => GITHUB_PATH,
-            Mark::Linear => LINEAR_PATH,
-            Mark::Warp => WARP_PATH,
-            Mark::Orca => ORCA_PATH,
-            Mark::Herdr => HERDR_PATH,
-            Mark::ClaudeApp => ANTHROPIC_PATH,
-            Mark::Cloud => CLOUD_PATH,
-            Mark::Artifact => ARTIFACT_PATH,
-        }
-    }
-
     fn bytes(self) -> &'static [u8] {
         match self {
             Mark::Claude => CLAUDE,
@@ -120,104 +92,43 @@ impl Mark {
     }
 }
 
-/// Every mark flattened once into the board's own path commands, in a box one
-/// unit across centred on the origin. The board draws its labels from glyph
-/// outlines (`font::outline`), and a mark is the same kind of thing, so it
-/// goes down the same pipe: the gpui canvas and an `--svg` export both get it
-/// for free. (#80)
-fn unit_outline(mark: Mark) -> &'static Vec<font::Cmd> {
-    static CACHE: OnceLock<Mutex<HashMap<Mark, &'static Vec<font::Cmd>>>> = OnceLock::new();
+/// Every mark's markup, with its fills set to `currentColor` (#79): drawn as
+/// authored, it takes the text colour of the element it sits in, which is
+/// how a mark takes its tile's colour without one of its own.
+pub fn markup(mark: Mark) -> &'static str {
+    static CACHE: OnceLock<Mutex<HashMap<Mark, &'static str>>> = OnceLock::new();
     let cache = CACHE.get_or_init(Mutex::default);
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-    cache.entry(mark).or_insert_with(|| Box::leak(Box::new(flatten(mark))))
+    cache.entry(mark).or_insert_with(|| {
+        let text = String::from_utf8_lossy(mark.bytes()).into_owned();
+        Box::leak(tint(&text).into_boxed_str())
+    })
 }
 
-fn flatten(mark: Mark) -> Vec<font::Cmd> {
-    let Ok(tree) = usvg::Tree::from_data(mark.bytes(), &usvg::Options::default()) else {
-        log::warn!("{} is not renderable", mark.path());
-        return Vec::new();
-    };
-    // Into a unit box: the file's own size is whatever its viewBox says, and
-    // the caller asks in pixels.
-    let size = tree.size();
-    let k = 1.0 / size.width().max(size.height()).max(1.0);
-    let (ox, oy) = (size.width() / 2.0, size.height() / 2.0);
-    let mut out = Vec::new();
-    walk(tree.root(), &mut |path| {
-        let t = path.abs_transform();
-        let at = |x: f32, y: f32| {
-            let mut p = usvg::tiny_skia_path::Point::from_xy(x, y);
-            t.map_point(&mut p);
-            ((p.x - ox) * k, (p.y - oy) * k)
-        };
-        for seg in path.data().segments() {
-            out.push(match seg {
-                usvg::tiny_skia_path::PathSegment::MoveTo(p) => {
-                    let (x, y) = at(p.x, p.y);
-                    font::Cmd::Move(x, y)
-                }
-                usvg::tiny_skia_path::PathSegment::LineTo(p) => {
-                    let (x, y) = at(p.x, p.y);
-                    font::Cmd::Line(x, y)
-                }
-                usvg::tiny_skia_path::PathSegment::QuadTo(c, p) => {
-                    let ((cx, cy), (x, y)) = (at(c.x, c.y), at(p.x, p.y));
-                    font::Cmd::Quad { cx, cy, x, y }
-                }
-                usvg::tiny_skia_path::PathSegment::CubicTo(a, b, p) => {
-                    let ((c1x, c1y), (c2x, c2y), (x, y)) = (at(a.x, a.y), at(b.x, b.y), at(p.x, p.y));
-                    font::Cmd::Cubic { c1x, c1y, c2x, c2y, x, y }
-                }
-                usvg::tiny_skia_path::PathSegment::Close => font::Cmd::Close,
-            });
+/// `svg` with every colour it names put to `currentColor`, and a fill on the
+/// root so shapes that name none take it too.
+fn tint(svg: &str) -> String {
+    let mut out = String::with_capacity(svg.len() + 32);
+    let mut rest = svg;
+    while let Some(at) = rest.find("fill=\"") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 6..];
+        let end = after.find('"').unwrap_or(after.len());
+        let value = &after[..end];
+        if value == "none" {
+            out.push_str("fill=\"none\"");
+        } else {
+            out.push_str("fill=\"currentColor\"");
         }
-    });
-    out
-}
-
-fn walk(group: &usvg::Group, f: &mut impl FnMut(&usvg::Path)) {
-    for node in group.children() {
-        match node {
-            usvg::Node::Path(p) => f(p),
-            usvg::Node::Group(g) => walk(g, f),
-            _ => {}
+        rest = &after[(end + 1).min(after.len())..];
+    }
+    out.push_str(rest);
+    match out.find("<svg") {
+        Some(at) => {
+            let (head, tail) = out.split_at(at + 4);
+            format!("{head} fill=\"currentColor\"{tail}")
         }
-    }
-}
-
-/// A mark's outline at `size` pixels across, relative to its centre, the way
-/// `font::outline` gives a label's.
-pub fn outline(mark: Mark, size: f32) -> Vec<font::Cmd> {
-    unit_outline(mark).iter().map(|c| scale_cmd(*c, size)).collect()
-}
-
-fn scale_cmd(cmd: font::Cmd, k: f32) -> font::Cmd {
-    match cmd {
-        font::Cmd::Move(x, y) => font::Cmd::Move(x * k, y * k),
-        font::Cmd::Line(x, y) => font::Cmd::Line(x * k, y * k),
-        font::Cmd::Quad { cx, cy, x, y } => font::Cmd::Quad { cx: cx * k, cy: cy * k, x: x * k, y: y * k },
-        font::Cmd::Cubic { c1x, c1y, c2x, c2y, x, y } => font::Cmd::Cubic {
-            c1x: c1x * k,
-            c1y: c1y * k,
-            c2x: c2x * k,
-            c2y: c2y * k,
-            x: x * k,
-            y: y * k,
-        },
-        font::Cmd::Close => font::Cmd::Close,
-    }
-}
-
-/// Serves the marks and nothing else.
-pub struct Logos;
-
-impl AssetSource for Logos {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        Ok(Mark::ALL.iter().find(|m| m.path() == path).map(|m| Cow::Borrowed(m.bytes())))
-    }
-
-    fn list(&self, _path: &str) -> Result<Vec<SharedString>> {
-        Ok(Mark::ALL.iter().map(|m| m.path().into()).collect())
+        None => out,
     }
 }
 
@@ -225,32 +136,34 @@ impl AssetSource for Logos {
 mod tests {
     use super::*;
 
-    /// A mark that does not parse renders as nothing at all, and an empty chip
+    /// A mark that does not parse renders as nothing at all, and an empty slot
     /// reads as a bug rather than a missing file, so check them here.
     #[test]
     fn every_mark_is_a_single_colour_svg_with_a_viewbox() {
-        for path in Mark::ALL.map(|m| m.path()) {
-            let bytes = Logos.load(path).unwrap().expect("the source serves it");
+        for (mark, path) in Mark::ALL.map(|m| (m, format!("{m:?}"))) {
+            let bytes = mark.bytes();
             let text = String::from_utf8(bytes.to_vec()).expect("svg is text");
-            assert!(text.contains("viewBox"), "{path} needs a viewBox to scale into the chip");
+            assert!(text.contains("viewBox"), "{path} needs a viewBox to scale into its slot");
             assert!(text.contains("<path"), "{path} has nothing to draw");
-            // gpui paints the mask in one colour, so a file carrying its own
+            // A mark is drawn in its tile's one colour, so a file carrying its own
             // palette would arrive as a flat silhouette and surprise whoever
             // dropped it in.
-            assert!(!text.contains("linearGradient"), "{path} would lose its gradient to the mask");
+            assert!(!text.contains("linearGradient"), "{path} would lose its gradient to the recolouring");
         }
-        assert!(Logos.load("logos/nothing.svg").unwrap().is_none());
+        for mark in Mark::ALL {
+            assert!(markup(mark).contains("currentColor"), "{mark:?} would not take its tile's colour");
+        }
     }
 
-    /// The renderer's own parser, on the renderer's own terms: a mark it
-    /// cannot read, or one that covers nothing, draws an empty chip, and an
-    /// empty chip looks like a bug in the board rather than a bad file.
+    /// The parser the platform's SVG support is built on: a mark it cannot
+    /// read, or one that covers nothing, draws an empty slot, and an empty
+    /// slot looks like a bug in the board rather than a bad file.
     #[test]
     fn every_mark_parses_and_covers_its_box() {
-        for path in Mark::ALL.map(|m| m.path()) {
-            let bytes = Logos.load(path).unwrap().unwrap();
-            let tree = usvg::Tree::from_data(&bytes, &usvg::Options::default())
-                .unwrap_or_else(|e| panic!("{path} is not something gpui can render: {e}"));
+        for (mark, path) in Mark::ALL.map(|m| (m, format!("{m:?}"))) {
+            let bytes = mark.bytes();
+            let tree = usvg::Tree::from_data(bytes, &usvg::Options::default())
+                .unwrap_or_else(|e| panic!("{path} is not something the platform can draw: {e}"));
             let (w, h) = (tree.size().width(), tree.size().height());
             assert!(w > 0.0 && h > 0.0, "{path} has no size to draw into");
             let ink = tree.root().abs_bounding_box();

@@ -1,19 +1,14 @@
-//! Glue between the board settings and the gpui-metro theme, plus the
+//! Glue between the board settings and the nsh-metro theme, plus the
 //! compact Metro pieces the panels are built from.
 //!
-//! gpui-metro's own controls are sized for a phone (52 px buttons); the
+//! nsh-metro's own controls are sized for a phone (52 px buttons); the
 //! panels here are dense, so these keep its look (square corners, 2 px
 //! borders, the accent filling a pressed or chosen control, lower-case
-//! headers) at panel scale. They are `RenderOnce` so they read the live
-//! theme when drawn, and their call sites do not need a palette in hand.
+//! headers) at panel scale. Their colours are bound to the theme, so a
+//! change of accent or ground re-skins them without building them again.
 
-use std::rc::Rc;
-
-use gpui::{
-    AnyElement, App, ClickEvent, ElementId, IntoElement, ParentElement, RenderOnce, SharedString,
-    Window, div, prelude::*, px,
-};
-use gpui_metro::{Accent, Mode, Theme};
+use nsh_core::prelude::*;
+use nsh_metro::{Accent, Mode, Theme, label, palette};
 
 use crate::settings::{BoardTheme, DEFAULT_ACCENT, Settings};
 
@@ -23,8 +18,7 @@ pub const PAD: f32 = 16.;
 pub const BODY: f32 = 12.;
 /// Captions and section headers.
 pub const SMALL: f32 = 11.;
-/// Seconds between the live tiles' waves of slides: gpui-metro's own
-/// catalog runs on the same 3 s.
+/// Seconds between the live tiles' waves of slides (#184).
 const LIVE_TILE_BEAT: f32 = 3.0;
 
 pub fn accent_of(name: &str) -> Accent {
@@ -43,119 +37,71 @@ pub fn mode_of(theme: BoardTheme) -> Mode {
 
 /// Installs the Metro theme in the board's own face: the chip labels are cut
 /// from the embedded D-DIN, so the chrome around them is set in it too (#55).
-/// Call after `register_fonts`.
-pub fn init(settings: &Settings, cx: &mut App) {
-    gpui_metro::init(cx);
-    cx.global_mut::<Theme>().font_family = crate::theme::UI_FONT.into();
-    // The live tiles slide in waves on one beat, and between waves the
-    // start screen draws no frames at all (#184).
-    gpui_metro::motion::set_live_tile_beat(Some(LIVE_TILE_BEAT), cx);
-    sync(settings, cx);
+/// Call before the first component is built.
+pub fn init(settings: &Settings) {
+    nsh_metro::theme::set_font_family(crate::theme::UI_FONT);
+    // The live tiles slide in waves on one beat (#184).
+    nsh_metro::set_live_tile_beat(Some(LIVE_TILE_BEAT));
+    sync(settings);
 }
 
-/// Pushes the board settings into the global Metro theme. Writes only what
-/// changed, since every write refreshes all windows.
-pub fn sync(settings: &Settings, cx: &mut App) {
+/// Pushes the board settings into the Metro theme. Writes only what
+/// changed: everything bound to the palette follows a write.
+pub fn sync(settings: &Settings) {
     let (mode, accent) = (mode_of(settings.theme), accent_of(&settings.accent));
-    if Theme::get(cx).mode != mode {
-        Theme::set_mode(mode, cx);
+    let now = global::<Theme>().get_untracked();
+    if now.mode != mode {
+        Theme::set_mode(mode);
     }
-    if Theme::get(cx).accent != accent {
-        Theme::set_accent(accent, cx);
+    if now.accent != accent {
+        Theme::set_accent(accent);
     }
 }
-
-type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 /// A small flat Metro button: 2 px border, filled with the accent while it
 /// is the chosen one and while it is pressed.
-#[derive(IntoElement)]
-pub struct Chip {
-    id: ElementId,
-    label: SharedString,
-    active: bool,
-    on_click: Option<ClickHandler>,
-}
-
-pub fn chip(id: impl Into<ElementId>, label: impl Into<SharedString>, active: bool) -> Chip {
-    Chip { id: id.into(), label: label.into(), active, on_click: None }
-}
-
-impl Chip {
-    pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
-        self.on_click = Some(Rc::new(f));
-        self
-    }
-}
-
-impl RenderOnce for Chip {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let p = Theme::palette(cx);
-        div()
-            .id(self.id)
-            .flex_none()
-            .px(px(6.))
-            .border_2()
-            .border_color(if self.active { p.accent } else { p.border })
-            .when(self.active, |d| d.bg(p.accent).text_color(p.accent_ink))
-            .when(!self.active, |d| d.text_color(p.foreground))
-            .cursor_pointer()
-            .active(move |s| s.bg(p.accent).border_color(p.accent).text_color(p.accent_ink))
-            .child(self.label)
-            .when_some(self.on_click, |d, f| d.on_click(move |e, w, cx| f(e, w, cx)))
-    }
+pub fn chip(text: impl Into<SharedString>, active: impl Fn() -> bool + 'static, on_press: impl Fn() + 'static) -> View {
+    let active = std::rc::Rc::new(active);
+    let (a1, a2, a3) = (active.clone(), active.clone(), active);
+    view()
+        .flex_shrink_0()
+        .px(px(6.))
+        .border(px(2.))
+        .border_color(move || if a1() { palette().accent } else { palette().border })
+        .bg(move || if a2() { palette().accent } else { Hsla::transparent_black() })
+        .cursor_pointer()
+        .active(|s| s.opacity(0.7))
+        .on_press(move || on_press())
+        .child(
+            label(text.into())
+                .text_size(px(BODY))
+                .text_color(move || if a3() { palette().accent_ink } else { palette().foreground }),
+        )
 }
 
 /// A titled block of a panel: a subtle lower-case header over its controls.
-#[derive(IntoElement)]
-pub struct Section {
-    title: SharedString,
-    children: Vec<AnyElement>,
-}
-
-pub fn section(title: impl Into<SharedString>) -> Section {
-    Section { title: title.into(), children: Vec::new() }
-}
-
-impl ParentElement for Section {
-    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
-        self.children.extend(elements);
-    }
-}
-
-impl RenderOnce for Section {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let p = Theme::palette(cx);
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .px(px(PAD))
-            .pb(px(14.))
-            .child(div().text_size(px(SMALL)).text_color(p.subtle).child(SharedString::from(self.title.to_lowercase())))
-            .children(self.children)
-    }
+pub fn section(title: impl Into<SharedString>) -> View {
+    let title: SharedString = title.into();
+    view()
+        .gap(px(6.))
+        .px(px(PAD))
+        .pb(px(14.))
+        .child(label(SharedString::from(title.to_lowercase())).text_size(px(SMALL)).text_color(move || palette().subtle))
 }
 
 /// The footer line of a panel.
-#[derive(IntoElement)]
-pub struct Hint(SharedString);
-
-pub fn hint(content: impl Into<SharedString>) -> Hint {
-    Hint(content.into())
-}
-
-impl RenderOnce for Hint {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let p = Theme::palette(cx);
-        div().px(px(PAD)).pt(px(2.)).pb(px(10.)).text_size(px(SMALL - 1.)).text_color(p.subtle).child(self.0)
-    }
+pub fn hint(content: impl IntoReactive<SharedString>) -> View {
+    view()
+        .px(px(PAD))
+        .pt(px(2.))
+        .pb(px(10.))
+        .child(label(content).text_size(px(SMALL - 1.)).text_color(move || palette().subtle))
 }
 
 /// A phase as a small square of the board's own colour: the chip greens and
 /// ambers are made to sit on a chip, not to be read as text on Metro chrome.
-pub fn phase_mark(phase: crate::model::Phase, size: f32) -> gpui::Div {
-    div().flex_none().size(px(size)).bg(crate::theme::hsla(crate::ui::devtools::phase_color(phase)))
+pub fn phase_mark(phase: crate::model::Phase, size: f32) -> View {
+    view().flex_shrink_0().size(px(size)).bg(crate::theme::hsla(crate::ui::devtools::phase_color(phase)))
 }
 
 #[cfg(test)]

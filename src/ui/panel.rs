@@ -2,18 +2,13 @@
 //! gpui-metro's settings flyout (#175), and the small widgets the panels are
 //! built from.
 
-use gpui::{ClickEvent, Context, SharedString, div, prelude::*, px};
-use gpui_metro::{SettingsFlyout, settings_flyout};
-
-use crate::ui::board::Board;
-use crate::ui::metro::{BODY, PAD};
-
-#[derive(Default)]
-pub struct PanelState {
-    pub open: bool,
-}
+use nsh_core::prelude::*;
+use nsh_metro::settings_flyout;
 
 pub use crate::ui::metro::{chip as button, hint, section};
+
+use crate::ui::metro::{BODY, PAD};
+use crate::ui::state::{Board, Ui};
 
 /// Which panel a header drag belongs to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,60 +46,88 @@ fn after_toggle(open: [bool; Which::ALL.len()], which: Which) -> [bool; Which::A
     next
 }
 
-impl Board {
-    /// Opens `which` and closes the other two, or closes `which` if it was
-    /// the one open: the test tools, the settings and the list are never up
-    /// together (#163).
-    pub(crate) fn toggle_panel(&mut self, which: Which) {
-        let open = Which::ALL.map(|w| *self.panel_open(w));
-        for (w, up) in Which::ALL.into_iter().zip(after_toggle(open, which)) {
-            *self.panel_open(w) = up;
-        }
+/// Opens `which` and closes the others, or closes `which` if it was the one
+/// open: the panels are never up together (#163).
+pub fn toggle(b: &mut Board, which: Which) {
+    let open = Which::ALL.map(|w| *panel_open(b, w));
+    for (w, up) in Which::ALL.into_iter().zip(after_toggle(open, which)) {
+        *panel_open(b, w) = up;
     }
+    if which == Which::Search && b.palette.open {
+        crate::ui::palette::refresh(b);
+    }
+}
 
-    /// Whether a panel is up. The flag rather than the state, because the
-    /// search keeps its own (the query and the rows it found) and that
-    /// state's flag has to stay the only truth about whether it is open
-    /// (#193).
-    pub(crate) fn panel_open(&mut self, which: Which) -> &mut bool {
-        match which {
-            Which::Dev => &mut self.dev.open,
-            Which::Settings => &mut self.settings_panel.open,
-            Which::List => &mut self.list_panel.open,
-            Which::Search => &mut self.palette.open,
-        }
+/// Whether a panel is up. The search keeps its own state, and that state's
+/// flag stays the only truth about whether it is open (#193).
+pub fn panel_open(b: &mut Board, which: Which) -> &mut bool {
+    match which {
+        Which::Dev => &mut b.dev.open,
+        Which::Settings => &mut b.settings_panel.open,
+        Which::List => &mut b.list_panel.open,
+        Which::Search => &mut b.palette.open,
     }
+}
 
-    /// A panel as gpui-metro's settings flyout (#175): full height down the
-    /// right edge under an accent header with a back button and the panel's
-    /// lower-case title, the body scrolling under it. It is drawn every frame
-    /// with whether it is open, so it slides in on open and back out on
-    /// close by itself; a press outside it closes it and stops there (light
-    /// dismiss), as the back button does.
-    pub(crate) fn flyout(
-        &mut self,
-        which: Which,
-        title: impl Into<SharedString>,
-        body: impl IntoElement,
-        cx: &mut Context<Self>,
-    ) -> SettingsFlyout {
-        let id = match which {
-            Which::Dev => "dev-flyout",
-            Which::Settings => "settings-flyout",
-            Which::List => "list-flyout",
-            Which::Search => "search-flyout",
-        };
-        let open = *self.panel_open(which);
-        settings_flyout(id, open)
-            .title(title)
-            // The sections carry the panels' own side margin; the flyout
-            // brings Metro's, so one of them goes.
-            .child(div().mx(px(-PAD)).text_size(px(BODY)).child(body))
-            .on_dismiss(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                *this.panel_open(which) = false;
-                this.touch(cx);
-            }))
-    }
+/// A panel as nsh-metro's settings flyout (#175): full height down the right
+/// edge under an accent header with a back button and the panel's lower-case
+/// title, the body scrolling under it. It slides in when its panel opens and
+/// out when it closes; a press outside it closes it (light dismiss), as the
+/// back button does. Its body is built when it opens and binds what changes.
+pub fn flyout(
+    ui: &Ui,
+    which: Which,
+    width: nsh_metro::FlyoutWidth,
+    title: impl Fn(&Board) -> String + 'static, body: impl Fn(&Ui) -> AnyElement + 'static) -> AnyElement {
+    // A memo, not a closure over the board: the flyout slides in whenever
+    // what it reads changes, and the board changes every poll. Only a change
+    // of the flag itself may move it.
+    let open = {
+        let ui = ui.clone();
+        computed(move || ui.read(|b| match which {
+            Which::Dev => b.dev.open,
+            Which::Settings => b.settings_panel.open,
+            Which::List => b.list_panel.open,
+            Which::Search => b.palette.open,
+        }))
+    };
+    let title = untracked(|| ui.peek(|b| title(b)));
+    let (shut, content) = (ui.clone(), ui.clone());
+    let body = std::rc::Rc::new(body);
+    settings_flyout(move || open.get())
+        .title(title)
+        .width(width)
+        // The sections carry the panels' own side margin; the flyout brings
+        // Metro's, so one of them goes.
+        .child(move || {
+            view().mx(px(-PAD)).child(body(&content))
+        })
+        .on_dismiss(move || shut.update(|b| *panel_open(b, which) = false))
+        .into_element()
+}
+
+/// A flyout's own layer over the window: the flyout places itself against
+/// the box it is given, so each gets the whole of it.
+fn layer(flyout: AnyElement) -> View {
+    view().absolute().inset_0().pointer_events(PointerEvents::BoxNone).child(flyout)
+}
+
+/// The four panels, over everything but the status bar, whose buttons open
+/// and close them.
+pub fn flyouts(ui: Ui) -> AnyElement {
+    let _ = BODY;
+    view()
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .bottom(px(crate::ui::state::STATUS_H))
+        .pointer_events(PointerEvents::BoxNone)
+        .child(layer(crate::ui::settings::panel(&ui)))
+        .child(layer(crate::ui::devtools::panel(&ui)))
+        .child(layer(crate::ui::list::panel(&ui)))
+        .child(layer(crate::ui::palette::panel(&ui)))
+        .into_element()
 }
 
 #[cfg(test)]

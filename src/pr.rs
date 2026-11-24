@@ -207,57 +207,6 @@ impl Look {
     }
 }
 
-/// One line of a cell's pull request list (#134).
-///
-/// A cell has room for one pull request and draws the newest, so when a
-/// session has several the rest are neither seen nor reachable. This is the
-/// whole set written out, one line each: what GitHub answered for, and what
-/// it would not.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Row {
-    pub label: String,
-    pub url: String,
-    /// Empty where GitHub would not answer (#112).
-    pub title: String,
-    /// How the board would draw it, or `None` for a number nobody could
-    /// speak for: there is no state to draw.
-    pub look: Option<Look>,
-    pub running: bool,
-    pub signed_off: bool,
-}
-
-/// Everything a session knows about its pull requests, newest number first.
-///
-/// The two lists are disjoint halves of one set of numbers — a transcript
-/// named them all, and `gh` answered for some — so they are merged back into
-/// one. By number, because that is the one thing both halves have and the one
-/// thing a person reads off the row. (#134)
-pub fn rows(prs: &[Pr], unanswered: &[PrRef]) -> Vec<Row> {
-    let answered = prs.iter().map(|p| {
-        (p.id.number, Row {
-            label: p.label(),
-            url: p.url(),
-            title: p.title.clone(),
-            look: Some(p.look()),
-            running: p.running(),
-            signed_off: p.signed_off(),
-        })
-    });
-    let silent = unanswered.iter().map(|id| {
-        (id.number, Row {
-            label: id.label(),
-            url: id.url(),
-            title: String::new(),
-            look: None,
-            running: false,
-            signed_off: false,
-        })
-    });
-    let mut out: Vec<(u32, Row)> = answered.chain(silent).collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0));
-    out.into_iter().map(|(_, row)| row).collect()
-}
-
 /// `owner/repo` out of a remote URL, for the GitHub forms git actually emits.
 pub fn parse_repo(url: &str) -> Option<String> {
     let rest = url
@@ -672,33 +621,6 @@ mod tests {
         assert_eq!(scan(&[blob.clone()]), Vec::<u32>::new(), "the request blob handed the session somebody else's work");
         assert_eq!(scan(&[attached.clone()]), Vec::<u32>::new(), "the instructions handed the session somebody else's work");
         assert_eq!(scan(&[blob, attached, mine]), vec![10154], "one real turn among the furniture");
-    }
-
-    /// The list is the whole set, in one order: what GitHub answered for and
-    /// what it would not, newest number at the top (#134).
-    #[test]
-    fn the_list_holds_every_pull_request_a_session_has() {
-        let answered = vec![Pr::synthetic(7, Look::Open), Pr::synthetic(9, Look::Merged)];
-        let silent = vec![PrRef { repo: "cookieplace/crepe".into(), number: 8 }];
-        let rows = rows(&answered, &silent);
-        assert_eq!(
-            rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-            ["#9", "#8", "#7"],
-            "the two halves interleave by number rather than queueing up behind each other"
-        );
-
-        // The silent one is drawn as not knowing, and is still a link: the
-        // number is all a GitHub URL needs (#112).
-        let quiet = &rows[1];
-        assert_eq!(quiet.look, None);
-        assert!(quiet.title.is_empty());
-        assert_eq!(quiet.url, "https://github.com/cookieplace/crepe/pull/8");
-
-        let merged = &rows[0];
-        assert_eq!(merged.look, Some(Look::Merged));
-        assert!(merged.signed_off, "a merged pull request is an approved one (#117)");
-
-        assert!(super::rows(&[], &[]).is_empty());
     }
 
     #[test]

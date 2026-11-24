@@ -1,11 +1,12 @@
 //! Colour palette sampled from the reference video.
 
-pub use gpui::Rgba;
-use gpui::{Hsla, rgb};
+pub use nsh_core::prelude::Rgba;
+use nsh_core::prelude::{Hsla, rgb};
 
-/// Typeface for the gpui-drawn UI (status bar, panels). The board's chip
-/// labels are drawn from the same face's outlines in `font.rs`; the family is
-/// registered with gpui at startup from the embedded file. (#46, #47, #55)
+/// Typeface for the UI (status bar, panels). The board's chip labels are
+/// drawn from the same face's outlines in `font.rs`; the family is
+/// registered with the platform at startup from the embedded file. (#46,
+/// #47, #55)
 pub const UI_FONT: &str = "D-DIN";
 
 #[derive(Clone, Copy, Debug)]
@@ -117,27 +118,6 @@ impl Palette {
     }
 }
 
-/// How long one blink takes, how far down it drops, and how much of the
-/// period it spends up.
-const PULSE_PERIOD: f32 = 1.1;
-const PULSE_LOW: f32 = 0.35;
-const PULSE_ON: f32 = 0.6;
-
-/// The blink at `t` seconds: 1 at the top, `PULSE_LOW` at the bottom.
-///
-/// Every board blinks (#113). It began as the orange board's compensation for
-/// having given the loud orange to its background (#50, #99), but what is
-/// waiting on a person is worth moving for on any of them, and a colour that
-/// has to be noticed among colours is a weaker signal than a thing that moves.
-pub fn pulse_at(t: f32) -> f32 {
-    // Switched, not breathed (#114): a fade reads as something settling,
-    // and what this has to say is that somebody is waiting. On for rather
-    // more of the period than off, so the thing is present and interrupted
-    // rather than absent and returning.
-    let phase = (t / PULSE_PERIOD).rem_euclid(1.0);
-    if phase < PULSE_ON { 1.0 } else { PULSE_LOW }
-}
-
 pub fn lerp(a: Rgba, b: Rgba, t: f32) -> Rgba {
     let t = t.clamp(0.0, 1.0);
     Rgba {
@@ -208,31 +188,4 @@ pub fn hsla(c: Rgba) -> Hsla {
 #[allow(dead_code)]
 pub fn hex(v: u32) -> Rgba {
     rgb(v)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A switch, not a breath (#114): two levels and nothing between them,
-    /// and it never goes out, a thing that vanished reading as a thing that
-    /// ended (#99, #113).
-    #[test]
-    fn the_blink_switches_between_two_levels() {
-        assert_eq!(pulse_at(0.0), 1.0, "it starts on");
-        assert_eq!(pulse_at(PULSE_PERIOD * PULSE_ON * 0.99), 1.0, "and stays on until its turn is up");
-        assert_eq!(pulse_at(PULSE_PERIOD * PULSE_ON * 1.01), PULSE_LOW, "then drops at once");
-        assert_eq!(pulse_at(PULSE_PERIOD * 1.01), 1.0, "and is back on the next period");
-
-        let mut seen: Vec<f32> = Vec::new();
-        for step in 0..400 {
-            let v = pulse_at(step as f32 * PULSE_PERIOD / 97.0);
-            assert!(v == 1.0 || v == PULSE_LOW, "the blink has no in-between");
-            if !seen.contains(&v) {
-                seen.push(v);
-            }
-        }
-        assert_eq!(seen.len(), 2, "and it does use both");
-        assert!(PULSE_LOW > 0.0, "it never goes out entirely");
-    }
 }
