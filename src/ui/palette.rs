@@ -10,31 +10,30 @@
 //! on top of the base. Typing `pjm-20` puts the tickets that carry it whole
 //! above anything that merely owns those six letters somewhere.
 
-use gpui::{ClickEvent, Context, KeyDownEvent, MouseButton, SharedString, div, prelude::*, px, svg};
+use gpui::{ClickEvent, Context, KeyDownEvent, SharedString, div, prelude::*, px, svg};
 
 use crate::model::{Phase, Target};
 use crate::theme::{self, Palette, Rgba};
 use crate::{logos, pr, ticket};
 use crate::ui::board::Board;
+use crate::ui::panel::Which;
 
-pub const PALETTE_W: f32 = 520.0;
-/// Keeps the card off the window's edges, and off the status bar below it.
-const EDGE: f32 = 12.0;
 /// How tall one row comes out, for working out how many of them fit.
 const ROW_H: f32 = 26.0;
-/// The header with the query in it, and the footer with the keys.
+/// The query line over the rows and the key hints under them.
 const CHROME_H: f32 = 62.0;
+/// The accent header gpui-metro puts on a flyout.
+const HEADER_H: f32 = 80.0;
 
-/// How the card is laid out in a window of `(w, h)`: `(width, top, rows)`.
-/// A window can be smaller than the card wants to be, and a card that runs
-/// off the screen is worse than a short one, so width and row count both give
-/// way before the margins do. (#83)
-fn card_box(w: f32, h: f32) -> (f32, f32, usize) {
-    let width = PALETTE_W.min(w - 2.0 * EDGE).max(120.0);
-    let top = (h * 0.14).clamp(EDGE, 96.0);
-    let room = h - top - EDGE - CHROME_H - crate::ui::board::STATUS_H;
-    let rows = ((room / ROW_H).floor().max(1.0) as usize).min(MAX_ROWS);
-    (width, top, rows)
+/// How many rows a window `h` tall has room for (#193).
+///
+/// The search is a panel now, so nothing about it is centred on the board
+/// and there is no card to keep off the window's edges: it runs the full
+/// height down the right, and what bounds the list is the window itself —
+/// the flyout's header, the query line, the hints and the status bar.
+fn rows_that_fit(h: f32) -> usize {
+    let room = h - HEADER_H - CHROME_H - crate::ui::board::STATUS_H;
+    ((room / ROW_H).floor().max(1.0) as usize).min(MAX_ROWS)
 }
 /// One size for every chip in the list, whatever it stands for (#79). On the
 /// board a connector is smaller than a session chip because it has less room;
@@ -43,8 +42,9 @@ fn card_box(w: f32, h: f32) -> (f32, f32, usize) {
 const CHIP_W: f32 = 150.0;
 const CHIP_H: f32 = 20.0;
 const LOGO: f32 = 11.0;
-/// How many matches the list shows at once.
-const MAX_ROWS: usize = 9;
+/// How many matches the search gathers at once. A card could not have shown
+/// many more without running off the board; a full-height panel can (#193).
+const MAX_ROWS: usize = 20;
 
 // ---------------------------------------------------------------------------
 // Scoring
@@ -344,7 +344,9 @@ fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
 
 impl Board {
     pub(crate) fn toggle_palette(&mut self) {
-        self.palette.open = !self.palette.open;
+        // Through the panels, so opening the search puts away whatever panel
+        // was up and opening one of those puts the search away (#163, #193).
+        self.toggle_panel(Which::Search);
         self.palette.query.clear();
         self.palette.selected = 0;
         self.palette_refresh();
@@ -510,8 +512,12 @@ impl Board {
         }
     }
 
-    pub(crate) fn render_palette(&mut self, w: f32, h: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let (card_w, card_top, fits) = card_box(w, h);
+    /// The search, as the panel it is since #193: gpui-metro's flyout down
+    /// the right edge, the same body the settings and the test tools wear,
+    /// at the wider of Metro's two widths because a row here is a node and
+    /// a line about it, not a setting.
+    pub(crate) fn render_palette(&mut self, cx: &mut Context<Self>) -> gpui_metro::SettingsFlyout {
+        let fits = rows_that_fit(self.window.1);
         let query = self.palette.query.clone();
         let selected = self.palette.selected;
         // Only as many rows as the window has room for, keeping the selected
@@ -524,20 +530,17 @@ impl Board {
         // `self.palette()` is the board's colours; `self.palette` is this
         // search. Bind the colours once so the rest reads unambiguously.
         let theme = self.palette();
-        let (ink, card_rgba) = (theme.ink, card_bg(theme));
+        let ink = theme.ink;
         let at = |a: f32| theme::hsla(theme::with_alpha(ink, a));
-        // The card keeps the board's colours, so its node rows read the way
-        // the board does; Metro gives it the face, the square sheet and the
-        // accent rule (the packet colour on the orange board, where an orange
-        // accent would vanish).
+        // The rows keep the board's colours, so a node reads here the way it
+        // reads there (#78); the sheet under them is the panel's, which is
+        // Metro's and follows the board's mode.
         let metro_accent = gpui_metro::Theme::palette(cx).accent;
         let accent = if self.settings.theme == crate::settings::BoardTheme::Orange {
             theme::hsla(theme.packet)
         } else {
             metro_accent
         };
-        let ui_font = gpui_metro::Theme::font(cx);
-        let (card, edge) = (theme::hsla(card_rgba), at(0.35));
         let (rule, sel_bg, hover_bg) = (at(0.15), at(0.13), at(0.06));
 
         let mut list = div().flex().flex_col();
@@ -605,62 +608,46 @@ impl Board {
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         this.palette.selected = i;
                         this.palette_activate(cx);
-                        cx.notify();
+                        this.touch(cx);
                     })),
             );
         }
 
-        div()
-            .absolute()
-            .top(px(card_top))
-            .left_0()
-            .right_0()
+        let body = div()
             .flex()
-            .justify_center()
+            .flex_col()
+            .text_size(px(11.))
+            .text_color(at(0.85))
+            // The query line reads as a field: the key that opened the panel,
+            // what has been typed, and the way back out of it.
             .child(
                 div()
-                    .w(px(card_w))
                     .flex()
-                    .flex_col()
-                    .border_1()
-                    .border_color(edge)
-                    .bg(card)
-                    .font_family(ui_font)
-                    .text_size(px(11.))
-                    .text_color(at(0.85))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                    .child(div().h(px(2.)).bg(accent))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .border_b_1()
-                            .border_color(rule)
-                            .child(div().flex_none().text_color(accent).child("⌘K"))
-                            .child(div().flex_1().child(format!("{query}▌")))
-                            .when(!query.is_empty(), |d| {
-                                d.child(div().flex_none().text_size(px(10.)).text_color(at(0.4)).child("⌫ 지우기"))
-                            }),
-                    )
-                    .when(empty, |d| {
-                        d.child(div().px_3().py_2().text_color(at(0.45)).child("찾는 노드가 없습니다"))
-                    })
-                    .when(!empty, |d| d.child(list))
-                    .child(
-                        div()
-                            .px_3()
-                            .py_1p5()
-                            .border_t_1()
-                            .border_color(rule)
-                            .text_size(px(10.))
-                            .text_color(at(0.45))
-                            .child("↑↓ 이동 · ⏎ 열기 · esc 닫기"),
-                    ),
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rule)
+                    .child(div().flex_none().text_color(accent).child("⌘K"))
+                    .child(div().flex_1().child(format!("{query}▌")))
+                    .when(!query.is_empty(), |d| {
+                        d.child(div().flex_none().text_size(px(10.)).text_color(at(0.4)).child("⌫ 지우기"))
+                    }),
             )
+            .when(empty, |d| d.child(div().px_3().py_2().text_color(at(0.45)).child("찾는 노드가 없습니다")))
+            .when(!empty, |d| d.child(list))
+            .child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .border_t_1()
+                    .border_color(rule)
+                    .text_size(px(10.))
+                    .text_color(at(0.45))
+                    .child("↑↓ 이동 · ⏎ 열기 · esc 닫기"),
+            );
+        self.flyout(Which::Search, "search", body, cx).width(gpui_metro::FlyoutWidth::Wide)
     }
 }
 
@@ -811,21 +798,40 @@ mod tests {
         }
     }
 
-    /// The card has a size it would like and a window it has to live in, and
-    /// the window wins (#83).
+    /// The panel runs the window's full height, so the rows it shows have to
+    /// stop above the status bar however short the window is — and a search
+    /// with no rows is no search (#83, #193).
     #[test]
-    fn the_card_fits_whatever_window_it_opens_over() {
-        for (w, h) in [(300.0, 240.0), (420.0, 300.0), (620.0, 420.0), (980.0, 620.0), (2400.0, 1400.0)] {
-            let (width, top, rows) = card_box(w, h);
-            assert!(width <= w - 2.0 * EDGE + 0.01, "{w}x{h}: the card is wider than its window");
-            assert!(width <= PALETTE_W, "{w}x{h}: it never grows past the size it wants");
-            assert!(top >= EDGE, "{w}x{h}: it starts below the top edge");
-            assert!(rows >= 1, "{w}x{h}: a search with no rows is no search");
-            let used = top + CHROME_H + rows as f32 * ROW_H;
+    fn the_rows_stop_before_the_window_does() {
+        for h in [240.0, 300.0, 420.0, 620.0, 1400.0] {
+            let rows = rows_that_fit(h);
+            assert!(rows >= 1, "{h}: a search with no rows is no search");
+            let used = HEADER_H + CHROME_H + rows as f32 * ROW_H;
             assert!(
-                used <= h - crate::ui::board::STATUS_H + 0.01,
-                "{w}x{h}: the card runs {used} into a window of {h}"
+                used <= h - crate::ui::board::STATUS_H + 0.01 || rows == 1,
+                "{h}: the rows run {used} into a window of {h}"
             );
+        }
+        assert!(rows_that_fit(2400.0) <= MAX_ROWS, "it never shows more than the search gathers");
+        assert!(
+            rows_that_fit(1400.0) > rows_that_fit(420.0),
+            "a taller window is the whole reason for making this a panel"
+        );
+    }
+
+    /// The rows used to sit on a card the palette painted itself, out of the
+    /// board's own colours. The panel's sheet is Metro's, so what has to be
+    /// checked now is that the board's ink still reads on it — on every
+    /// board, since the Metro mode follows the board's (#193).
+    #[test]
+    fn the_boards_ink_reads_on_the_panels_sheet() {
+        use crate::settings::BoardTheme;
+        use gpui_metro::Accent;
+        for (board, theme) in [(BoardTheme::White, theme::PALETTE), (BoardTheme::Orange, theme::ORANGE), (BoardTheme::Dark, theme::DARK)] {
+            let sheet = gpui_metro::Palette::resolve(crate::ui::metro::mode_of(board), Accent::Orange).background;
+            let sheet = Rgba::from(sheet);
+            let ratio = contrast(theme.ink, sheet);
+            assert!(ratio > 4.5, "{board:?}: the board's ink has to read on the panel (got {ratio:.1}:1)");
         }
     }
 

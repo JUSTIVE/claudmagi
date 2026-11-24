@@ -545,7 +545,6 @@ impl Render for Board {
         let source_note = self.source_note;
         let open_fda = cx.listener(|this, _: &ClickEvent, _: &mut Window, cx| this.open_full_disk_access(cx));
         let dev_open = self.dev.open;
-        let palette_open = self.palette.open;
         let settings_open = self.settings_panel.open;
         let usage = self.usage_now(now);
 
@@ -560,12 +559,14 @@ impl Render for Board {
                 // is typing, not a shortcut (#71).
                 if cmd && ev.keystroke.key == "k" {
                     this.toggle_palette();
-                    cx.notify();
+                    // The search is drawn with the panels, in a view of its
+                    // own that only repaints when it is told to (#181, #193).
+                    this.touch(cx);
                     return;
                 }
                 if this.palette.open {
                     this.palette_key(ev, cx);
-                    cx.notify();
+                    this.touch(cx);
                     return;
                 }
                 match ev.keystroke.key.as_str() {
@@ -641,6 +642,7 @@ impl Render for Board {
                     if this.palette.open {
                         this.palette.open = false;
                         this.palette.results.clear();
+                        this.panels_view.update(cx, |_, cx| cx.notify());
                     }
                     cx.notify();
                 }),
@@ -798,9 +800,6 @@ impl Render for Board {
             // them. Only one is ever open (#163); each is drawn every frame
             // so the one just closed can slide away while the next comes in.
             .child(self.panels_view.clone().cached(below_bar()))
-            // The search sits over the board, near the top, where a palette
-            // is looked for (#71).
-            .when(palette_open, |d| d.child(self.render_palette(w, h, cx)))
             // The connectors these hang on are the board's, not the comb's:
             // in the comb view they would sit over the honeycomb at
             // positions nothing is drawn at (#115, #134).
@@ -947,7 +946,9 @@ impl Render for PanelsView {
             let settings = board.render_settings(cx).into_any_element();
             let dev = board.render_devtools(cx).into_any_element();
             let list = board.render_list(cx).into_any_element();
-            div().relative().size_full().child(settings).child(dev).child(list).into_any_element()
+            // The search is a panel like the rest since #193.
+            let search = board.render_palette(cx).into_any_element();
+            div().relative().size_full().child(settings).child(dev).child(list).child(search).into_any_element()
         })
     }
 }
