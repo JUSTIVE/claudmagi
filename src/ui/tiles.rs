@@ -449,9 +449,10 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
 }
 
 /// Whether a tile is waiting on a person: a session that needs an answer,
-/// a pull request whose checks failed, one that has landed and can be put
+/// a pull request whose checks failed, one review has signed off and is
+/// only waiting to be let in (#226), one that has landed and can be put
 /// away (#194), and one nobody has been asked to look at (#218). It is one
-/// question so that the two ways the board says it — the `!` in the corner
+/// question so that the two ways the board says it — the sign in the corner
 /// (#219) and the wide tile (#216) — can never disagree.
 fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
     match key {
@@ -460,7 +461,13 @@ fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
             .live()
             .flat_map(|c| c.info.prs.iter())
             .find(|p| p.url() == *url)
-            .is_some_and(|p| matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged) || p.unasked()),
+            .is_some_and(|p| {
+                matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)
+                    || p.unasked()
+                    // Signed off and open: nobody else is going to press
+                    // the button (#226).
+                    || (p.approved && matches!(p.state, crate::pr::State::Open))
+            }),
         _ => false,
     }
 }
@@ -996,7 +1003,12 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
             svg(|| ImageSrc::svg_markup(TICK_SVG))
                 .absolute()
                 .top(px(9. * z))
-                .right(px(9. * z))
+                // Both at once on a pull request review has passed and
+                // nobody has merged: the tick stands to the sign's left.
+                .right({
+                    let side = side.clone();
+                    move || px((9. + if side().bang { BANG + 6. } else { 0. }) * z)
+                })
                 .size(px(TICK * z))
                 .text_color(ink)
                 .opacity(move || if side().tick { 1.0_f32 } else { 0.0 }),
@@ -1482,6 +1494,7 @@ mod tests {
         // The tick is drawn, not lettered (#221); the corner word is the
         // board's `!`, which belongs to whatever is waiting on a person.
         assert!(tile(&approved).front.tick, "signed off wears a tick");
+        assert!(tile(&approved).front.bang, "and it is mine to let in (#226)");
         assert_eq!(tile(&approved).front.corner, None);
         assert!(!tile(&open).front.tick);
         assert!(!tile(&landed).front.tick, "on a landed one the sign-off is history (#116)");
@@ -1509,8 +1522,8 @@ mod tests {
         // pull request stacked on another one waits for that one, not for
         // me, so it keeps its square and its quiet corner (#220).
         assert_eq!(size_of(&TileKey::Pr(nobody.url()), &model), TileSize::Wide);
-        assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium);
-        assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Medium);
+        assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Wide, "nobody else will merge it");
+        assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium, "out with a reviewer: their turn");
 
         let stacked = Pr { asked: false, stacked: true, ..Pr::synthetic(5, Look::Open) };
         // Its word says why it is quiet rather than leaving a `no reviewer`
