@@ -47,6 +47,19 @@ const MARK: f32 = 11.0;
 /// else on it: Metro's 64 px tile glyph, at this board's tile size.
 const SOURCE: f32 = 40.0;
 
+/// The side of the bang a tile wears when it is waiting on a person, in px.
+const BANG: f32 = 17.0;
+
+/// The bang, drawn: a triangle with its corners rounded and the mark cut
+/// out of it, as a sign on a road is (#223). Metro sets no glyph for this
+/// and a font's `!` is a letter — the board is asking for a hand, which is
+/// a sign rather than a word.
+const BANG_SVG: &str = concat!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" "#,
+    r#"d="M10.43 4.99Q12.00 2.20 13.57 4.99L21.03 18.21Q22.60 21.00 19.40 21.00L4.60 21.00Q1.40 21.00 2.97 18.21Z"#,
+    r#"M10.75 8.6h2.5l-0.35 6.6h-1.8ZM10.8 16.7h2.4v2.4h-2.4Z"/></svg>"#
+);
+
 /// The side of the tick a signed-off pull request wears, in px.
 const TICK: f32 = 15.0;
 
@@ -412,6 +425,9 @@ fn pr_word(p: &crate::pr::Pr) -> String {
     match p.look() {
         Look::Open if p.approved => "approved".into(),
         Look::Open if p.asked => "in review".into(),
+        // Quiet for a reason: it is waiting on the pull request underneath
+        // it rather than on anybody here (#220).
+        Look::Open if p.stacked => "stacked".into(),
         Look::Open => "no reviewer".into(),
         look => look.short().to_lowercase(),
     }
@@ -468,6 +484,8 @@ struct Face {
     corner: Option<String>,
     /// A signed-off pull request's tick, drawn in the corner (#217, #221).
     tick: bool,
+    /// Waiting on a person: the bang, drawn in the corner (#219, #223).
+    bang: bool,
     big: String,
     small: Vec<String>,
     title: String,
@@ -560,17 +578,22 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
             let info = &chip.info;
             let (fill, ink) = inks.on(inks.session(info));
             let running = chip.subs.iter().filter(|x| !x.anim.gone && x.info.running).count();
-            let corner = if info.phase() == Phase::NeedsUser {
-                Some("!".to_string())
-            } else {
-                (running > 0).then(|| running.to_string())
-            };
+            // The bang and the count want the same corner, and the bang is
+            // the one with something to ask.
+            let bang = info.phase() == Phase::NeedsUser;
+            let corner = (!bang && running > 0).then(|| running.to_string());
             let name = info.label();
             let (big, small) = back_lines(info, chip);
             Shows {
                 fill,
                 ink,
-                front: Face { corner, title: name.clone(), foot: Some(info.phase().label().to_lowercase()), ..Face::default() },
+                front: Face {
+                    corner,
+                    bang,
+                    title: name.clone(),
+                    foot: Some(info.phase().label().to_lowercase()),
+                    ..Face::default()
+                },
                 back: Some(Face { big, small, title: name, ..Face::default() }),
                 // Where it runs, in the same mark the cell wore (#123).
                 mark: info.seat.as_ref().and_then(|s| Mark::host(s.host)),
@@ -606,10 +629,10 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
             let p = infos().flat_map(|i| i.prs.iter()).find(|p| p.url() == *u)?;
             let (fill, ink) = inks.on(ink::pr_fill(p, inks.pal));
             let front = Face {
-                // The `!` a session waiting on you wears, worn by a pull
+                // The bang a session waiting on you wears, worn by a pull
                 // request waiting on you too (#219); a tick where there is
                 // nothing to do but the sign-off to show.
-                corner: wants_me(key, model).then(|| "!".to_string()),
+                bang: wants_me(key, model),
                 tick: signed_off(p),
                 big: p.label(),
                 small: wrap_lines(&p.title),
@@ -978,6 +1001,15 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .text_color(ink)
                 .opacity(move || if side().tick { 1.0_f32 } else { 0.0 }),
         )
+        .child(
+            svg(|| ImageSrc::svg_markup(BANG_SVG))
+                .absolute()
+                .top(px(7. * z))
+                .right(px(8. * z))
+                .size(px(BANG * z))
+                .text_color(ink)
+                .opacity(move || if side().bang { 1.0_f32 } else { 0.0 }),
+        )
         .child(label(move || SharedString::from(side().big)).text_size(px(15. * z)).truncate().text_color(ink))
         .child(dynamic(move || {
             side()
@@ -1055,7 +1087,7 @@ impl TileMemos {
 /// A front with nothing on it but the name: no `!`, no count of subagents
 /// at work. It shows where the session runs, large in the middle (#196).
 fn plain_front(s: &Shows) -> bool {
-    s.source.is_some() && s.front.corner.is_none() && s.front.big.is_empty()
+    s.source.is_some() && s.front.corner.is_none() && !s.front.bang && s.front.big.is_empty()
 }
 
 /// Whether a tile takes a press. A subagent's tile says what its session
@@ -1453,9 +1485,9 @@ mod tests {
         assert_eq!(tile(&approved).front.corner, None);
         assert!(!tile(&open).front.tick);
         assert!(!tile(&landed).front.tick, "on a landed one the sign-off is history (#116)");
-        assert_eq!(tile(&open).front.corner, None, "out with a reviewer is nobody's turn here");
-        assert_eq!(tile(&nobody).front.corner.as_deref(), Some("!"), "nobody asked: my turn (#219)");
-        assert_eq!(tile(&landed).front.corner.as_deref(), Some("!"), "landed and waiting to be put away");
+        assert!(!tile(&open).front.bang, "out with a reviewer is nobody's turn here");
+        assert!(tile(&nobody).front.bang, "nobody asked: my turn (#219)");
+        assert!(tile(&landed).front.bang, "landed and waiting to be put away");
 
         // The wash: an open pull request waiting on review wears less of the
         // board's green than one that has been signed off.
@@ -1476,13 +1508,18 @@ mod tests {
         assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Medium);
 
         let stacked = Pr { asked: false, stacked: true, ..Pr::synthetic(5, Look::Open) };
+        // Its word says why it is quiet rather than leaving a `no reviewer`
+        // tile with nothing asking for anything.
+
         let mut on_top = SessionInfo::synthetic(2, "S-2", Phase::Idle);
         on_top.prs = vec![stacked.clone()];
         let stack = board_of(vec![on_top]);
         let key = TileKey::Pr(stacked.url());
         assert!(!stacked.unasked(), "the one underneath is what it waits for");
         assert_eq!(size_of(&key, &stack), TileSize::Medium);
-        assert_eq!(shows_in(&stack, inks(), &key).expect("on the board").front.corner, None);
+        let shown = shows_in(&stack, inks(), &key).expect("on the board");
+        assert!(!shown.front.bang);
+        assert_eq!(shown.front.foot.as_deref(), Some("stacked"));
     }
 
     /// What is waiting on a person is twice as wide: a session that needs an
