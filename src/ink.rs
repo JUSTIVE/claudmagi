@@ -35,22 +35,25 @@ pub fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
     }
 }
 
-/// How much of its colour an open pull request wears before review has
-/// answered: a wash of it on the board, rather than the full paint (#217).
-const WASH: f32 = 0.25;
+/// How far round the wheel an open pull request's green sits before review
+/// has answered (#224): towards yellow, where a green is not ripe yet.
+/// Enough to read as another green beside the board's own, not so far that
+/// it stops being green.
+const UNREVIEWED_HUE: f32 = -28.0;
 
-/// The fill of a pull request's tile. A pull request gets *more* of its
-/// colour as it gets closer to landing: open and signed off is the full
-/// green, open and still waiting on review is a wash of it. Colour is the
-/// whole signal (#57) and the board has one green, so the difference is in
-/// how much of it there is rather than in a second green — two greens come
-/// out of [`floor_color`] all but identical anyway (#217).
+/// The fill of a pull request's tile. Colour is the whole signal (#57) and
+/// the board has one green, so an open pull request still waiting on review
+/// wears that green **turned a step round the wheel** and signed off wears
+/// it as it is (#224). Not a paler green: [`floor_color`] sets a fill's
+/// lightness so a label can be read on it, which leaves hue as the one
+/// thing two greens can differ in — a second palette green came out of it
+/// all but identical (#217).
 pub fn pr_fill(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     let c = pr_color(p, pal);
     // CI running has a colour of its own and says something else; a draft
     // and a closed one are already dim.
     if !p.running() && p.look() == crate::pr::Look::Open && !p.approved {
-        theme::lerp(pal.bg, c, WASH)
+        floor_color(theme::turned_hue(c, UNREVIEWED_HUE), pal)
     } else {
         floor_color(c, pal)
     }
@@ -69,4 +72,5 @@ pub fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
         Look::Closed => theme::with_alpha(pal.ink, 0.35),
     }
 }
+
 

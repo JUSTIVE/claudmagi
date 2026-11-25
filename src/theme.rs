@@ -185,6 +185,17 @@ pub fn hsla(c: Rgba) -> Hsla {
     c.into()
 }
 
+/// The same colour turned `degrees` around the wheel, as bright and as
+/// saturated as it was. Two colours a step apart in hue read apart even
+/// where they are the same weight, which is what the board's greens need:
+/// the ink rules set a fill's lightness, so two greens can only differ in
+/// hue (#224).
+pub fn turned_hue(c: Rgba, degrees: f32) -> Rgba {
+    let mut h: Hsla = c.into();
+    h.h = (h.h + degrees / 360.0).rem_euclid(1.0);
+    Rgba::from(h)
+}
+
 #[allow(dead_code)]
 pub fn hex(v: u32) -> Rgba {
     rgb(v)
