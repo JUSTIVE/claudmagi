@@ -449,21 +449,28 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
 
 /// Whether a tile is waiting on a person: a session that needs an answer,
 /// a pull request whose checks failed, one review has signed off and is
-/// only waiting to be let in (#226), one that has landed and can be put
-/// away (#194), and one nobody has been asked to look at (#218). It is one
-/// question so that the two ways the board says it — the sign in the corner
-/// (#219) and the wide tile (#216) — can never disagree.
+/// only waiting to be let in (#226), and one nobody has been asked to look
+/// at (#218). It is one question so that the two ways the board says it —
+/// the sign in the corner (#219) and the wide tile (#216) — can never
+/// disagree.
 fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
     match key {
         TileKey::Session(id) => model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser),
-        TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| match p.look() {
-            // In the merge queue: it is going in by itself (#231).
-            crate::pr::Look::Merging => false,
-            crate::pr::Look::Failing | crate::pr::Look::Merged => true,
-            // Signed off and open: nobody else is going to press the button
-            // (#226) — unless it is stacked, where the button belongs to
-            // the pull request underneath (#227).
-            _ => p.unasked() || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open)),
+        TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| {
+            use crate::pr::Look;
+            match p.look() {
+                // Red checks are nobody else's to fix.
+                Look::Failing => true,
+                // Signed off and open: nobody else is going to press the
+                // button (#226) — unless it is stacked, where the button
+                // belongs to the pull request underneath (#227).
+                Look::Open => p.unasked() || (p.approved && !p.stacked),
+                // Going in by itself (#231), already in, abandoned, or not
+                // asking yet. A landed pull request can still be put away
+                // (#194), but that is a right-click when it suits you
+                // rather than something the board asks for (#232).
+                Look::Merging | Look::Merged | Look::Closed | Look::Draft => false,
+            }
         }),
         _ => false,
     }
@@ -480,14 +487,12 @@ fn pr_of<'a>(model: &'a BoardModel, key: &TileKey) -> Option<&'a crate::pr::Pr> 
 /// unlike the work that is not (#216). A subagent's tile is small;
 /// everything else is a square.
 ///
-/// A pull request that has landed is the one thing that wants you without
-/// wanting room (#229): it keeps its sign, because it is still yours to
-/// put away (#194), but what it asks for is a flick of the wrist rather
-/// than a look, and the board is for work in flight.
+/// The sign and the width are the same question asked twice (`wants_me`),
+/// and nothing is one without the other: a landed pull request used to be
+/// the exception and now asks for neither (#229, #232).
 fn size_of(key: &TileKey, model: &BoardModel) -> TileSize {
     match key {
         TileKey::Agent(..) => TileSize::Small,
-        TileKey::Pr(_) if pr_of(model, key).is_some_and(|p| p.look() == crate::pr::Look::Merged) => TileSize::Medium,
         _ if wants_me(key, model) => TileSize::Wide,
         _ => TileSize::Medium,
     }
@@ -1531,7 +1536,7 @@ mod tests {
         assert!(!tile(&landed).front.tick, "on a landed one the sign-off is history (#116)");
         assert!(!tile(&open).front.bang, "out with a reviewer is nobody's turn here");
         assert!(tile(&nobody).front.bang, "nobody asked: my turn (#219)");
-        assert!(tile(&landed).front.bang, "landed and waiting to be put away");
+        assert!(!tile(&landed).front.bang, "landed: put it away when it suits you (#232)");
 
         // Green while it is being looked at, blue once it is signed off
         // (#225). The ink rules set a fill's lightness, so the two differ
@@ -1565,8 +1570,7 @@ mod tests {
         // pull request stacked on another one waits for that one, not for
         // me, so it keeps its square and its quiet corner (#220).
         assert_eq!(size_of(&TileKey::Pr(nobody.url()), &model), TileSize::Wide);
-        assert_eq!(size_of(&TileKey::Pr(landed.url()), &model), TileSize::Medium, "landed wants a flick, not room");
-        assert!(tile(&landed).front.bang, "and it still says it is yours to put away");
+        assert_eq!(size_of(&TileKey::Pr(landed.url()), &model), TileSize::Medium, "landed asks for neither");
         assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Wide, "nobody else will merge it");
         assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium, "out with a reviewer: their turn");
 
@@ -1619,7 +1623,7 @@ mod tests {
         assert_eq!(size(&TileKey::Session(asking.session_id.clone())), TileSize::Wide, "it is waiting on me");
         assert_eq!(size(&TileKey::Session(busy.session_id.clone())), TileSize::Medium, "it is getting on with it");
         assert_eq!(size(&pr(0)), TileSize::Wide, "a check failed");
-        assert_eq!(size(&pr(1)), TileSize::Medium, "it landed: a flick, not a look (#229)");
+        assert_eq!(size(&pr(1)), TileSize::Medium, "it landed: it asks for nothing (#229, #232)");
         assert_eq!(size(&pr(2)), TileSize::Medium, "open and green is nobody's turn");
         assert_eq!(size(&TileKey::Agent("S-1".into(), 0)), TileSize::Small);
         assert_eq!(size(&TileKey::Issue("PJM-1".into())), TileSize::Medium);
@@ -1629,6 +1633,49 @@ mod tests {
         let key = TileKey::Session(asking.session_id.clone());
         assert_ne!(tile_id(&key, TileSize::Wide), tile_id(&key, TileSize::Medium), "the same session, a new tile");
         assert_eq!(tile_id(&key, TileSize::Medium), key.id(), "a square tile is named after what it is of");
+    }
+
+    /// The sign in the corner and the wide tile are the same question asked
+    /// twice (#219), and after #232 nothing answers them differently: every
+    /// tile on the board either wears the sign *and* takes the width, or
+    /// neither. A subagent's tile is the one shape of its own, and it never
+    /// asks for anything.
+    #[test]
+    fn the_sign_and_the_width_never_disagree() {
+        use crate::pr::{Look, Pr};
+        let mut asking = SessionInfo::synthetic(1, "S-1", Phase::NeedsUser);
+        asking.prs = Look::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, look)| Pr { stacked: i % 2 == 0, ..Pr::synthetic(i as u32 + 1, *look) })
+            .collect();
+        let mut busy = SessionInfo::synthetic(2, "S-2", Phase::Working);
+        busy.prs = vec![
+            Pr { approved: true, ..Pr::synthetic(20, Look::Open) },
+            Pr { asked: false, ..Pr::synthetic(21, Look::Open) },
+        ];
+        let idle = SessionInfo::synthetic(3, "S-3", Phase::Idle);
+        let model = board_of(vec![asking, busy, idle]);
+
+        let mut seen = 0;
+        for (_, _, kinds) in keyed_groups(&model) {
+            for key in kinds.iter().filter_map(|k| TileKey::of(k, &model)) {
+                let shown = shows_in(&model, inks(), &key).expect("on the board");
+                let size = size_of(&key, &model);
+                if matches!(key, TileKey::Agent(..)) {
+                    assert_eq!(size, TileSize::Small, "{key:?}");
+                    assert!(!shown.front.bang, "a subagent asks for nothing: {key:?}");
+                } else {
+                    assert_eq!(
+                        shown.front.bang,
+                        size == TileSize::Wide,
+                        "{key:?} wears the sign and takes the width, or neither"
+                    );
+                }
+                seen += 1;
+            }
+        }
+        assert!(seen >= 10, "the board under test is a thin one: {seen} tiles");
     }
 
     /// A subagent's tile is not a way anywhere (#204); everything else is.
