@@ -448,9 +448,9 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
 }
 
 /// Whether a tile is waiting on a person: a session that needs an answer,
-/// a pull request whose checks failed, one review has signed off and is
-/// only waiting to be let in (#226), and one nobody has been asked to look
-/// at (#218). It is one question so that the two ways the board says it —
+/// a pull request whose checks failed and have finished failing (#235), one
+/// review has signed off and is only waiting to be let in (#226), and one
+/// nobody has been asked to look at (#218). It is one question so that the two ways the board says it —
 /// the sign in the corner (#219) and the wide tile (#216) — can never
 /// disagree.
 fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
@@ -458,6 +458,11 @@ fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
         TileKey::Session(id) => model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser),
         TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| {
             use crate::pr::Look;
+            // Checks in flight: the answer is not in yet, so neither is your
+            // turn (#235). The tile is already wearing the busy colour.
+            if p.running() {
+                return false;
+            }
             match p.look() {
                 // Red checks are nobody else's to fix.
                 Look::Failing => true,
@@ -1553,6 +1558,16 @@ mod tests {
             theme::luma(waiting) > 0.02 && (theme::luma(waiting) - theme::luma(signed)).abs() < 0.08,
             "both are painted at the board's weight, neither washed out: {waiting:?} vs {signed:?}"
         );
+
+        // Checks still running: the board waits with you (#235).
+        let ci = Pr { pending: 2, approved: true, ..Pr::synthetic(9, Look::Open) };
+        let mut testing = SessionInfo::synthetic(5, "S-5", Phase::Idle);
+        testing.prs = vec![ci.clone()];
+        let bench = board_of(vec![testing]);
+        let ci_key = TileKey::Pr(ci.url());
+        assert!(ci.running());
+        assert!(!shows_in(&bench, inks(), &ci_key).expect("on the board").front.bang, "the answer is not in yet");
+        assert_eq!(size_of(&ci_key, &bench), TileSize::Medium);
 
         // In the merge queue: going in by itself, so it says `merging` and
         // asks nothing — no sign, no width (#231).
