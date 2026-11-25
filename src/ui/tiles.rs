@@ -189,13 +189,30 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
 
 /// How many small tiles wide every group is: narrow — one medium tile, so
 /// groups of one or two things stand close — unless some group holds more
-/// than two medium tiles' worth, which would make it a tall column (#173).
-pub fn columns(groups: &[(String, Vec<Kind>)]) -> usize {
+/// than two medium tiles' worth, which would make it a tall column (#173),
+/// or holds a wide tile (#216), which is two medium tiles across and has
+/// nowhere to go in a group one tile wide (#230).
+pub fn columns(model: &BoardModel, groups: &[(String, Vec<Kind>)]) -> usize {
     let worth = |kinds: &Vec<Kind>| {
         let small = kinds.iter().filter(|k| matches!(k, Kind::Agent(..))).count();
         kinds.len() - small + small.div_ceil(4)
     };
-    if groups.iter().any(|(_, k)| worth(k) > 2) { WIDE } else { NARROW }
+    let holds_wide = |kinds: &Vec<Kind>| {
+        kinds.iter().filter_map(|k| TileKey::of(k, model)).any(|k| size_of(&k, model) == TileSize::Wide)
+    };
+    if groups.iter().any(|(_, k)| worth(k) > 2 || holds_wide(k)) { WIDE } else { NARROW }
+}
+
+/// A tile's size as the group can actually hold it: a wide tile needs two
+/// medium tiles' room, and a group only one tile wide has none to give.
+/// [`columns`] widens every group when one of them holds a wide tile, so
+/// this is the guard rather than the rule — a tile drawn wider than its
+/// group overruns the group beside it (#230).
+fn fits(size: TileSize, columns: usize) -> TileSize {
+    match size {
+        TileSize::Wide if columns < WIDE => TileSize::Medium,
+        size => size,
+    }
 }
 
 /// Between one group and the next, and the height of a group's title row:
@@ -667,7 +684,7 @@ struct Frame {
 
 fn frame_of(b: &Board) -> Frame {
     let groups = groups(&b.model);
-    let columns = columns(&groups);
+    let columns = columns(&b.model, &groups);
     let zoom = b.layout.zoom;
     // A window is not a screen: the groups that fit across it make a row,
     // and the rest go on in rows below (#177).
@@ -696,7 +713,7 @@ fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
             .iter()
             .filter_map(|k| TileKey::of(k, &b.model))
             .map(|k| {
-                let size = size_of(&k, &b.model);
+                let size = fits(size_of(&k, &b.model), columns);
                 (k, size)
             })
             .collect(),
@@ -1342,11 +1359,33 @@ mod tests {
     fn groups_stay_one_tile_wide_until_one_needs_two() {
         let model = work();
         // The issue's group has four things in it: two tiles wide.
-        assert_eq!(columns(&groups(&model)), WIDE);
+        assert_eq!(columns(&model, &groups(&model)), WIDE);
         let one = vec![("a".to_string(), vec![Kind::Session(0), Kind::Pr(0, 0)])];
-        assert_eq!(columns(&one), NARROW, "a session and its pull request fit one tile wide");
+        assert_eq!(columns(&model, &one), NARROW, "a session and its pull request fit one tile wide");
         let agents = vec![("a".to_string(), vec![Kind::Session(0), Kind::Agent(0, 0), Kind::Agent(0, 1)])];
-        assert_eq!(columns(&agents), NARROW, "subagents take one medium tile's room between them");
+        assert_eq!(columns(&model, &agents), NARROW, "subagents take one medium tile's room between them");
+    }
+
+    /// A wide tile is two medium tiles across, so the group it is in has to
+    /// be two wide — every group does, since they stand in one grid — or it
+    /// is drawn over the group beside it (#230).
+    #[test]
+    fn a_group_holding_a_wide_tile_is_two_tiles_wide() {
+        let quiet = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        let model = board_of(vec![quiet.clone()]);
+        assert_eq!(columns(&model, &groups(&model)), NARROW, "one idle session: one tile wide");
+
+        let asking = SessionInfo::synthetic(1, "S-1", Phase::NeedsUser);
+        let key = TileKey::Session(asking.session_id.clone());
+        let model = board_of(vec![asking]);
+        assert_eq!(size_of(&key, &model), TileSize::Wide);
+        assert_eq!(columns(&model, &groups(&model)), WIDE, "the one tile in it needs two tiles' room");
+
+        // And the guard under it: whatever the rule says, a tile never goes
+        // out wider than the group it is drawn in.
+        assert_eq!(fits(TileSize::Wide, NARROW), TileSize::Medium);
+        assert_eq!(fits(TileSize::Wide, WIDE), TileSize::Wide);
+        assert_eq!(fits(TileSize::Small, NARROW), TileSize::Small);
     }
 
     #[test]
