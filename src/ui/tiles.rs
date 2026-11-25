@@ -389,11 +389,36 @@ impl TileKey {
         }
     }
 
-    fn size(&self) -> TileSize {
-        match self {
-            TileKey::Agent(..) => TileSize::Small,
-            _ => TileSize::Medium,
+}
+
+/// The grid's name for a tile. A tile's faces are built when it first
+/// appears, so one that changes size has to be a new tile to the grid: the
+/// size rides in the name, and the wide one swings open where the square
+/// one stood (#216).
+fn tile_id(key: &TileKey, size: TileSize) -> String {
+    if size == TileSize::Wide { format!("{}-wide", key.id()) } else { key.id() }
+}
+
+/// How much room a tile takes. What wants you is twice as wide — two
+/// across, one down — so the work that is waiting on a person is shaped
+/// unlike the work that is not (#216): a session that needs an answer, a
+/// pull request whose checks failed, and one that landed and can be put
+/// away (#194). A subagent's tile is small; everything else is a square.
+fn size_of(key: &TileKey, model: &BoardModel) -> TileSize {
+    let wide = |yes: bool| if yes { TileSize::Wide } else { TileSize::Medium };
+    match key {
+        TileKey::Agent(..) => TileSize::Small,
+        TileKey::Session(id) => {
+            wide(model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser))
         }
+        TileKey::Pr(url) => wide(
+            model
+                .live()
+                .flat_map(|c| c.info.prs.iter())
+                .find(|p| p.url() == *url)
+                .is_some_and(|p| matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)),
+        ),
+        _ => TileSize::Medium,
     }
 }
 
@@ -594,7 +619,9 @@ fn frame_of(b: &Board) -> Frame {
 #[derive(Clone, Debug, PartialEq)]
 struct Group {
     title: String,
-    tiles: Vec<TileKey>,
+    /// Each tile and the room it takes: the size is part of what the group
+    /// shows, so a session that starts waiting re-packs its group (#216).
+    tiles: Vec<(TileKey, TileSize)>,
 }
 
 fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
@@ -602,7 +629,14 @@ fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
     Some(Group {
         // One short of the room: the last group of a row wraps instead.
         title: clip(&title, columns * TITLE_CHARS_PER_UNIT - 1),
-        tiles: kinds.iter().filter_map(|k| TileKey::of(k, &b.model)).collect(),
+        tiles: kinds
+            .iter()
+            .filter_map(|k| TileKey::of(k, &b.model))
+            .map(|k| {
+                let size = size_of(&k, &b.model);
+                (k, size)
+            })
+            .collect(),
     })
 }
 
@@ -739,9 +773,13 @@ fn group(
         .source({
             let memos = TileMemos::new();
             move || {
-                let keys = shown.get().map(|g| g.tiles).unwrap_or_default();
+                let tiles = shown.get().map(|g| g.tiles).unwrap_or_default();
+                let keys: Vec<TileKey> = tiles.iter().map(|(k, _)| k.clone()).collect();
                 memos.keep(&keys);
-                keys.into_iter().map(|k| tile_for(ui.clone(), k.clone(), memos.of(&ui, &k), unit_px, gap, z)).collect()
+                tiles
+                    .into_iter()
+                    .map(|(k, size)| tile_for(ui.clone(), k.clone(), size, memos.of(&ui, &k), unit_px, gap, z))
+                    .collect()
             }
         });
     // A group that the layout moves — one came in ahead of it, or the group
@@ -792,7 +830,7 @@ fn group(
 /// shows: a session (or its subagent) jumps to its terminal, an issue
 /// opens in Linear, a pull request or a page in the browser. The grid
 /// swings away first and the press lands after.
-fn tile_for(ui: Ui, key: TileKey, data: Memo<Option<Shows>>, unit: f32, gap: f32, z: f32) -> Tile {
+fn tile_for(ui: Ui, key: TileKey, size: TileSize, data: Memo<Option<Shows>>, unit: f32, gap: f32, z: f32) -> Tile {
     let initial = ui.peek(|b| shows(b, &key));
     let live = initial.as_ref().is_some_and(|s| s.back.is_some());
     let phase = match &key {
@@ -820,7 +858,7 @@ fn tile_for(ui: Ui, key: TileKey, data: Memo<Option<Shows>>, unit: f32, gap: f32
             }
         }
     };
-    let mut t = tile(key.id(), key.size()).metrics(unit, gap).color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)));
+    let mut t = tile(tile_id(&key, size), size).metrics(unit, gap).color(theme::hsla(initial.as_ref().map_or(WHITE, |s| s.fill)));
     if pressable(&key) {
         t = t.on_click(press);
     }
@@ -1346,6 +1384,39 @@ mod tests {
         s.seat = seat("orca");
         model.apply(vec![s], Instant::now());
         assert_eq!(session_tile(&model, 0).mark, Some(Mark::Orca), "the same tile, the new host");
+    }
+
+    /// What is waiting on a person is twice as wide: a session that needs an
+    /// answer, a pull request whose checks failed, one that has landed and
+    /// can be put away. Work that is getting on with itself keeps its square
+    /// (#216). The size rides in the tile's id too — a tile's faces are
+    /// built once, so a square that becomes wide has to be a new tile.
+    #[test]
+    fn what_waits_on_a_person_gets_a_wide_tile() {
+        let mut asking = SessionInfo::synthetic(1, "S-1", Phase::NeedsUser);
+        asking.prs = vec![
+            crate::pr::Pr::synthetic(1, crate::pr::Look::Failing),
+            crate::pr::Pr::synthetic(2, crate::pr::Look::Merged),
+            crate::pr::Pr::synthetic(3, crate::pr::Look::Open),
+        ];
+        let busy = SessionInfo::synthetic(2, "S-2", Phase::Working);
+        let model = board_of(vec![asking.clone(), busy.clone()]);
+        let size = |k: &TileKey| size_of(k, &model);
+        let pr = |i: usize| TileKey::Pr(asking.prs[i].url());
+
+        assert_eq!(size(&TileKey::Session(asking.session_id.clone())), TileSize::Wide, "it is waiting on me");
+        assert_eq!(size(&TileKey::Session(busy.session_id.clone())), TileSize::Medium, "it is getting on with it");
+        assert_eq!(size(&pr(0)), TileSize::Wide, "a check failed");
+        assert_eq!(size(&pr(1)), TileSize::Wide, "it landed; it can be put away");
+        assert_eq!(size(&pr(2)), TileSize::Medium, "open and green is nobody's turn");
+        assert_eq!(size(&TileKey::Agent("S-1".into(), 0)), TileSize::Small);
+        assert_eq!(size(&TileKey::Issue("PJM-1".into())), TileSize::Medium);
+
+        // The group carries the sizes, so a session that starts waiting
+        // re-packs its group rather than leaving a square in a wide slot.
+        let key = TileKey::Session(asking.session_id.clone());
+        assert_ne!(tile_id(&key, TileSize::Wide), tile_id(&key, TileSize::Medium), "the same session, a new tile");
+        assert_eq!(tile_id(&key, TileSize::Medium), key.id(), "a square tile is named after what it is of");
     }
 
     /// A subagent's tile is not a way anywhere (#204); everything else is.
