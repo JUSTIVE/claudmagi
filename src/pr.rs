@@ -22,7 +22,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// How long a fetched PR stays fresh before `gh` is asked again.
@@ -74,6 +74,14 @@ pub struct Pr {
     pub state: State,
     /// True once review has signed off (`gh`'s `reviewDecision`).
     pub approved: bool,
+    /// Somebody has been asked to look at it (`gh`'s `reviewRequests`). An
+    /// open pull request nobody has asked anything of is not waiting on a
+    /// reviewer — it is waiting on the person who opened it (#218).
+    pub asked: bool,
+    /// It is based on another branch of the repository rather than the one
+    /// pull requests are opened against: it sits on top of another pull
+    /// request, and waits for that one rather than for a reviewer (#220).
+    pub stacked: bool,
     /// Checks that concluded green, and ones that concluded red. Cancelled and
     /// skipped runs count as neither — a cancelled job is not a failure.
     pub passed: u32,
@@ -142,6 +150,14 @@ impl Pr {
         !self.signed_off() && matches!(self.state, State::Open)
     }
 
+    /// Open, with nobody asked and nobody signed off: the pull request is
+    /// waiting on the person who opened it, not on a reviewer (#218). A
+    /// draft has not asked on purpose, and a landed or closed one is done
+    /// asking.
+    pub fn unasked(&self) -> bool {
+        matches!(self.state, State::Open) && !self.approved && !self.asked && !self.stacked
+    }
+
     /// CI is still working. Drawn as a border rather than a look of its own,
     /// so it can sit on top of whatever the PR already is (#62). A landed or
     /// abandoned PR is never busy, whatever a stale rollup says.
@@ -174,6 +190,8 @@ impl Pr {
             title: format!("synthetic pull request {number}"),
             state,
             approved,
+            asked: true,
+            stacked: false,
             passed,
             failed,
             pending: 0,
@@ -354,7 +372,7 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
             "-R",
             &id.repo,
             "--json",
-            "number,title,state,isDraft,reviewDecision,statusCheckRollup",
+            "number,title,state,isDraft,reviewDecision,reviewRequests,baseRefName,statusCheckRollup",
         ])
         .output()
         .ok()?;
@@ -362,7 +380,47 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
         return None;
     }
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    Some(parse_pr(id, &v))
+    let mut pr = parse_pr(id, &v);
+    pr.stacked = stacked(&id.repo, v.get("baseRefName").and_then(|b| b.as_str()).unwrap_or_default());
+    Some(pr)
+}
+
+/// Whether a pull request based on `base` is stacked on another one: it is,
+/// when `base` is not the branch this repository opens pull requests
+/// against (#220). Asking GitHub for the parent itself would be a call per
+/// pull request; the default branch is one call per repository, kept for
+/// the life of the process, and in a stack the branch underneath is always
+/// somebody else's pull request.
+fn stacked(repo: &str, base: &str) -> bool {
+    if base.is_empty() {
+        return false;
+    }
+    static DEFAULTS: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let cache = DEFAULTS.get_or_init(Mutex::default);
+    let known = cache.lock().unwrap_or_else(|e| e.into_inner()).get(repo).cloned();
+    let default = match known {
+        Some(d) => d,
+        None => {
+            let found = default_branch(repo);
+            cache.lock().unwrap_or_else(|e| e.into_inner()).insert(repo.to_string(), found.clone());
+            found
+        }
+    };
+    // Unknown is not stacked: a repository `gh` cannot answer for is better
+    // read as an ordinary pull request than hidden from the person.
+    default.is_some_and(|d| d != base)
+}
+
+fn default_branch(repo: &str) -> Option<String> {
+    let out = Command::new("gh")
+        .args(["repo", "view", repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
@@ -390,11 +448,14 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         }
     }
     let approved = v.get("reviewDecision").and_then(|r| r.as_str()) == Some("APPROVED");
+    let asked = v.get("reviewRequests").and_then(|r| r.as_array()).is_some_and(|who| !who.is_empty());
     Pr {
         id: id.clone(),
         title: v.get("title").and_then(|t| t.as_str()).unwrap_or_default().into(),
         state,
         approved,
+        asked,
+        stacked: false,
         passed,
         failed,
         pending,
@@ -680,6 +741,51 @@ mod tests {
         assert!(!tracker.unanswered(&id), "and once it answers it is answered");
     }
 
+    /// An open pull request nobody has been asked about is waiting on the
+    /// person who opened it, not on a reviewer (#218). `gh` says who was
+    /// asked in `reviewRequests`; an empty list is nobody.
+    #[test]
+    fn a_pull_request_nobody_was_asked_about_is_waiting_on_me() {
+        let id = PrRef { repo: "o/r".into(), number: 7 };
+        let of = |requests: serde_json::Value, decision: serde_json::Value| {
+            parse_pr(
+                &id,
+                &serde_json::json!({
+                    "state": "OPEN", "isDraft": false, "title": "t",
+                    "reviewRequests": requests, "reviewDecision": decision,
+                }),
+            )
+        };
+        let nobody = of(serde_json::json!([]), serde_json::Value::Null);
+        assert!(!nobody.asked);
+        assert!(nobody.unasked(), "open, nobody asked, nobody signed off");
+
+        let asked = of(serde_json::json!([{"__typename": "User", "login": "someone"}]), serde_json::json!("REVIEW_REQUIRED"));
+        assert!(asked.asked);
+        assert!(!asked.unasked(), "it is out with a reviewer");
+        assert!(asked.awaiting_review(), "and still waiting on an answer");
+
+        // A sign-off is an answer, however it arrived: a review on a pull
+        // request with no outstanding request still leaves nothing to ask.
+        let signed = of(serde_json::json!([]), serde_json::json!("APPROVED"));
+        assert!(!signed.unasked(), "somebody has looked at it");
+
+        // Only an open one asks: a draft has not asked on purpose, and a
+        // landed or closed one is done asking.
+        for state in ["MERGED", "CLOSED"] {
+            let done = parse_pr(
+                &id,
+                &serde_json::json!({ "state": state, "isDraft": false, "title": "t", "reviewRequests": [] }),
+            );
+            assert!(!done.unasked(), "{state} is not waiting on anybody");
+        }
+        let draft = parse_pr(
+            &id,
+            &serde_json::json!({ "state": "OPEN", "isDraft": true, "title": "t", "reviewRequests": [] }),
+        );
+        assert!(!draft.unasked(), "a draft has not asked on purpose");
+    }
+
     #[test]
     fn rollups_ignore_cancelled_and_skipped_runs() {
         let id = PrRef { repo: "o/r".into(), number: 7 };
@@ -706,7 +812,7 @@ mod tests {
     fn state_and_checks_decide_the_look() {
         let id = PrRef { repo: "o/r".into(), number: 1 };
         let base =
-            Pr { id, title: String::new(), state: State::Open, approved: false, passed: 1, failed: 0, pending: 0 };
+            Pr { id, title: String::new(), state: State::Open, approved: false, asked: true, stacked: false, passed: 1, failed: 0, pending: 0 };
         assert!(!base.running());
         assert!(Pr { pending: 1, ..base.clone() }.running());
         assert!(!Pr { pending: 1, state: State::Merged, ..base.clone() }.running(), "a landed PR is never busy");

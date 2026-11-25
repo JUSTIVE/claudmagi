@@ -46,6 +46,18 @@ const MARK: f32 = 11.0;
 /// A session's source mark, alone in the middle of a front with nothing
 /// else on it: Metro's 64 px tile glyph, at this board's tile size.
 const SOURCE: f32 = 40.0;
+
+/// The side of the tick a signed-off pull request wears, in px.
+const TICK: f32 = 15.0;
+
+/// Metro draws its marks rather than setting them: two square-cut strokes
+/// meeting at a right angle, no rounding and no serif, in the tile's own
+/// ink. The board's face has no check glyph of its own and a font's would
+/// arrive as whatever the system fell back to (#221).
+const TICK_SVG: &str = concat!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">"#,
+    r#"<path fill="currentColor" d="M2.57 13.43 9.40 20.25 21.43 8.23 19.37 6.17 9.40 16.15 4.63 11.37Z"/></svg>"#
+);
 /// The most letters a group's title runs to before it is cut, per small
 /// tile of the group's width: the title is set in one line over the group.
 const TITLE_CHARS_PER_UNIT: usize = 6;
@@ -391,6 +403,27 @@ impl TileKey {
 
 }
 
+/// What a pull request's tile says at its foot. While it is open the word
+/// is where its review stands rather than the word `open`, which said the
+/// same thing on every one of them (#217): signed off, out for review, or
+/// nobody asked yet — and that last one is the board asking *you* (#218).
+fn pr_word(p: &crate::pr::Pr) -> String {
+    use crate::pr::Look;
+    match p.look() {
+        Look::Open if p.approved => "approved".into(),
+        Look::Open if p.asked => "in review".into(),
+        Look::Open => "no reviewer".into(),
+        look => look.short().to_lowercase(),
+    }
+}
+
+/// Whether a pull request wears the tick: review has signed it off and it
+/// has not landed or been closed, where the sign-off is history rather than
+/// something to act on (#116, #217).
+fn signed_off(p: &crate::pr::Pr) -> bool {
+    p.approved && !matches!(p.state, crate::pr::State::Merged | crate::pr::State::Closed)
+}
+
 /// The grid's name for a tile. A tile's faces are built when it first
 /// appears, so one that changes size has to be a new tile to the grid: the
 /// size rides in the name, and the wide one swings open where the square
@@ -399,25 +432,31 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
     if size == TileSize::Wide { format!("{}-wide", key.id()) } else { key.id() }
 }
 
+/// Whether a tile is waiting on a person: a session that needs an answer,
+/// a pull request whose checks failed, one that has landed and can be put
+/// away (#194), and one nobody has been asked to look at (#218). It is one
+/// question so that the two ways the board says it — the `!` in the corner
+/// (#219) and the wide tile (#216) — can never disagree.
+fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
+    match key {
+        TileKey::Session(id) => model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser),
+        TileKey::Pr(url) => model
+            .live()
+            .flat_map(|c| c.info.prs.iter())
+            .find(|p| p.url() == *url)
+            .is_some_and(|p| matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged) || p.unasked()),
+        _ => false,
+    }
+}
+
 /// How much room a tile takes. What wants you is twice as wide — two
 /// across, one down — so the work that is waiting on a person is shaped
-/// unlike the work that is not (#216): a session that needs an answer, a
-/// pull request whose checks failed, and one that landed and can be put
-/// away (#194). A subagent's tile is small; everything else is a square.
+/// unlike the work that is not (#216). A subagent's tile is small;
+/// everything else is a square.
 fn size_of(key: &TileKey, model: &BoardModel) -> TileSize {
-    let wide = |yes: bool| if yes { TileSize::Wide } else { TileSize::Medium };
     match key {
         TileKey::Agent(..) => TileSize::Small,
-        TileKey::Session(id) => {
-            wide(model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser))
-        }
-        TileKey::Pr(url) => wide(
-            model
-                .live()
-                .flat_map(|c| c.info.prs.iter())
-                .find(|p| p.url() == *url)
-                .is_some_and(|p| matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)),
-        ),
+        _ if wants_me(key, model) => TileSize::Wide,
         _ => TileSize::Medium,
     }
 }
@@ -427,6 +466,8 @@ fn size_of(key: &TileKey, model: &BoardModel) -> TileSize {
 #[derive(Clone, Debug, PartialEq, Default)]
 struct Face {
     corner: Option<String>,
+    /// A signed-off pull request's tick, drawn in the corner (#217, #221).
+    tick: bool,
     big: String,
     small: Vec<String>,
     title: String,
@@ -445,8 +486,6 @@ struct Shows {
     /// A session's source — the app it runs in, or Claude where it sits in
     /// none — set large in the middle of a front with nothing else to say.
     source: Option<Mark>,
-    /// A review still pending, said in a band across the top (#153).
-    waiting: bool,
     /// A small tile: a subagent's name, or `+n` for the rest.
     agent: Option<(String, bool)>,
 }
@@ -513,7 +552,6 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
         back: None,
         mark,
         source: None,
-        waiting: false,
         agent: None,
     };
     Some(match key {
@@ -537,7 +575,6 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
                 // Where it runs, in the same mark the cell wore (#123).
                 mark: info.seat.as_ref().and_then(|s| Mark::host(s.host)),
                 source: Some(info.seat.as_ref().and_then(|s| Mark::host(s.host)).unwrap_or(Mark::Claude)),
-                waiting: false,
                 agent: None,
             }
         }
@@ -567,14 +604,19 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
         }
         TileKey::Pr(u) => {
             let p = infos().flat_map(|i| i.prs.iter()).find(|p| p.url() == *u)?;
-            let (fill, ink) = inks.on(ink::floor_color(ink::pr_color(p, inks.pal), inks.pal));
+            let (fill, ink) = inks.on(ink::pr_fill(p, inks.pal));
             let front = Face {
+                // The `!` a session waiting on you wears, worn by a pull
+                // request waiting on you too (#219); a tick where there is
+                // nothing to do but the sign-off to show.
+                corner: wants_me(key, model).then(|| "!".to_string()),
+                tick: signed_off(p),
                 big: p.label(),
                 small: wrap_lines(&p.title),
-                foot: Some(p.look().short().to_lowercase()),
+                foot: Some(pr_word(p)),
                 ..Face::default()
             };
-            Shows { waiting: p.awaiting_review(), ..plain(fill, ink, front, Some(Mark::GitHub)) }
+            plain(fill, ink, front, Some(Mark::GitHub))
         }
         TileKey::Unanswered(u) => {
             let r = infos().flat_map(|i| i.prs_unanswered.iter()).find(|r| r.url() == *u)?;
@@ -927,6 +969,15 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .text_size(px(20. * z))
                 .text_color(ink),
         )
+        .child(
+            svg(|| ImageSrc::svg_markup(TICK_SVG))
+                .absolute()
+                .top(px(9. * z))
+                .right(px(9. * z))
+                .size(px(TICK * z))
+                .text_color(ink)
+                .opacity(move || if side().tick { 1.0_f32 } else { 0.0 }),
+        )
         .child(label(move || SharedString::from(side().big)).text_size(px(15. * z)).truncate().text_color(ink))
         .child(dynamic(move || {
             side()
@@ -968,16 +1019,6 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                         .text_color(ink),
                 )
         }))
-        // A review still pending, in a band across the top (#153).
-        .child(
-            view()
-                .absolute()
-                .top_0()
-                .left_0()
-                .right_0()
-                .h(px(5. * z))
-                .bg(move || if get().is_some_and(|s| s.waiting) { ink().opacity(0.5) } else { Hsla::transparent_black() }),
-        )
 }
 
 /// What each tile of a group shows, one memo per tile, made under the group
@@ -1384,6 +1425,64 @@ mod tests {
         s.seat = seat("orca");
         model.apply(vec![s], Instant::now());
         assert_eq!(session_tile(&model, 0).mark, Some(Mark::Orca), "the same tile, the new host");
+    }
+
+    /// Where a pull request's review stands is on the tile itself now: the
+    /// foot says it in words, a signed-off one wears a tick in the corner,
+    /// and one still waiting on review wears only a wash of its green — the
+    /// thin band across the top is gone (#217).
+    #[test]
+    fn a_pull_request_tile_says_where_its_review_stands() {
+        use crate::pr::{Look, Pr};
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        let open = Pr::synthetic(1, Look::Open);
+        let approved = Pr { approved: true, ..Pr::synthetic(2, Look::Open) };
+        let nobody = Pr { asked: false, ..Pr::synthetic(3, Look::Open) };
+        let landed = Pr { approved: true, ..Pr::synthetic(4, Look::Merged) };
+        s.prs = vec![open.clone(), approved.clone(), nobody.clone(), landed.clone()];
+        let model = board_of(vec![s]);
+        let tile = |p: &Pr| shows_in(&model, inks(), &TileKey::Pr(p.url())).expect("the pull request is on the board");
+
+        assert_eq!(tile(&open).front.foot.as_deref(), Some("in review"));
+        assert_eq!(tile(&approved).front.foot.as_deref(), Some("approved"));
+        assert_eq!(tile(&nobody).front.foot.as_deref(), Some("no reviewer"));
+
+        // The tick is drawn, not lettered (#221); the corner word is the
+        // board's `!`, which belongs to whatever is waiting on a person.
+        assert!(tile(&approved).front.tick, "signed off wears a tick");
+        assert_eq!(tile(&approved).front.corner, None);
+        assert!(!tile(&open).front.tick);
+        assert!(!tile(&landed).front.tick, "on a landed one the sign-off is history (#116)");
+        assert_eq!(tile(&open).front.corner, None, "out with a reviewer is nobody's turn here");
+        assert_eq!(tile(&nobody).front.corner.as_deref(), Some("!"), "nobody asked: my turn (#219)");
+        assert_eq!(tile(&landed).front.corner.as_deref(), Some("!"), "landed and waiting to be put away");
+
+        // The wash: an open pull request waiting on review wears less of the
+        // board's green than one that has been signed off.
+        let pal = inks().pal;
+        assert_ne!(crate::ink::pr_fill(&open, pal), crate::ink::pr_fill(&approved, pal));
+        assert!(
+            theme::contrast(tile(&open).fill, tile(&approved).fill) > 2.0,
+            "the two read apart: {:?} vs {:?}",
+            tile(&open).fill,
+            tile(&approved).fill
+        );
+
+        // Nobody asked is my turn, so it takes the wide tile (#218) — but a
+        // pull request stacked on another one waits for that one, not for
+        // me, so it keeps its square and its quiet corner (#220).
+        assert_eq!(size_of(&TileKey::Pr(nobody.url()), &model), TileSize::Wide);
+        assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium);
+        assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Medium);
+
+        let stacked = Pr { asked: false, stacked: true, ..Pr::synthetic(5, Look::Open) };
+        let mut on_top = SessionInfo::synthetic(2, "S-2", Phase::Idle);
+        on_top.prs = vec![stacked.clone()];
+        let stack = board_of(vec![on_top]);
+        let key = TileKey::Pr(stacked.url());
+        assert!(!stacked.unasked(), "the one underneath is what it waits for");
+        assert_eq!(size_of(&key, &stack), TileSize::Medium);
+        assert_eq!(shows_in(&stack, inks(), &key).expect("on the board").front.corner, None);
     }
 
     /// What is waiting on a person is twice as wide: a session that needs an

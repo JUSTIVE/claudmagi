@@ -90,6 +90,11 @@ pub struct SessionInfo {
     pub session_id: String,
     pub cwd: String,
     pub name: String,
+    /// Whether somebody chose that name — `/name`, or the hook that names a
+    /// session after its ticket. When nobody did, Claude Code named the
+    /// session after its folder and shows its own title instead, so the
+    /// board goes and reads that title rather than the folder (#222).
+    pub name_chosen: bool,
     pub status: String,
     pub waiting_for: Option<String>,
     pub state: Option<String>,
@@ -146,6 +151,7 @@ impl SessionInfo {
             session_id: format!("fake-{seq:04}"),
             cwd: format!("/tmp/sandbox/{}", name.to_ascii_lowercase()),
             name: name.to_string(),
+            name_chosen: true,
             status: "busy".into(),
             waiting_for: None,
             state: None,

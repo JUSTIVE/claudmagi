@@ -333,6 +333,9 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
             // question ("what is this about").
             cwd: repo.clone().unwrap_or_else(|| "cloud".into()),
             name: label_of(&raw),
+            // A cloud session's title is the service's own, and the only
+            // name it has: nothing to go looking for (#222).
+            name_chosen: true,
             status: "idle".into(),
             waiting_for: None,
             state: None,

@@ -158,6 +158,10 @@ struct RawSession {
     cwd: String,
     #[serde(default)]
     name: Option<String>,
+    /// How the session came by that name: `user` and `hook` are somebody's
+    /// choice, `derived` and `auto` are Claude Code's own fallback (#222).
+    #[serde(default)]
+    name_source: Option<String>,
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
@@ -341,6 +345,7 @@ pub fn read_sessions(hosts: &[Box<dyn crate::host::Host>]) -> Vec<SessionInfo> {
                 session_id: r.session_id,
                 cwd: r.cwd,
                 name: r.name.unwrap_or_default(),
+                name_chosen: matches!(r.name_source.as_deref(), Some("user") | Some("hook")),
                 status: r.status.unwrap_or_else(|| "idle".into()),
                 waiting_for: r.waiting_for,
                 state: r.state,
@@ -539,6 +544,17 @@ impl ClaudeSource {
             s.prs_unanswered = refs.iter().filter(|id| self.prs.unanswered(id)).cloned().collect();
         }
 
+        // A session nobody named goes by the title Claude Code shows for it
+        // rather than by the folder the registry fell back to (#222).
+        for (s, transcript) in list.iter_mut().zip(&paths) {
+            if s.name_chosen {
+                continue;
+            }
+            if let Some(title) = transcript.as_deref().and_then(ai_title) {
+                s.name = title;
+            }
+        }
+
         let titles: Vec<Vec<String>> = list.iter().map(|s| s.prs.iter().map(|p| p.title.clone()).collect()).collect();
         let want_keys: Vec<String> = list
             .iter()
@@ -620,6 +636,50 @@ fn transcript_running(path: &Path) -> std::io::Result<bool> {
         lines.remove(0); // partial line
     }
     Ok(tail_running(lines.iter().rev().copied()))
+}
+
+/// The title Claude Code shows for a session nobody named: the newest
+/// `ai-title` record in its transcript (#222).
+///
+/// Claude Code names a session after its folder when it starts and writes a
+/// title of its own as the conversation finds a topic. The registry keeps
+/// the first — `nameSource: derived` — and the app shows the second, so a
+/// board reading the registry alone calls a session `yoshi-fc` while Claude
+/// calls it `PR 11101`. The titles are small records written over and over,
+/// so the tail holds the newest one.
+fn ai_title(path: &Path) -> Option<String> {
+    let mut f = File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0); // partial line
+    }
+    newest_title(lines.iter().rev().copied())
+}
+
+/// The newest title among transcript records given newest first: what the
+/// person set if it is there, and Claude Code's own title otherwise.
+pub fn newest_title<'a>(lines: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut ai = None;
+    for line in lines {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let field = |k: &str| v.get(k).and_then(|t| t.as_str()).map(str::trim).filter(|t| !t.is_empty());
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("custom-title") => {
+                if let Some(t) = field("customTitle") {
+                    return Some(t.to_string());
+                }
+            }
+            Some("ai-title") if ai.is_none() => ai = field("aiTitle").map(str::to_string),
+            _ => {}
+        }
+    }
+    ai
 }
 
 /// `lines` are transcript records newest first.
@@ -1309,6 +1369,27 @@ mod tests {
         assert!(tail_running([junk, user].into_iter()));
         assert!(!tail_running([stop, tool].into_iter()), "stop hook after a tool call means finished");
         assert!(tail_running([user, done].into_iter()), "a new prompt after the final answer resumes it");
+    }
+
+    /// The board calls a session what Claude Code calls it (#222): the title
+    /// the person set if there is one, else Claude Code's own, and nothing
+    /// at all when the transcript says neither — the registry's name stands.
+    #[test]
+    fn a_transcript_gives_up_the_title_claude_shows() {
+        let ai = |t: &str| format!(r#"{{"type":"ai-title","aiTitle":"{t}"}}"#);
+        let custom = |t: &str| format!(r#"{{"type":"custom-title","customTitle":"{t}"}}"#);
+        let junk = r#"{"type":"assistant","message":{"content":[]}}"#.to_string();
+        let newest = |lines: Vec<String>| newest_title(lines.iter().map(String::as_str));
+
+        assert_eq!(newest(vec![ai("PR 11101")]).as_deref(), Some("PR 11101"));
+        // Newest first: the first title of each kind is the one that counts.
+        assert_eq!(newest(vec![ai("now"), junk.clone(), ai("before")]).as_deref(), Some("now"));
+        // What the person set outranks what Claude Code worked out, however
+        // long ago it was written.
+        assert_eq!(newest(vec![ai("now"), custom("magi"), ai("before")]).as_deref(), Some("magi"));
+        assert_eq!(newest(vec![junk.clone()]), None, "no title: the registry's name stands");
+        assert_eq!(newest(vec![r#"{"type":"ai-title","aiTitle":"  "}"#.to_string()]), None, "blank is no title");
+        assert_eq!(newest(vec!["not json".to_string(), ai("PR 1")]).as_deref(), Some("PR 1"));
     }
 
     #[test]
