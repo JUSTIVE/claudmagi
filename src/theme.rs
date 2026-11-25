@@ -185,6 +185,42 @@ pub fn hsla(c: Rgba) -> Hsla {
     c.into()
 }
 
+/// `colour` made to read against `on` by moving its **lightness**, keeping
+/// its hue and its saturation.
+///
+/// [`readable`] mixes the board's ink in instead, which is what a print
+/// does — and it comes out muddy: the board's green loses a third of its
+/// chroma on the way to clearing the floor, and a tile that should read as
+/// green reads as moss. A fill is paint, not ink, so it goes darker on a
+/// pale board and lighter on a dark one and stays the colour it was (#236).
+///
+/// Contrast is monotonic along that path once the direction is chosen, so
+/// a bisection finds the nearest lightness that clears `floor`.
+pub fn deepened(colour: Rgba, on: Rgba, floor: f32) -> Rgba {
+    if contrast(colour, on) >= floor {
+        return colour;
+    }
+    let hsl: Hsla = colour.into();
+    let darken = luma(on) > 0.4;
+    let (mut lo, mut hi) = if darken { (0.0, hsl.l) } else { (hsl.l, 1.0) };
+    let at = |l: f32| Rgba::from(Hsla { l, ..hsl });
+    for _ in 0..16 {
+        let mid = 0.5 * (lo + hi);
+        let clears = contrast(at(mid), on) >= floor;
+        // Keep the bound that clears the floor on the side it is reached
+        // from, so the answer is the least change that reads.
+        if clears == darken {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let end = if darken { lo } else { hi };
+    // A colour the lightness alone cannot carry (a pale yellow on a pale
+    // board asks for black) still has to read: fall back to the mix.
+    if contrast(at(end), on) >= floor { at(end) } else { readable(colour, on, Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, floor) }
+}
+
 /// The same colour turned `degrees` around the wheel, as bright and as
 /// saturated as it was. Two colours a step apart in hue read apart even
 /// where they are the same weight, which is what the board's greens need:

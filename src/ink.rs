@@ -20,9 +20,14 @@ pub fn legible(c: Rgba, on: Rgba, pal: Palette) -> Rgba {
 }
 
 /// A colour as something to paint with rather than write in (#139): laid on
-/// the board first, then made to hold a label drawn in the board's colour.
+/// the board first, then taken dark enough (or light enough) to hold a
+/// label.
+///
+/// It moves the lightness and keeps the chroma (#236). Mixing the board's
+/// ink in instead is what [`legible`] does for text, and on a fill it comes
+/// out muddy — the board's green lost a third of its saturation that way.
 pub fn floor_color(c: Rgba, pal: Palette) -> Rgba {
-    legible(theme::over(c, pal.bg), pal.bg, pal)
+    theme::deepened(theme::over(c, pal.bg), pal.bg, READABLE)
 }
 
 pub fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
@@ -87,3 +92,43 @@ pub fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
 
 
 
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nsh_core::prelude::Hsla;
+
+    /// A fill goes darker, not muddier (#236). The paint's hue and chroma
+    /// survive the contrast floor, and the floor is still cleared — mixing
+    /// the board's ink in instead cost the board's green a third of its
+    /// saturation and made every tile read as earth.
+    #[test]
+    fn a_fill_keeps_the_colour_it_was_given() {
+        for pal in [theme::PALETTE, theme::DARK] {
+            for paint in [pal.text_on, pal.merged, pal.alarm, pal.text_idle, theme::turned_hue(pal.text_on, 78.0)] {
+                let fill = floor_color(paint, pal);
+                assert!(
+                    theme::contrast(fill, pal.bg) >= READABLE - 0.01,
+                    "{fill:?} does not read on the board: {:.2}",
+                    theme::contrast(fill, pal.bg)
+                );
+                let (was, now): (Hsla, Hsla) = (paint.into(), fill.into());
+                assert!((was.s - now.s).abs() < 0.02, "chroma lost: {:.2} -> {:.2}", was.s, now.s);
+                let turn = (was.h - now.h).abs();
+                assert!(turn.min(1.0 - turn) < 0.01, "hue moved: {:.3} -> {:.3}", was.h, now.h);
+            }
+        }
+    }
+
+    /// The board's greens were the proof: both of them used to come out of
+    /// the floor at the same place, which is what sent the review states to
+    /// hue in the first place (#217, #224). They still differ by hue alone.
+    #[test]
+    fn two_greens_still_cannot_be_told_apart_by_weight() {
+        let pal = theme::PALETTE;
+        let (a, b) = (floor_color(pal.text_on, pal), floor_color(pal.done, pal));
+        assert!(theme::contrast(a, b) < 1.3, "{a:?} vs {b:?}");
+    }
+}
