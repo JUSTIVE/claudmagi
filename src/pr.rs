@@ -82,6 +82,9 @@ pub struct Pr {
     /// pull requests are opened against: it sits on top of another pull
     /// request, and waits for that one rather than for a reviewer (#220).
     pub stacked: bool,
+    /// It is in the repository's merge queue: going in by itself, with
+    /// nothing left for anybody to do (#231).
+    pub queued: bool,
     /// Checks that concluded green, and ones that concluded red. Cancelled and
     /// skipped runs count as neither — a cancelled job is not a failure.
     pub passed: u32,
@@ -106,6 +109,8 @@ pub enum Look {
     Open,
     /// Filled orange: at least one check failed.
     Failing,
+    /// In the merge queue: on its way in, and nobody's turn (#231).
+    Merging,
     /// Filled black: landed.
     Merged,
     /// Dim outline: closed without merging.
@@ -117,6 +122,9 @@ impl Pr {
         match self.state {
             State::Merged => Look::Merged,
             State::Closed => Look::Closed,
+            // In the queue is the news, whatever the checks say: the queue
+            // runs its own and takes the pull request out if they fail.
+            _ if self.queued => Look::Merging,
             _ if self.failed > 0 => Look::Failing,
             State::Draft => Look::Draft,
             State::Open => Look::Open,
@@ -182,6 +190,7 @@ impl Pr {
             Look::Draft => (State::Draft, false, 3, 0),
             Look::Open => (State::Open, false, 12, 0),
             Look::Failing => (State::Open, false, 8, 2),
+            Look::Merging => (State::Open, true, 11, 0),
             Look::Merged => (State::Merged, false, 14, 0),
             Look::Closed => (State::Closed, false, 0, 0),
         };
@@ -192,6 +201,7 @@ impl Pr {
             approved,
             asked: true,
             stacked: false,
+            queued: look == Look::Merging,
             passed,
             failed,
             pending: 0,
@@ -200,14 +210,15 @@ impl Pr {
 }
 
 impl Look {
-    pub const ALL: [Look; 5] =
-        [Look::Draft, Look::Open, Look::Failing, Look::Merged, Look::Closed];
+    pub const ALL: [Look; 6] =
+        [Look::Draft, Look::Open, Look::Failing, Look::Merging, Look::Merged, Look::Closed];
 
     pub fn short(self) -> &'static str {
         match self {
             Look::Draft => "DRAFT",
             Look::Open => "OPEN",
             Look::Failing => "FAIL",
+            Look::Merging => "MERGING",
             Look::Merged => "MERGED",
             Look::Closed => "CLOSED",
         }
@@ -219,6 +230,7 @@ impl Look {
             Look::Draft => "D",
             Look::Open => "O",
             Look::Failing => "F",
+            Look::Merging => "Q",
             Look::Merged => "M",
             Look::Closed => "C",
         }
@@ -382,7 +394,74 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
     let mut pr = parse_pr(id, &v);
     pr.stacked = stacked(&id.repo, v.get("baseRefName").and_then(|b| b.as_str()).unwrap_or_default());
+    pr.queued = matches!(pr.state, State::Open) && in_queue(&id.repo, id.number);
     Some(pr)
+}
+
+/// Whether the repository has this pull request in its merge queue (#231).
+///
+/// `gh pr view` does not carry it, and asking GitHub per pull request would
+/// be a call each; the repository's queue is one call that answers for all
+/// of them, kept as long as a fetched pull request is kept ([`TTL`]) — a
+/// pull request sits in a queue for minutes.
+fn in_queue(repo: &str, number: u32) -> bool {
+    static QUEUES: OnceLock<Mutex<HashMap<String, (Instant, HashSet<u32>)>>> = OnceLock::new();
+    let cache = QUEUES.get_or_init(Mutex::default);
+    let fresh = {
+        let seen = cache.lock().unwrap_or_else(|e| e.into_inner());
+        seen.get(repo).filter(|(at, _)| at.elapsed() < TTL).map(|(_, q)| q.clone())
+    };
+    let queue = match fresh {
+        Some(q) => q,
+        None => {
+            let q = merge_queue(repo).unwrap_or_default();
+            cache.lock().unwrap_or_else(|e| e.into_inner()).insert(repo.to_string(), (Instant::now(), q.clone()));
+            q
+        }
+    };
+    queue.contains(&number)
+}
+
+/// The numbers in a repository's merge queue, or `None` when `gh` could not
+/// say. A repository with no queue answers `null`, which is an empty one.
+fn merge_queue(repo: &str) -> Option<HashSet<u32>> {
+    let (owner, name) = repo.split_once('/')?;
+    let out = Command::new("gh")
+        .args([
+            "api",
+            "graphql",
+            "-f",
+            "query=query($o:String!,$r:String!){repository(owner:$o,name:$r){mergeQueue{entries(first:100){nodes{pullRequest{number}}}}}}",
+            "-f",
+            &format!("o={owner}"),
+            "-f",
+            &format!("r={name}"),
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(queue_numbers(&v))
+}
+
+/// The pull request numbers in the answer to the merge-queue query.
+pub fn queue_numbers(v: &serde_json::Value) -> HashSet<u32> {
+    v.get("data")
+        .and_then(|d| d.get("repository"))
+        .and_then(|r| r.get("mergeQueue"))
+        .and_then(|q| q.get("entries"))
+        .and_then(|e| e.get("nodes"))
+        .and_then(|n| n.as_array())
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter_map(|n| n.get("pullRequest")?.get("number")?.as_u64())
+                .map(|n| n as u32)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether a pull request based on `base` is stacked on another one: it is,
@@ -456,6 +535,7 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         approved,
         asked,
         stacked: false,
+        queued: false,
         passed,
         failed,
         pending,
@@ -786,6 +866,38 @@ mod tests {
         assert!(!draft.unasked(), "a draft has not asked on purpose");
     }
 
+    /// A pull request in the merge queue is on its way in by itself: the
+    /// board says `merging` and asks nothing of anybody (#231). One call
+    /// for the repository answers for every pull request in it.
+    #[test]
+    fn the_merge_queue_answers_for_the_whole_repository() {
+        let answer = serde_json::json!({
+            "data": {"repository": {"mergeQueue": {"entries": {"nodes": [
+                {"pullRequest": {"number": 11376}},
+                {"pullRequest": {"number": 11463}},
+            ]}}}}
+        });
+        let queue = queue_numbers(&answer);
+        assert!(queue.contains(&11376) && queue.contains(&11463));
+        assert!(!queue.contains(&11464));
+
+        // A repository with no queue answers null, which is an empty queue
+        // rather than an error.
+        assert!(queue_numbers(&serde_json::json!({"data": {"repository": {"mergeQueue": null}}})).is_empty());
+        assert!(queue_numbers(&serde_json::json!({})).is_empty());
+
+        // The look it wears: in the queue beats the checks, because the
+        // checks running are the queue's own and it takes the pull request
+        // out itself if they fail. Landed still beats everything.
+        let id = PrRef { repo: "o/r".into(), number: 7 };
+        let base = Pr { id, title: String::new(), state: State::Open, approved: true, asked: true, stacked: false, queued: true, passed: 2, failed: 0, pending: 1 };
+        assert_eq!(base.look(), Look::Merging);
+        assert_eq!(Pr { failed: 1, ..base.clone() }.look(), Look::Merging);
+        assert_eq!(Pr { state: State::Merged, ..base.clone() }.look(), Look::Merged);
+        assert_eq!(Pr { queued: false, ..base.clone() }.look(), Look::Open);
+        assert_eq!(Look::Merging.short(), "MERGING");
+    }
+
     #[test]
     fn rollups_ignore_cancelled_and_skipped_runs() {
         let id = PrRef { repo: "o/r".into(), number: 7 };
@@ -812,7 +924,7 @@ mod tests {
     fn state_and_checks_decide_the_look() {
         let id = PrRef { repo: "o/r".into(), number: 1 };
         let base =
-            Pr { id, title: String::new(), state: State::Open, approved: false, asked: true, stacked: false, passed: 1, failed: 0, pending: 0 };
+            Pr { id, title: String::new(), state: State::Open, approved: false, asked: true, stacked: false, queued: false, passed: 1, failed: 0, pending: 0 };
         assert!(!base.running());
         assert!(Pr { pending: 1, ..base.clone() }.running());
         assert!(!Pr { pending: 1, state: State::Merged, ..base.clone() }.running(), "a landed PR is never busy");

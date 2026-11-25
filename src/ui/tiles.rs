@@ -456,13 +456,14 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
 fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
     match key {
         TileKey::Session(id) => model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser),
-        TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| {
-            matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)
-                || p.unasked()
-                // Signed off and open: nobody else is going to press the
-                // button (#226) — unless it is stacked, where the button
-                // belongs to the pull request underneath (#227).
-                || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open))
+        TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| match p.look() {
+            // In the merge queue: it is going in by itself (#231).
+            crate::pr::Look::Merging => false,
+            crate::pr::Look::Failing | crate::pr::Look::Merged => true,
+            // Signed off and open: nobody else is going to press the button
+            // (#226) — unless it is stacked, where the button belongs to
+            // the pull request underneath (#227).
+            _ => p.unasked() || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open)),
         }),
         _ => false,
     }
@@ -1547,6 +1548,18 @@ mod tests {
             theme::luma(waiting) > 0.02 && (theme::luma(waiting) - theme::luma(signed)).abs() < 0.08,
             "both are painted at the board's weight, neither washed out: {waiting:?} vs {signed:?}"
         );
+
+        // In the merge queue: going in by itself, so it says `merging` and
+        // asks nothing — no sign, no width (#231).
+        let going = Pr { queued: true, ..Pr::synthetic(7, Look::Merging) };
+        let mut sending = SessionInfo::synthetic(4, "S-4", Phase::Idle);
+        sending.prs = vec![going.clone()];
+        let queue = board_of(vec![sending]);
+        let going_key = TileKey::Pr(going.url());
+        let going_tile = shows_in(&queue, inks(), &going_key).expect("on the board");
+        assert_eq!(going_tile.front.foot.as_deref(), Some("merging"));
+        assert!(!going_tile.front.bang, "the queue is doing it");
+        assert_eq!(size_of(&going_key, &queue), TileSize::Medium);
 
         // Nobody asked is my turn, so it takes the wide tile (#218) — but a
         // pull request stacked on another one waits for that one, not for

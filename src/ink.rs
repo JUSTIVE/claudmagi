@@ -62,11 +62,14 @@ pub fn pr_fill(p: &crate::pr::Pr, pal: Palette) -> Rgba {
 
 pub fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     use crate::pr::Look;
-    if p.running() {
+    // In the queue the checks running are the queue's own, and what the
+    // tile has to say is that it is going in (#231).
+    if p.running() && p.look() != Look::Merging {
         return pal.busy;
     }
     match p.look() {
-        Look::Merged => pal.merged,
+        // On its way in wears where it is going.
+        Look::Merging | Look::Merged => pal.merged,
         Look::Open => pal.text_on,
         Look::Failing => pal.alarm,
         Look::Draft => theme::with_alpha(pal.ink, 0.7),
