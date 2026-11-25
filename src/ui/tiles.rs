@@ -439,29 +439,37 @@ fn tile_id(key: &TileKey, size: TileSize) -> String {
 fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
     match key {
         TileKey::Session(id) => model.live().any(|c| c.info.session_id == *id && c.info.phase() == Phase::NeedsUser),
-        TileKey::Pr(url) => model
-            .live()
-            .flat_map(|c| c.info.prs.iter())
-            .find(|p| p.url() == *url)
-            .is_some_and(|p| {
-                matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)
-                    || p.unasked()
-                    // Signed off and open: nobody else is going to press
-                    // the button (#226) — unless it is stacked, where the
-                    // button belongs to the pull request underneath (#227).
-                    || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open))
-            }),
+        TileKey::Pr(_) => pr_of(model, key).is_some_and(|p| {
+            matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)
+                || p.unasked()
+                // Signed off and open: nobody else is going to press the
+                // button (#226) — unless it is stacked, where the button
+                // belongs to the pull request underneath (#227).
+                || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open))
+        }),
         _ => false,
     }
+}
+
+/// The pull request a tile is of, if it is one and the board still has it.
+fn pr_of<'a>(model: &'a BoardModel, key: &TileKey) -> Option<&'a crate::pr::Pr> {
+    let TileKey::Pr(url) = key else { return None };
+    model.live().flat_map(|c| c.info.prs.iter()).find(|p| p.url() == *url)
 }
 
 /// How much room a tile takes. What wants you is twice as wide — two
 /// across, one down — so the work that is waiting on a person is shaped
 /// unlike the work that is not (#216). A subagent's tile is small;
 /// everything else is a square.
+///
+/// A pull request that has landed is the one thing that wants you without
+/// wanting room (#229): it keeps its sign, because it is still yours to
+/// put away (#194), but what it asks for is a flick of the wrist rather
+/// than a look, and the board is for work in flight.
 fn size_of(key: &TileKey, model: &BoardModel) -> TileSize {
     match key {
         TileKey::Agent(..) => TileSize::Small,
+        TileKey::Pr(_) if pr_of(model, key).is_some_and(|p| p.look() == crate::pr::Look::Merged) => TileSize::Medium,
         _ if wants_me(key, model) => TileSize::Wide,
         _ => TileSize::Medium,
     }
@@ -1505,6 +1513,8 @@ mod tests {
         // pull request stacked on another one waits for that one, not for
         // me, so it keeps its square and its quiet corner (#220).
         assert_eq!(size_of(&TileKey::Pr(nobody.url()), &model), TileSize::Wide);
+        assert_eq!(size_of(&TileKey::Pr(landed.url()), &model), TileSize::Medium, "landed wants a flick, not room");
+        assert!(tile(&landed).front.bang, "and it still says it is yours to put away");
         assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Wide, "nobody else will merge it");
         assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium, "out with a reviewer: their turn");
 
@@ -1557,7 +1567,7 @@ mod tests {
         assert_eq!(size(&TileKey::Session(asking.session_id.clone())), TileSize::Wide, "it is waiting on me");
         assert_eq!(size(&TileKey::Session(busy.session_id.clone())), TileSize::Medium, "it is getting on with it");
         assert_eq!(size(&pr(0)), TileSize::Wide, "a check failed");
-        assert_eq!(size(&pr(1)), TileSize::Wide, "it landed; it can be put away");
+        assert_eq!(size(&pr(1)), TileSize::Medium, "it landed: a flick, not a look (#229)");
         assert_eq!(size(&pr(2)), TileSize::Medium, "open and green is nobody's turn");
         assert_eq!(size(&TileKey::Agent("S-1".into(), 0)), TileSize::Small);
         assert_eq!(size(&TileKey::Issue("PJM-1".into())), TileSize::Medium);
