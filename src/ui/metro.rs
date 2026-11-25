@@ -12,6 +12,24 @@ use nsh_metro::{Accent, Mode, Theme, label, palette};
 
 use crate::settings::{BoardTheme, DEFAULT_ACCENT, Settings};
 
+/// The tick the board draws for review's sign-off: two square-cut strokes
+/// meeting at a right angle, no rounding and no serif (#221). Drawn rather
+/// than set — the board's face has no check glyph, and a font's would
+/// arrive as whatever the system fell back to.
+pub const TICK_SVG: &str = concat!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">"#,
+    r#"<path fill="currentColor" d="M2.57 13.43 9.40 20.25 21.43 8.23 19.37 6.17 9.40 16.15 4.63 11.37Z"/></svg>"#
+);
+
+/// The sign a tile wears when it is waiting on a person: a triangle with
+/// its corners rounded and the bang cut out of it, as a sign on a road is
+/// (#223).
+pub const BANG_SVG: &str = concat!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" "#,
+    r#"d="M10.43 4.99Q12.00 2.20 13.57 4.99L21.03 18.21Q22.60 21.00 19.40 21.00L4.60 21.00Q1.40 21.00 2.97 18.21Z"#,
+    r#"M10.75 8.6h2.5l-0.35 6.6h-1.8ZM10.8 16.7h2.4v2.4h-2.4Z"/></svg>"#
+);
+
 /// Side padding inside a panel.
 pub const PAD: f32 = 16.;
 /// Body text inside the panels.

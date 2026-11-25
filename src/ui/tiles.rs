@@ -50,27 +50,9 @@ const SOURCE: f32 = 40.0;
 /// The side of the bang a tile wears when it is waiting on a person, in px.
 const BANG: f32 = 17.0;
 
-/// The bang, drawn: a triangle with its corners rounded and the mark cut
-/// out of it, as a sign on a road is (#223). Metro sets no glyph for this
-/// and a font's `!` is a letter — the board is asking for a hand, which is
-/// a sign rather than a word.
-const BANG_SVG: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" "#,
-    r#"d="M10.43 4.99Q12.00 2.20 13.57 4.99L21.03 18.21Q22.60 21.00 19.40 21.00L4.60 21.00Q1.40 21.00 2.97 18.21Z"#,
-    r#"M10.75 8.6h2.5l-0.35 6.6h-1.8ZM10.8 16.7h2.4v2.4h-2.4Z"/></svg>"#
-);
-
 /// The side of the tick a signed-off pull request wears, in px.
 const TICK: f32 = 15.0;
 
-/// Metro draws its marks rather than setting them: two square-cut strokes
-/// meeting at a right angle, no rounding and no serif, in the tile's own
-/// ink. The board's face has no check glyph of its own and a font's would
-/// arrive as whatever the system fell back to (#221).
-const TICK_SVG: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">"#,
-    r#"<path fill="currentColor" d="M2.57 13.43 9.40 20.25 21.43 8.23 19.37 6.17 9.40 16.15 4.63 11.37Z"/></svg>"#
-);
 /// The most letters a group's title runs to before it is cut, per small
 /// tile of the group's width: the title is set in one line over the group.
 const TITLE_CHARS_PER_UNIT: usize = 6;
@@ -465,8 +447,9 @@ fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
                 matches!(p.look(), crate::pr::Look::Failing | crate::pr::Look::Merged)
                     || p.unasked()
                     // Signed off and open: nobody else is going to press
-                    // the button (#226).
-                    || (p.approved && matches!(p.state, crate::pr::State::Open))
+                    // the button (#226) — unless it is stacked, where the
+                    // button belongs to the pull request underneath (#227).
+                    || (p.approved && !p.stacked && matches!(p.state, crate::pr::State::Open))
             }),
         _ => false,
     }
@@ -1000,7 +983,7 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .text_color(ink),
         )
         .child(
-            svg(|| ImageSrc::svg_markup(TICK_SVG))
+            svg(|| ImageSrc::svg_markup(crate::ui::metro::TICK_SVG))
                 .absolute()
                 .top(px(9. * z))
                 // Both at once on a pull request review has passed and
@@ -1014,7 +997,7 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
                 .opacity(move || if side().tick { 1.0_f32 } else { 0.0 }),
         )
         .child(
-            svg(|| ImageSrc::svg_markup(BANG_SVG))
+            svg(|| ImageSrc::svg_markup(crate::ui::metro::BANG_SVG))
                 .absolute()
                 .top(px(7. * z))
                 .right(px(8. * z))
@@ -1524,6 +1507,19 @@ mod tests {
         assert_eq!(size_of(&TileKey::Pr(nobody.url()), &model), TileSize::Wide);
         assert_eq!(size_of(&TileKey::Pr(approved.url()), &model), TileSize::Wide, "nobody else will merge it");
         assert_eq!(size_of(&TileKey::Pr(open.url()), &model), TileSize::Medium, "out with a reviewer: their turn");
+
+        // Signed off but stacked: the button belongs to the one underneath,
+        // so it stays a quiet blue square (#227).
+        let blocked = Pr { approved: true, stacked: true, ..Pr::synthetic(6, Look::Open) };
+        let mut below = SessionInfo::synthetic(3, "S-3", Phase::Idle);
+        below.prs = vec![blocked.clone()];
+        let held = board_of(vec![below]);
+        let blocked_key = TileKey::Pr(blocked.url());
+        assert_eq!(size_of(&blocked_key, &held), TileSize::Medium);
+        let blocked_tile = shows_in(&held, inks(), &blocked_key).expect("on the board");
+        assert!(!blocked_tile.front.bang, "it cannot go in until the one below it does");
+        assert!(blocked_tile.front.tick, "review has still passed");
+        assert_eq!(blocked_tile.front.foot.as_deref(), Some("approved"));
 
         let stacked = Pr { asked: false, stacked: true, ..Pr::synthetic(5, Look::Open) };
         // Its word says why it is quiet rather than leaving a `no reviewer`

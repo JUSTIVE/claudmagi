@@ -42,7 +42,11 @@ fn rows_that_fit(h: f32) -> usize {
 /// board a connector is smaller than a session chip because it has less room;
 /// in a list that difference only reads as noise, and the mark inside says
 /// what the node is far better than its height did.
-const CHIP_W: f32 = 150.0;
+const CHIP_W: f32 = 168.0;
+/// The column a tagalong row's step stands in.
+const STEP: f32 = 9.0;
+/// The tick beside a signed-off number, in px.
+const TICK: f32 = 11.0;
 const CHIP_H: f32 = 20.0;
 const LOGO: f32 = 11.0;
 /// How many matches the search gathers at once. A card could not have shown
@@ -565,12 +569,19 @@ fn body(ui: &Ui) -> AnyElement {
             .w(px(CHIP_W))
             .h(px(CHIP_H))
             .px(px(7.))
-            .rounded(px(4.))
+            // Square: a Metro tile has no corner radius, and the row is a
+            // small one (#228).
             .overflow_hidden()
             .child(svg(ImageSrc::svg_markup(logos::markup(entry.kind.logo()))).size(px(LOGO)).flex_shrink_0().text_color(body.text))
             .child(label(entry.label.clone()).text_size(px(11.)).truncate().text_color(body.text))
-            // Review's tick, beside the number it signed off on (#116).
-            .children(entry.signed_off().then(|| label("\u{2713}").flex_shrink_0().text_size(px(11.)).text_color(body.text)));
+            // Review's tick, beside the number it signed off on (#116),
+            // the same one the board draws (#221, #228).
+            .children(entry.signed_off().then(|| {
+                svg(ImageSrc::svg_markup(crate::ui::metro::TICK_SVG))
+                    .size(px(TICK))
+                    .flex_shrink_0()
+                    .text_color(body.text)
+            }));
         if let Some(c) = body.fill {
             chip = chip.bg(c);
         }
@@ -580,9 +591,9 @@ fn body(ui: &Ui) -> AnyElement {
         let row = view()
             .flex_row()
             .items_center()
-            .gap(px(8.))
+            .gap(px(10.))
             .px(px(12.))
-            .py(px(2.))
+            .py(px(3.))
             .cursor_pointer()
             .border_l(px(2.))
             .border_color(if on { accent } else { Hsla::transparent_black() })
@@ -598,7 +609,15 @@ fn body(ui: &Ui) -> AnyElement {
             })
             // A row that came along with a hit is stepped in behind it, so
             // the thing actually searched for still leads (#85).
-            .child(label(if entry.related { "\u{21b3}" } else { "" }).w(px(11.)).flex_shrink_0().text_size(px(10.)).text_color(at(0.35)))
+            // A row that came along with a hit is stepped in behind it by
+            // a bar in the board's ink rather than by an arrow glyph (#228).
+            .child(
+                view().w(px(STEP)).h(px(CHIP_H)).flex_shrink_0().items_center().justify_center().children(
+                    entry
+                        .related
+                        .then(|| view().w(px(2.)).h(px(CHIP_H - 8.)).bg(at(0.25))),
+                ),
+            )
             // The row *is* the node: the same body the board would give it
             // (#78), with the mark of the service it belongs to (#79).
             .child(chip)
@@ -623,9 +642,10 @@ fn body(ui: &Ui) -> AnyElement {
         .py(px(8.))
         .border_b(px(1.))
         .border_color(rule)
-        .child(label("⌘K").flex_shrink_0().text_size(px(11.)).text_color(accent))
+        .child(label("⌘k").flex_shrink_0().text_size(px(11.)).text_color(accent))
         .child(label(format!("{query}▌")).flex_1().text_size(px(11.)).text_color(at(0.85)))
         .children((!query.is_empty()).then(|| label("⌫ 지우기").flex_shrink_0().text_size(px(10.)).text_color(at(0.4))));
+
     view()
         .child(field)
         .child(if empty {
