@@ -271,6 +271,13 @@ pub fn scan_transcript(path: &Path, since: u64) -> (Vec<String>, Vec<String>) {
 /// what keeps `YOSHI-60` from passing for a ticket while `PJM-1924` goes
 /// through untouched.
 ///
+/// The key may be **inside** the name rather than the whole of it (#234): a
+/// session nobody named goes by the title Claude shows for it (#222), which
+/// is a sentence — `DEV-6328 하위 티켓 DRAFT PR`. Reading only a whole-key
+/// name threw that away and left the board showing whatever ticket the
+/// session's pull request happened to be tagged with, which is the work it
+/// did rather than the work it is on.
+///
 /// A key the transcript merely linked is never enough on its own (#65).
 /// Reading about a ticket is not working on it: a session that printed a list
 /// of other people's issues would otherwise adopt the last one it saw.
@@ -278,7 +285,9 @@ pub fn scan_transcript(path: &Path, since: u64) -> (Vec<String>, Vec<String>) {
 pub fn choose(name: &str, pr_titles: &[String], linked: &[String], teams: &HashSet<String>) -> Option<String> {
     let from_title: Vec<String> = pr_titles.iter().flat_map(|t| keys_in(t)).collect();
     let known = |key: &str| key.split_once('-').is_some_and(|(team, _)| teams.contains(team));
-    if let Some(named) = key_shaped(name) {
+    // The whole name first, then the keys it carries, in the order it says
+    // them: a name that is a key is the plainest claim there is.
+    for named in key_shaped(name).into_iter().chain(keys_in(name)) {
         if linked.contains(&named) || from_title.contains(&named) || known(&named) {
             return Some(named);
         }
@@ -521,5 +530,29 @@ mod tests {
         // Read about, not worked on: a session that merely linked other
         // people's tickets adopts none of them (#65).
         assert_eq!(choose("scratch", &[], &["PJM-1284".into(), "DEV-5108".into()], &known), None);
+
+        // The name carries the key inside a sentence, which is what a name
+        // looks like once a session goes by Claude's own title (#222, #234).
+        // It beats the tag on a pull request the session has already landed.
+        assert_eq!(
+            choose("DEV-6328 하위 티켓 DRAFT PR", &["♻️ [YO] [DEV-6172] 포인트 충전".into()], &[], &known).as_deref(),
+            Some("DEV-6328"),
+            "what the session says it is on beats what it has shipped"
+        );
+        // The first key the name says is the one it is on.
+        assert_eq!(
+            choose("PJM-3262 와 PJM-3263 묶기", &[], &[], &known).as_deref(),
+            Some("PJM-3262"),
+            "the name's own order decides"
+        );
+        // A sentence with nothing key-shaped in it still falls through to
+        // the pull request's tag.
+        assert_eq!(
+            choose("연말결산 워크트리 브랜치", &["✨ [YO] [PJM-1991] 실물 확인".into()], &[], &known).as_deref(),
+            Some("PJM-1991")
+        );
+        // And a key-shaped word inside a sentence is no more believable than
+        // one standing alone: an unknown team with nothing behind it is out.
+        assert_eq!(choose("rebuilt the utf-8 path in yoshi-60", &[], &[], &known), None);
     }
 }
