@@ -35,6 +35,12 @@ pub fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
     }
 }
 
+/// How far round the wheel a pull request on its way in sits from one that
+/// is in (#233): towards magenta, so the queue reads as the purple family
+/// — landing — without being mistaken for the blue of a pull request that
+/// is waiting on you.
+const MERGING_HUE: f32 = 28.0;
+
 /// How far round the wheel a signed-off pull request sits from the board's
 /// green: into the blues (#225). Open is green while it is being looked
 /// at; once review says yes it is a different thing waiting to land, and a
@@ -68,13 +74,16 @@ pub fn pr_color(p: &crate::pr::Pr, pal: Palette) -> Rgba {
         return pal.busy;
     }
     match p.look() {
-        // On its way in wears where it is going.
-        Look::Merging | Look::Merged => pal.merged,
+        // On its way in wears where it is going, a step round the wheel
+        // from being in (#233).
+        Look::Merging => theme::turned_hue(pal.merged, MERGING_HUE),
+        Look::Merged => pal.merged,
         Look::Open => pal.text_on,
         Look::Failing => pal.alarm,
         Look::Draft => theme::with_alpha(pal.ink, 0.7),
         Look::Closed => theme::with_alpha(pal.ink, 0.35),
     }
 }
+
 
 

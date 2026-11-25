@@ -1563,6 +1563,15 @@ mod tests {
         let going_key = TileKey::Pr(going.url());
         let going_tile = shows_in(&queue, inks(), &going_key).expect("on the board");
         assert_eq!(going_tile.front.foot.as_deref(), Some("merging"));
+        // Landing and landed are both purples, a step apart (#233).
+        let pal = inks().pal;
+        let (going_fill, landed_fill) = (crate::ink::pr_fill(&going, pal), crate::ink::pr_fill(&landed, pal));
+        let turn = |a: Rgba, b: Rgba| {
+            let d = (theme::hsla(a).h - theme::hsla(b).h).abs();
+            d.min(1.0 - d)
+        };
+        assert!(turn(going_fill, landed_fill) > 0.03, "{going_fill:?} and {landed_fill:?} are the same purple");
+        assert!(turn(going_fill, landed_fill) < 0.15, "still the same family: {going_fill:?} vs {landed_fill:?}");
         assert!(!going_tile.front.bang, "the queue is doing it");
         assert_eq!(size_of(&going_key, &queue), TileSize::Medium);
 
