@@ -35,25 +35,26 @@ pub fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
     }
 }
 
-/// How far round the wheel an open pull request's green sits before review
-/// has answered (#224): towards yellow, where a green is not ripe yet.
-/// Enough to read as another green beside the board's own, not so far that
-/// it stops being green.
-const UNREVIEWED_HUE: f32 = -28.0;
+/// How far round the wheel a signed-off pull request sits from the board's
+/// green: into the blues (#225). Open is green while it is being looked
+/// at; once review says yes it is a different thing waiting to land, and a
+/// different colour says that at a glance where a second green could not
+/// (#217, #224). Taken from the green rather than set as a colour of its
+/// own, so it keeps the weight the board paints its tiles at.
+const APPROVED_HUE: f32 = 78.0;
 
-/// The fill of a pull request's tile. Colour is the whole signal (#57) and
-/// the board has one green, so an open pull request still waiting on review
-/// wears that green **turned a step round the wheel** and signed off wears
-/// it as it is (#224). Not a paler green: [`floor_color`] sets a fill's
-/// lightness so a label can be read on it, which leaves hue as the one
-/// thing two greens can differ in — a second palette green came out of it
-/// all but identical (#217).
+/// The fill of a pull request's tile. Colour is the whole signal (#57):
+/// green while it is open and being looked at, **blue** once review has
+/// signed it off and it is only waiting to land, purple once it has (#225).
+/// Lightness cannot carry this — [`floor_color`] sets a fill's lightness so
+/// a label can be read on it, which is why two greens came out of it all
+/// but identical (#217) — so the blue is the green turned round the wheel.
 pub fn pr_fill(p: &crate::pr::Pr, pal: Palette) -> Rgba {
     let c = pr_color(p, pal);
     // CI running has a colour of its own and says something else; a draft
     // and a closed one are already dim.
-    if !p.running() && p.look() == crate::pr::Look::Open && !p.approved {
-        floor_color(theme::turned_hue(c, UNREVIEWED_HUE), pal)
+    if !p.running() && p.look() == crate::pr::Look::Open && p.approved {
+        floor_color(theme::turned_hue(c, APPROVED_HUE), pal)
     } else {
         floor_color(c, pal)
     }

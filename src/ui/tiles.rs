@@ -1489,18 +1489,20 @@ mod tests {
         assert!(tile(&nobody).front.bang, "nobody asked: my turn (#219)");
         assert!(tile(&landed).front.bang, "landed and waiting to be put away");
 
-        // Two greens a step round the wheel apart: the ink rules set a
-        // fill's lightness, so hue is the one thing they can differ in and
-        // the usual contrast between them is about 1.0 by design (#224).
+        // Green while it is being looked at, blue once it is signed off
+        // (#225). The ink rules set a fill's lightness, so the two differ
+        // in hue and their contrast is about 1.0 by design.
         let turn = |a: Rgba, b: Rgba| {
             let d = (theme::hsla(a).h - theme::hsla(b).h).abs();
             d.min(1.0 - d)
         };
         let (waiting, signed) = (tile(&open).fill, tile(&approved).fill);
-        assert!(turn(waiting, signed) > 0.05, "{waiting:?} and {signed:?} are the same green");
+        assert!(turn(waiting, signed) > 0.12, "{waiting:?} and {signed:?} are the same colour");
+        let blue = theme::hsla(signed).h;
+        assert!((0.5..0.72).contains(&blue), "signed off is a blue: {signed:?} (hue {blue})");
         assert!(
             theme::luma(waiting) > 0.02 && (theme::luma(waiting) - theme::luma(signed)).abs() < 0.08,
-            "both are full-strength greens, not one washed out: {waiting:?} vs {signed:?}"
+            "both are painted at the board's weight, neither washed out: {waiting:?} vs {signed:?}"
         );
 
         // Nobody asked is my turn, so it takes the wide tile (#218) — but a
