@@ -5,6 +5,7 @@
 use std::time::{Duration, Instant};
 
 use nsh_core::desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes};
+use nsh_core::element::ImageSrc;
 use nsh_core::element::desktop::{main_window, quit};
 use nsh_core::prelude::*;
 use nsh_metro::{label, palette as metro_palette};
@@ -70,8 +71,69 @@ pub fn App() -> impl IntoElement {
         // The titlebar strip moves the window as any Mac window's does
         // (#171, #185); the traffic lights sit in it.
         .child(view().absolute().top_0().left_0().right_0().h(px(crate::ui::state::GRAB_H)).bg(Hsla::transparent_black()).window_drag(true))
+        // Drawn after the strip so the strip's drag does not eat its press.
+        .child(inbox_badge(ui.clone()))
         .child(panel::flyouts(ui.clone()))
         .child(crate::ui::tiles::menu(ui))
+}
+
+/// What fills a switched-on control in the chrome, and what reads on it.
+/// Metro's accent, except on the orange board where an orange accent would
+/// vanish into the board and the ink fills instead.
+fn chrome_fill(b: &Board) -> (Hsla, Hsla) {
+    let metro = metro_palette();
+    if b.settings.theme == BoardTheme::Orange {
+        (theme::hsla(b.palette().ink), theme::hsla(b.palette().bg))
+    } else {
+        (metro.accent, metro.accent_ink)
+    }
+}
+
+/// What Linear is asking of you, at the top of the window (#242).
+///
+/// Not the status bar: that bar counts **the board's own** sessions, and the
+/// inbox is not the board's. Up here it sits opposite the traffic lights and
+/// across from the `start` header, where no tile ever reaches. Nothing at
+/// all when the inbox is clear — a zero would be one more number to read
+/// past every time the board is glanced at.
+///
+/// A press opens **Linear**, not the search: the thing being asked for is
+/// over there, and the rows are in ⌘K either way (#241).
+fn inbox_badge(ui: Ui) -> AnyElement {
+    dynamic(move || {
+        let (inbox, fill, ink) = ui.read(|b| {
+            let (fill, ink) = chrome_fill(b);
+            (b.inbox.clone(), fill, ink)
+        });
+        let open = ui.clone();
+        view()
+            .absolute()
+            .top(px(7.))
+            .right(px(14.))
+            .children((!inbox.is_empty()).then(|| {
+                let app = inbox.app_url();
+                let web = (!inbox.url.is_empty()).then(|| inbox.url.clone());
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .px(px(6.))
+                    .py(px(2.))
+                    .bg(fill)
+                    .cursor_pointer()
+                    .hover(move |s| s.opacity(0.8))
+                    .on_press(move || open.open_link("linear".into(), app.clone(), web.clone(), "Linear inbox"))
+                    .child(
+                        svg(ImageSrc::svg_markup(crate::logos::markup(crate::logos::Mark::Linear)))
+                            .size(px(11.))
+                            .flex_shrink_0()
+                            .text_color(ink),
+                    )
+                    .child(label(inbox.len().to_string()).text_size(px(BODY)).text_color(ink))
+            }))
+            .into_element()
+    })
+    .into_element()
 }
 
 /// The main window as the board wants it: no system title bar, the board
@@ -222,7 +284,7 @@ fn poll_inbox(ui: Ui) {
                     // key at all is different: there is nothing to keep.
                     Err(e) => {
                         if e == inbox::Error::NoKey {
-                            b.inbox.clear();
+                            b.inbox = Default::default();
                         }
                         b.inbox_error = Some(e);
                     }
@@ -269,10 +331,8 @@ fn status_bar(ui: Ui) -> AnyElement {
         let (ui, colors) = (ui.clone(), colors.clone());
         dynamic(move || {
             let (pal, ink, fill, fill_ink) = colors();
-            let (summary, mode, note, unread) =
-                ui.read(|b| (b.model.summary(), b.mode, b.source_note, b.inbox.len()));
+            let (summary, mode, note) = ui.read(|b| (b.model.summary(), b.mode, b.source_note));
             let fda = ui.clone();
-            let kay = ui.clone();
             view()
                 .flex_row()
                 .flex_shrink_0()
@@ -282,23 +342,7 @@ fn status_bar(ui: Ui) -> AnyElement {
                 .children((mode == Mode::Sandbox).then(|| {
                     view().px(px(6.)).bg(fill).child(label("SANDBOX").text_size(px(BODY)).text_color(fill_ink))
                 }))
-                // What Linear is still asking of you (#241). Nothing when
-                // the inbox is clear: a zero here would be one more number
-                // to read past every time the board is glanced at. A press
-                // opens ⌘K, where the rows themselves are.
-                .children((unread > 0).then(|| {
-                    view()
-                        .px(px(6.))
-                        .bg(fill)
-                        .cursor_pointer()
-                        .hover(move |s| s.opacity(0.75))
-                        .on_press(move || kay.update(crate::ui::palette::toggle))
-                        .child(
-                            label(format!("{unread} LINEAR"))
-                                .text_size(px(BODY))
-                                .text_color(fill_ink),
-                        )
-                }))
+
                 // The board looks right when Warp's tabs are unreadable, so
                 // the only way to tell is to say it (#67).
                 .children(note.map(|note| {

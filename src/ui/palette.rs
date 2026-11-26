@@ -393,7 +393,7 @@ fn entries(b: &Board) -> Vec<Entry> {
     // one thing in the panel that is not already drawn on the board behind
     // it, and the board fills twenty rows on its own: put the inbox under
     // the lanes and an empty query would never reach it.
-    for (i, note) in b.inbox.iter().enumerate() {
+    for (i, note) in b.inbox.notes.iter().enumerate() {
         let label = note.label();
         let web = (!note.url.is_empty()).then(|| note.url.clone());
         out.push(Entry {
@@ -408,7 +408,7 @@ fn entries(b: &Board) -> Vec<Entry> {
             detail: note.detail(),
             action: Action::Open {
                 label: label.clone(),
-                first: web.as_deref().and_then(app_url),
+                first: web.as_deref().and_then(crate::inbox::app_url),
                 then: web,
                 what: "Linear notification",
             },
@@ -504,12 +504,6 @@ fn entries(b: &Board) -> Vec<Entry> {
         }
     }
     out
-}
-
-/// Linear's desktop app answers to the same path its site does (#60), so
-/// the app is tried first and the web page is what it falls back to.
-fn app_url(web: &str) -> Option<String> {
-    web.strip_prefix("https://linear.app/").map(|rest| format!("linear://{rest}"))
 }
 
 /// Keys while the search is open. Everything lands here, so `t` types a `t`
@@ -870,7 +864,7 @@ mod tests {
         let many: Vec<SessionInfo> =
             (0..MAX_ROWS as u32 + 4).map(|i| SessionInfo::synthetic(i, &format!("S-{i}"), Phase::Working)).collect();
         b.take(many, None);
-        b.inbox = vec![crate::inbox::Note {
+        b.inbox.notes = vec![crate::inbox::Note {
             kind: "issueCommentMention".into(),
             actor: "Z".into(),
             key: Some("PJM-3292".into()),

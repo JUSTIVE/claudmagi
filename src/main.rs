@@ -80,7 +80,7 @@ fn main() -> ExitCode {
         match inbox::fetch() {
             Ok(notes) if notes.is_empty() => println!("inbox clear"),
             Ok(notes) => {
-                for n in &notes {
+                for n in &notes.notes {
                     println!("{:<12} {:<34} {}", n.label(), n.kind, n.detail());
                 }
                 println!("{} unread", notes.len());
