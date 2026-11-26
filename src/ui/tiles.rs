@@ -59,14 +59,18 @@ const TITLE_CHARS_PER_UNIT: usize = 6;
 
 /// What a session is working on, as the group it goes under (#162): its
 /// Linear issue, or failing that its pull request, or failing that the
-/// directory it works in — and there, the seat it sits in (#191).
+/// directory it works in — and there, the seat it sits in (#191) and the
+/// name it goes by (#237).
 ///
 /// A ticket or a pull request is a session saying what it is on, and two
 /// sessions saying the same thing belong together whatever window they run
 /// in. A shared directory says nothing of the kind: one repository holds
 /// every piece of work anybody does in it. So where that is all there is,
 /// the place breaks the tie — another tab, or another app entirely, is its
-/// own heading rather than another tile under a folder's name.
+/// own heading rather than another tile under a folder's name — and so does
+/// the name. Two panes of one tab in one checkout are routinely two pieces
+/// of work, and since a session goes by the title Claude keeps for it
+/// (#222), the name is that session saying which one it is on.
 pub fn work_unit(info: &SessionInfo) -> String {
     if let Some(t) = &info.ticket {
         return format!("issue:{}", t.key);
@@ -77,7 +81,7 @@ pub fn work_unit(info: &SessionInfo) -> String {
     if let Some(r) = info.prs_unanswered.last() {
         return format!("pr:{}", r.url());
     }
-    format!("dir:{}@{}", info.cwd, info.group)
+    format!("dir:{}@{}@{}", info.cwd, info.group, info.label())
 }
 
 /// A group's title: the names its Claude sessions go by (#165) — what
@@ -1323,7 +1327,10 @@ mod tests {
         assert_ne!(work_unit(&a), work_unit(&b), "two tabs of one app are two places too");
 
         b.group = a.group.clone();
-        assert_eq!(work_unit(&a), work_unit(&b), "the same folder in the same tab is one section");
+        assert_ne!(work_unit(&a), work_unit(&b), "two names in one tab are two pieces of work (#237)");
+
+        b.name = a.name.clone();
+        assert_eq!(work_unit(&a), work_unit(&b), "the same folder, the same tab, the same name: one section");
 
         // What a session is on outranks where it sits, which is the whole
         // point of grouping by work (#162).
