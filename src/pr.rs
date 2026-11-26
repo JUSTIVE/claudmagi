@@ -35,9 +35,6 @@ const WORKERS: usize = 3;
 /// PRs kept per session. A ticket can have several (#63), but a transcript
 /// that has wandered past this many is no longer describing one lane's work.
 pub const MAX_PER_SESSION: usize = 4;
-/// How much of a transcript's tail is searched. PRs are created and discussed
-/// late in a session, and the whole file can run to tens of megabytes.
-const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PrRef {
@@ -267,16 +264,22 @@ fn repo_of(cwd: &str) -> Option<String> {
     parse_repo(String::from_utf8_lossy(&out.stdout).trim())
 }
 
-/// Every PR of `repo` mentioned in a message body in the transcript's tail,
-/// oldest number first. A ticket often has more than one (#63); the newest
-/// are kept when there are more than `MAX_PER_SESSION`.
-pub fn scan_transcript(path: &Path, repo: &str, since: u64) -> Vec<u32> {
-    let Some(text) = tail(path, TAIL_BYTES) else { return Vec::new() };
+/// Every PR of `repo` the session named from `from` bytes into its
+/// transcript on, oldest number first, with the offset to pick up at next
+/// time.
+///
+/// Read forward rather than from the tail back (#240): a session names a
+/// pull request **in its own words** when it makes it, which is early, and
+/// what keeps being printed afterwards is a command's output, which is
+/// late. Reading the last two megabytes found a session's own work only
+/// where it had done nothing else since.
+pub fn scan_from(path: &Path, repo: &str, since: u64, from: u64) -> (Vec<u32>, u64) {
+    let Some((text, offset)) = read_on(path, from) else { return (Vec::new(), from) };
     let needle = format!("github.com/{repo}/pull/");
     let mut found: Vec<u32> = Vec::new();
     for line in text.lines() {
-        // Cheap gate: parsing every record of a two-megabyte tail is the
-        // expensive part, and almost no line mentions a PR.
+        // Cheap gate: parsing every record is the expensive part, and almost
+        // no line mentions a PR.
         if !line.contains(&needle) {
             continue;
         }
@@ -294,15 +297,44 @@ pub fn scan_transcript(path: &Path, repo: &str, since: u64) -> Vec<u32> {
             continue;
         };
         for block in blocks {
+            if !own_words(block) {
+                continue;
+            }
             found.extend(numbers_in(&block.to_string(), &needle));
         }
     }
     found.sort_unstable();
     found.dedup();
-    if found.len() > MAX_PER_SESSION {
-        found.drain(..found.len() - MAX_PER_SESSION);
+    (found, offset)
+}
+
+/// Whether a block of a turn is the session's own — what it said, what it
+/// thought, a command it ran — rather than what came back from running it
+/// (#240).
+///
+/// A command prints whatever it was pointed at. A cleanup plan lists the
+/// pull requests of the worktree it is about to delete; a merge dashboard
+/// lists a whole queue. None of that is the work of the session that ran
+/// it, and reading it as such put two of somebody else's merged pull
+/// requests under a session that was reading a list of skills.
+fn own_words(block: &serde_json::Value) -> bool {
+    block.get("type").and_then(|t| t.as_str()) != Some("tool_result")
+}
+
+/// A file from `from` bytes in, with the offset to start at next time: the
+/// end of the last whole line, so a record still being written is read when
+/// it is finished rather than cut in half.
+fn read_on(path: &Path, from: u64) -> Option<(String, u64)> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    if from > 0 {
+        f.seek(SeekFrom::Start(from)).ok()?;
     }
-    found
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let end = buf.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
+    buf.truncate(end);
+    Some((String::from_utf8_lossy(&buf).into_owned(), from + end as u64))
 }
 
 fn numbers_in(haystack: &str, needle: &str) -> Vec<u32> {
@@ -602,12 +634,26 @@ impl Shared {
     }
 }
 
+/// How much of one session's transcript has been read, and every pull
+/// request it named along the way (#240).
+#[derive(Clone, Default)]
+struct Reading {
+    /// The transcript's size when it was last looked at: unchanged means
+    /// there is nothing new in it.
+    size: u64,
+    /// Bytes taken in — the end of the last whole line.
+    offset: u64,
+    /// The context boundary these were gathered under (#74).
+    since: u64,
+    numbers: Vec<u32>,
+}
+
 /// Per-session PR resolution plus the fetched state, all cached.
 pub struct Tracker {
     /// cwd → `owner/repo`; `None` means "checked, not a GitHub checkout".
     repos: Mutex<HashMap<String, Option<String>>>,
-    /// session id → (transcript size when scanned, what it resolved to).
-    refs: Mutex<HashMap<String, (u64, u64, Vec<PrRef>)>>,
+    /// session id → how far its transcript has been read and what it named.
+    refs: Mutex<HashMap<String, Reading>>,
     shared: Arc<Shared>,
     /// Fetch inline instead of on the worker, for the one-shot diagnostics.
     pub eager: bool,
@@ -639,29 +685,34 @@ impl Tracker {
         found
     }
 
-    /// The PRs a session points at, oldest first, rescanned only when its
-    /// transcript grew.
+    /// The PRs a session has named, oldest first, read on from wherever its
+    /// transcript was left off and kept (#240). A session that opened a
+    /// pull request a day ago still has it: what it said once it has said.
+    /// More than `MAX_PER_SESSION` and the newest are the ones shown, PR
+    /// numbers only ever going up.
     pub fn resolve(&self, session_id: &str, cwd: &str, transcript: Option<&Path>, since: u64) -> Vec<PrRef> {
         let Some(path) = transcript else { return Vec::new() };
         let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Vec::new() };
-        if let Ok(map) = self.refs.lock() {
-            if let Some((seen, from, hit)) = map.get(session_id) {
-                // A rename moves the boundary, which is a new answer even
-                // though the file has not grown (#74).
-                if *seen == size && *from == since {
-                    return hit.clone();
-                }
+        let Some(repo) = self.repo(cwd) else { return Vec::new() };
+        let mut read = self.refs.lock().ok().and_then(|map| map.get(session_id).cloned()).unwrap_or_default();
+        // A rename moves the boundary, and a transcript shorter than what was
+        // read is not the one that was read: either way, start again (#74).
+        if read.since != since || size < read.offset {
+            read = Reading { since, ..Reading::default() };
+        }
+        if read.size != size {
+            let (named, offset) = scan_from(path, &repo, since, read.offset);
+            read.numbers.extend(named);
+            read.numbers.sort_unstable();
+            read.numbers.dedup();
+            read.offset = offset;
+            read.size = size;
+            if let Ok(mut map) = self.refs.lock() {
+                map.insert(session_id.to_string(), read.clone());
             }
         }
-        let Some(repo) = self.repo(cwd) else { return Vec::new() };
-        let found: Vec<PrRef> = scan_transcript(path, &repo, since)
-            .into_iter()
-            .map(|number| PrRef { repo: repo.clone(), number })
-            .collect();
-        if let Ok(mut map) = self.refs.lock() {
-            map.insert(session_id.to_string(), (size, since, found.clone()));
-        }
-        found
+        let first = read.numbers.len().saturating_sub(MAX_PER_SESSION);
+        read.numbers[first..].iter().map(|&number| PrRef { repo: repo.clone(), number }).collect()
     }
 
     /// Whatever `gh` last said, stale or not. Never blocks.
@@ -728,8 +779,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("claudmagi-pr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(format!("{}.jsonl", NEXT.fetch_add(1, Ordering::Relaxed)));
-        std::fs::write(&path, lines.join("\n")).unwrap();
-        let out = scan_transcript(&path, "cookieplace/crepe", 0);
+        // A whole line ends in a newline: a record still being written is
+        // read when it is finished (#240).
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).unwrap();
+        let out = scan_from(&path, "cookieplace/crepe", 0, 0).0;
         let _ = std::fs::remove_file(&path);
         out
     }
@@ -769,6 +822,80 @@ mod tests {
         assert_eq!(scan(&[blob.clone()]), Vec::<u32>::new(), "the request blob handed the session somebody else's work");
         assert_eq!(scan(&[attached.clone()]), Vec::<u32>::new(), "the instructions handed the session somebody else's work");
         assert_eq!(scan(&[blob, attached, mine]), vec![10154], "one real turn among the furniture");
+    }
+
+    /// A command prints whatever it was pointed at, and none of it is the
+    /// work of the session that ran it (#240). The cleanup plan below is
+    /// the one that put two of somebody else's merged pull requests under
+    /// a session that was reading a list of skills.
+    #[test]
+    fn a_pull_request_a_command_printed_is_not_the_session_s_work() {
+        let link = |n: u32| format!("https://github.com/cookieplace/crepe/pull/{n}");
+        let block = |body: String| format!(r#"{{"type":"user","message":{{"content":[{body}]}}}}"#);
+        let printed = block(format!(
+            r#"{{"type":"tool_result","content":{}}}"#,
+            serde_json::to_string(&format!(
+                "PR\t11383\tfeature/DEV-6166\tMERGED\t{}\nPR\t11379\tfeature/DEV-6166-be\tMERGED\t{}",
+                link(11383),
+                link(11379)
+            ))
+            .unwrap()
+        ));
+        let said = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+            serde_json::to_string(&format!("PR 를 올렸습니다: {}", link(11500))).unwrap()
+        );
+        // Running the command is the session's own doing, even though what
+        // came back is not.
+        let ran = block(format!(
+            r#"{{"type":"tool_use","name":"Bash","input":{{"command":{}}}}}"#,
+            serde_json::to_string(&format!("gh pr view {}", link(11501))).unwrap()
+        ));
+
+        assert_eq!(scan(&[printed.clone()]), Vec::<u32>::new(), "a command listed somebody else's worktree");
+        assert_eq!(scan(&[said.clone()]), vec![11500], "the session said what it made");
+        assert_eq!(scan(&[ran.clone()]), vec![11501], "and a command it ran is something it did");
+        assert_eq!(scan(&[printed, said, ran]), vec![11500, 11501], "the listing alone is dropped");
+    }
+
+    /// The scan reads forward and keeps what it read (#240). A session
+    /// names a pull request in its own words when it makes it, and then
+    /// works for hours: by the time anybody looks, that moment is far
+    /// behind the end of the file, and reading only the tail lost it.
+    #[test]
+    fn a_pull_request_the_session_named_hours_ago_is_still_its_work() {
+        let dir = std::env::temp_dir().join(format!("claudmagi-read-on-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let said = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"opened https://github.com/cookieplace/crepe/pull/11499"}]}}"#;
+        // Hours of work since, none of it about that pull request, and far
+        // more of it than the two megabytes the tail used to read.
+        let noise = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{}"}}]}}}}"#,
+            "x".repeat(4096)
+        );
+        let hours = |times: usize| {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
+            for _ in 0..times {
+                writeln!(f, "{noise}").unwrap();
+            }
+        };
+        std::fs::write(&path, format!("{said}\n")).unwrap();
+        hours(800);
+        assert!(std::fs::metadata(&path).unwrap().len() > 3 * 1024 * 1024, "past the tail that used to be read");
+
+        // Cold: the board started just now and has read none of this file.
+        let tracker = Tracker::default();
+        tracker.repos.lock().unwrap().insert("/w".into(), Some("cookieplace/crepe".into()));
+        let refs = |t: &Tracker| t.resolve("s", "/w", Some(path.as_path()), 0).iter().map(|r| r.number).collect::<Vec<_>>();
+        assert_eq!(refs(&tracker), vec![11499], "the whole transcript is read the first time");
+
+        // And warm: what it said once it has said, however long it works on.
+        hours(800);
+        assert_eq!(refs(&tracker), vec![11499], "read on from where it was left");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
