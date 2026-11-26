@@ -71,9 +71,20 @@ pub struct Settings {
     /// because what gets put away is work that has landed — a merged pull
     /// request is not going to change its mind and want the board back.
     pub dismissed: Vec<String>,
+    /// How many subagent tiles a session shows in its group before the last
+    /// one stands for the rest as `+N` (#253, #254). Read through
+    /// [`Settings::agents`], which keeps a hand-edited file in range.
+    pub agents: usize,
 }
 
 pub const DEFAULT_ACCENT: &str = "orange";
+
+/// The subagent tiles a session may show: at least one (which, past it,
+/// counts them all), at most four blocks of four.
+pub const AGENTS_MIN: usize = 1;
+pub const AGENTS_MAX: usize = 16;
+/// Four small tiles fill one medium tile's room, so eight are two of them.
+pub const DEFAULT_AGENTS: usize = 8;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -83,6 +94,7 @@ impl Default for Settings {
             view: BoardView::Tiles,
             accent: DEFAULT_ACCENT.into(),
             dismissed: Vec::new(),
+            agents: DEFAULT_AGENTS,
         }
     }
 }
@@ -92,6 +104,11 @@ pub fn settings_path() -> Option<PathBuf> {
 }
 
 impl Settings {
+    /// [`Settings::agents`] the field, held to [`AGENTS_MIN`]–[`AGENTS_MAX`].
+    pub fn agents(&self) -> usize {
+        self.agents.clamp(AGENTS_MIN, AGENTS_MAX)
+    }
+
     pub fn load() -> Self {
         settings_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -123,6 +140,7 @@ mod tests {
             view: BoardView::Comb,
             accent: "lime".into(),
             dismissed: vec!["https://github.com/o/r/pull/7".into()],
+            agents: 12,
         };
         let text = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), s);
@@ -134,6 +152,11 @@ mod tests {
         assert_eq!(partial.accent, DEFAULT_ACCENT, "an old settings file keeps the default accent");
         assert_eq!(partial.view, BoardView::Tiles, "an old settings file opens on the start screen");
         assert!(partial.dismissed.is_empty(), "a file written before #194 has put nothing away");
+        assert_eq!(partial.agents(), DEFAULT_AGENTS, "a file written before #254 shows eight subagents");
+        let wild: Settings = serde_json::from_str(r#"{"agents":0}"#).unwrap();
+        assert_eq!(wild.agents(), AGENTS_MIN, "a hand-edited file is held in range");
+        let wild: Settings = serde_json::from_str(r#"{"agents":99}"#).unwrap();
+        assert_eq!(wild.agents(), AGENTS_MAX);
         // The views that went (#183) open on the default, and the rest of
         // the file still counts.
         for gone in ["circuit", "blob", "nonsense"] {

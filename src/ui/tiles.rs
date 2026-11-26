@@ -125,8 +125,11 @@ pub enum Kind {
 /// The start screen's groups in board order, each with its title and its
 /// tiles: the issue once, the sessions each followed by their subagents,
 /// then everything they produced, each thing once.
-pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
-    keyed_groups(model).into_iter().map(|(_, title, tiles)| (title, tiles)).collect()
+///
+/// `agents` is how many subagent tiles a session shows (the settings'
+/// [`crate::settings::Settings::agents`]).
+pub fn groups(model: &BoardModel, agents: usize) -> Vec<(String, Vec<Kind>)> {
+    keyed_groups(model, agents).into_iter().map(|(_, title, tiles)| (title, tiles)).collect()
 }
 
 /// [`groups`], each with what it is known by from one poll to the next: its
@@ -136,7 +139,7 @@ pub fn groups(model: &BoardModel) -> Vec<(String, Vec<Kind>)> {
 /// a group known by it would be dropped and built again each time, where
 /// the same group should take the new tile in and push the rest along
 /// (#200).
-pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
+pub fn keyed_groups(model: &BoardModel, agents: usize) -> Vec<(String, String, Vec<Kind>)> {
     let mut units: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in model.chips.iter().enumerate() {
         if c.anim.gone {
@@ -160,7 +163,7 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
             for &i in &members {
                 tiles.push(Kind::Session(i));
                 let live = model.chips[i].subs.iter().filter(|s| !s.anim.gone).count();
-                tiles.extend((0..live.min(MAX_AGENTS)).map(|k| Kind::Agent(i, k)));
+                tiles.extend((0..live.min(agents)).map(|k| Kind::Agent(i, k)));
             }
             let mut shown: Vec<String> = Vec::new();
             let mut once = |key: String| {
@@ -194,11 +197,6 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
         })
         .collect()
 }
-
-/// How many subagent tiles a session shows in its group (#253): past this
-/// the last one stands for the rest as `+N`. Four small tiles fill one
-/// medium tile's room, so eight are two of them.
-pub const MAX_AGENTS: usize = 8;
 
 /// How many small tiles wide every group is: narrow — one medium tile, so
 /// groups of one or two things stand close — unless some group holds more
@@ -598,11 +596,11 @@ fn inks_of(b: &Board) -> Inks {
 
 /// What the tile `key` shows, or `None` once it is no longer on the board.
 fn shows(b: &Board, key: &TileKey) -> Option<Shows> {
-    shows_in(&b.model, inks_of(b), key)
+    shows_in(&b.model, inks_of(b), b.settings.agents(), key)
 }
 
 /// [`shows`], from the model and the inks themselves.
-fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
+fn shows_in(model: &BoardModel, inks: Inks, cap: usize, key: &TileKey) -> Option<Shows> {
     let chip_of = |id: &str| model.chips.iter().find(|c| c.info.session_id == id && !c.anim.gone);
     let infos = || model.live().map(|c| &c.info);
     let plain = |fill: Rgba, ink: Rgba, front: Face, mark: Option<Mark>| Shows {
@@ -648,12 +646,12 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
             let agents: Vec<_> = chip.subs.iter().filter(|x| !x.anim.gone).collect();
             let n = agents.len();
             let agent = agents.get(*k)?;
-            let over = *k == MAX_AGENTS - 1 && n > MAX_AGENTS;
+            let over = *k + 1 == cap && n > cap;
             let base = if inks.pal.screened { inks.pal.ink } else { inks.pal.chip };
             // A finished one is the colour given back to the board.
             let fill = if over || agent.info.running { base } else { theme::lerp(inks.pal.bg, base, 0.45) };
             let ink = if inks.pal.screened { inks.pal.bg } else { ink::legible(WHITE, fill, inks.pal) };
-            let text = if over { format!("+{}", n - (MAX_AGENTS - 1)) } else { agent.info.label().to_lowercase() };
+            let text = if over { format!("+{}", n - (cap - 1)) } else { agent.info.label().to_lowercase() };
             Shows { agent: Some((text, over)), ..plain(fill, ink, Face::default(), None) }
         }
         TileKey::Issue(k) => {
@@ -712,7 +710,7 @@ struct Frame {
 }
 
 fn frame_of(b: &Board) -> Frame {
-    let groups = groups(&b.model);
+    let groups = groups(&b.model, b.settings.agents());
     let columns = columns(&b.model, &groups);
     let zoom = b.layout.zoom;
     // A window is not a screen: the groups that fit across it make a row,
@@ -734,7 +732,7 @@ struct Group {
 }
 
 fn group_of(b: &Board, unit: &str, columns: usize) -> Option<Group> {
-    let (_, title, kinds) = keyed_groups(&b.model).into_iter().find(|(u, ..)| u == unit)?;
+    let (_, title, kinds) = keyed_groups(&b.model, b.settings.agents()).into_iter().find(|(u, ..)| u == unit)?;
     Some(Group {
         // One short of the room: the last group of a row wraps instead.
         title: clip(&title, columns * TITLE_CHARS_PER_UNIT - 1),
@@ -786,7 +784,7 @@ fn screen(ui: Ui, z: f32, replay: Signal<usize>) -> AnyElement {
         .font_weight(LIGHT)
         .line_height(nsh_core::LineHeight::Points(px((size::HUGE + 8.) * z)))
         .text_color(move || metro_palette().foreground);
-    let units = ui.memo(|b| keyed_groups(&b.model).into_iter().map(|(unit, ..)| unit).collect::<Vec<_>>());
+    let units = ui.memo(|b| keyed_groups(&b.model, b.settings.agents()).into_iter().map(|(unit, ..)| unit).collect::<Vec<_>>());
     // The group whose tile was just pressed: it swings away on its own, the
     // tapped tile last, and every other group swings away with it, as the
     // start screen did when it was one grid (#176).
@@ -1260,6 +1258,7 @@ fn wrap_lines(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::DEFAULT_AGENTS;
     use std::time::Instant;
 
     /// Three sessions in three different Warp tabs: the first two on one
@@ -1296,7 +1295,7 @@ mod tests {
     #[test]
     fn sessions_on_one_issue_share_a_group_whatever_tab_they_run_in() {
         let model = work();
-        let groups = groups(&model);
+        let groups = groups(&model, DEFAULT_AGENTS);
         assert_eq!(groups.len(), 2, "one group for the issue, one for the loose session");
         assert_eq!(
             groups[0].1,
@@ -1394,21 +1393,29 @@ mod tests {
         }
         model.apply(list, Instant::now());
         model.settle();
-        let groups = groups(&model);
+        let groups = groups(&model, DEFAULT_AGENTS);
         let loose = &groups.iter().find(|(_, k)| k.contains(&Kind::Session(2))).unwrap().1;
         assert_eq!(
             loose,
-            &std::iter::once(Kind::Session(2)).chain((0..MAX_AGENTS).map(|k| Kind::Agent(2, k))).collect::<Vec<_>>(),
+            &std::iter::once(Kind::Session(2)).chain((0..DEFAULT_AGENTS).map(|k| Kind::Agent(2, k))).collect::<Vec<_>>(),
             "{}: eight small tiles after the session, never more",
             info.label()
         );
+        // The settings say how many (#254); the last one counts the rest.
+        for cap in [1, 3, 9] {
+            let loose = super::groups(&model, cap).into_iter().find(|(_, k)| k.contains(&Kind::Session(2))).unwrap().1;
+            assert_eq!(loose.iter().filter(|k| matches!(k, Kind::Agent(..))).count(), cap, "{cap}");
+            let last = TileKey::of(&Kind::Agent(2, cap - 1), &model).unwrap();
+            let text = shows_in(&model, inks(), cap, &last).unwrap().agent.unwrap();
+            assert_eq!(text, (format!("+{}", 10 - (cap - 1)), true), "{cap}");
+        }
     }
 
     #[test]
     fn groups_stay_one_tile_wide_until_one_needs_two() {
         let model = work();
         // The issue's group has four things in it: two tiles wide.
-        assert_eq!(columns(&model, &groups(&model)), WIDE);
+        assert_eq!(columns(&model, &groups(&model, DEFAULT_AGENTS)), WIDE);
         let one = vec![("a".to_string(), vec![Kind::Session(0), Kind::Pr(0, 0)])];
         assert_eq!(columns(&model, &one), NARROW, "a session and its pull request fit one tile wide");
         let agents = vec![("a".to_string(), vec![Kind::Session(0), Kind::Agent(0, 0), Kind::Agent(0, 1)])];
@@ -1422,13 +1429,13 @@ mod tests {
     fn a_group_holding_a_wide_tile_is_two_tiles_wide() {
         let quiet = SessionInfo::synthetic(1, "S-1", Phase::Idle);
         let model = board_of(vec![quiet.clone()]);
-        assert_eq!(columns(&model, &groups(&model)), NARROW, "one idle session: one tile wide");
+        assert_eq!(columns(&model, &groups(&model, DEFAULT_AGENTS)), NARROW, "one idle session: one tile wide");
 
         let asking = SessionInfo::synthetic(1, "S-1", Phase::NeedsUser);
         let key = TileKey::Session(asking.session_id.clone());
         let model = board_of(vec![asking]);
         assert_eq!(size_of(&key, &model), TileSize::Wide);
-        assert_eq!(columns(&model, &groups(&model)), WIDE, "the one tile in it needs two tiles' room");
+        assert_eq!(columns(&model, &groups(&model, DEFAULT_AGENTS)), WIDE, "the one tile in it needs two tiles' room");
 
         // And the guard under it: whatever the rule says, a tile never goes
         // out wider than the group it is drawn in.
@@ -1505,7 +1512,7 @@ mod tests {
     }
 
     fn session_tile(model: &BoardModel, i: usize) -> Shows {
-        shows_in(model, inks(), &TileKey::Session(model.chips[i].info.session_id.clone())).expect("the session is on the board")
+        shows_in(model, inks(), DEFAULT_AGENTS, &TileKey::Session(model.chips[i].info.session_id.clone())).expect("the session is on the board")
     }
 
     /// A front with nothing to say but the name carries the session's
@@ -1564,7 +1571,7 @@ mod tests {
         let landed = Pr { approved: true, ..Pr::synthetic(4, Look::Merged) };
         s.prs = vec![open.clone(), approved.clone(), nobody.clone(), landed.clone()];
         let model = board_of(vec![s]);
-        let tile = |p: &Pr| shows_in(&model, inks(), &TileKey::Pr(p.url())).expect("the pull request is on the board");
+        let tile = |p: &Pr| shows_in(&model, inks(), DEFAULT_AGENTS, &TileKey::Pr(p.url())).expect("the pull request is on the board");
 
         assert_eq!(tile(&open).front.foot.as_deref(), Some("in review"));
         assert_eq!(tile(&approved).front.foot.as_deref(), Some("approved"));
@@ -1604,7 +1611,7 @@ mod tests {
         let bench = board_of(vec![testing]);
         let ci_key = TileKey::Pr(ci.url());
         assert!(ci.running());
-        assert!(!shows_in(&bench, inks(), &ci_key).expect("on the board").front.bang, "the answer is not in yet");
+        assert!(!shows_in(&bench, inks(), DEFAULT_AGENTS, &ci_key).expect("on the board").front.bang, "the answer is not in yet");
         assert_eq!(size_of(&ci_key, &bench), TileSize::Medium);
 
         // In the merge queue: going in by itself, so it says `merging` and
@@ -1614,7 +1621,7 @@ mod tests {
         sending.prs = vec![going.clone()];
         let queue = board_of(vec![sending]);
         let going_key = TileKey::Pr(going.url());
-        let going_tile = shows_in(&queue, inks(), &going_key).expect("on the board");
+        let going_tile = shows_in(&queue, inks(), DEFAULT_AGENTS, &going_key).expect("on the board");
         assert_eq!(going_tile.front.foot.as_deref(), Some("merging"));
         // Landing and landed are both purples, a step apart (#233).
         let pal = inks().pal;
@@ -1644,7 +1651,7 @@ mod tests {
         let held = board_of(vec![below]);
         let blocked_key = TileKey::Pr(blocked.url());
         assert_eq!(size_of(&blocked_key, &held), TileSize::Medium);
-        let blocked_tile = shows_in(&held, inks(), &blocked_key).expect("on the board");
+        let blocked_tile = shows_in(&held, inks(), DEFAULT_AGENTS, &blocked_key).expect("on the board");
         assert!(!blocked_tile.front.bang, "it cannot go in until the one below it does");
         assert!(blocked_tile.front.tick, "review has still passed");
         assert_eq!(blocked_tile.front.foot.as_deref(), Some("approved"));
@@ -1659,7 +1666,7 @@ mod tests {
         let key = TileKey::Pr(stacked.url());
         assert!(!stacked.unasked(), "the one underneath is what it waits for");
         assert_eq!(size_of(&key, &stack), TileSize::Medium);
-        let shown = shows_in(&stack, inks(), &key).expect("on the board");
+        let shown = shows_in(&stack, inks(), DEFAULT_AGENTS, &key).expect("on the board");
         assert!(!shown.front.bang);
         assert_eq!(shown.front.foot.as_deref(), Some("stacked"));
     }
@@ -1674,7 +1681,7 @@ mod tests {
         let hand = Pr { approved: true, ..Pr::synthetic(2, Look::Open) };
         s.prs = vec![auto.clone(), hand.clone()];
         let model = board_of(vec![s]);
-        let tile = |u: String| shows_in(&model, inks(), &TileKey::Pr(u)).expect("on the board");
+        let tile = |u: String| shows_in(&model, inks(), DEFAULT_AGENTS, &TileKey::Pr(u)).expect("on the board");
 
         let going = tile(auto.url());
         assert!(going.front.auto, "it says it goes in by itself");
@@ -1690,7 +1697,7 @@ mod tests {
         // idle session and from the greens of work in flight.
         let page = model.chips[0].info.artifacts.first().map(|a| a.url());
         if let Some(url) = page {
-            let fill = shows_in(&model, inks(), &TileKey::Page(url)).expect("on the board").fill;
+            let fill = shows_in(&model, inks(), DEFAULT_AGENTS, &TileKey::Page(url)).expect("on the board").fill;
             let pal = inks().pal;
             assert_ne!(fill, inks().quiet(), "not the quiet grey any more");
             let turn = |a: Rgba, b: Rgba| {
@@ -1757,9 +1764,9 @@ mod tests {
         let model = board_of(vec![asking, busy, idle]);
 
         let mut seen = 0;
-        for (_, _, kinds) in keyed_groups(&model) {
+        for (_, _, kinds) in keyed_groups(&model, DEFAULT_AGENTS) {
             for key in kinds.iter().filter_map(|k| TileKey::of(k, &model)) {
-                let shown = shows_in(&model, inks(), &key).expect("on the board");
+                let shown = shows_in(&model, inks(), DEFAULT_AGENTS, &key).expect("on the board");
                 let size = size_of(&key, &model);
                 if matches!(key, TileKey::Agent(..)) {
                     assert_eq!(size, TileSize::Small, "{key:?}");
@@ -1804,7 +1811,7 @@ mod tests {
         s.prs_unanswered.clear();
         s.artifacts.clear();
         s.subagents.clear();
-        let key_of = |model: &BoardModel| keyed_groups(model)[0].0.clone();
+        let key_of = |model: &BoardModel| keyed_groups(model, DEFAULT_AGENTS)[0].0.clone();
         let mut model = board_of(vec![s.clone()]);
         let (before, unit) = (key_of(&model), work_unit(&s));
 
@@ -1812,12 +1819,12 @@ mod tests {
         model.apply(vec![s.clone()], Instant::now());
         assert_ne!(work_unit(&s), unit, "the work it is on changed");
         assert_eq!(key_of(&model), before, "the group did not");
-        assert_eq!(keyed_groups(&model)[0].2.first(), Some(&Kind::Issue(0)), "the issue joins at the head of it");
+        assert_eq!(keyed_groups(&model, DEFAULT_AGENTS)[0].2.first(), Some(&Kind::Issue(0)), "the issue joins at the head of it");
 
         s.prs.push(crate::pr::Pr::synthetic(1, crate::pr::Look::Open));
         model.apply(vec![s], Instant::now());
         assert_eq!(key_of(&model), before, "nor when it opens a pull request");
-        assert!(keyed_groups(&model)[0].2.contains(&Kind::Pr(0, 0)), "which joins it too");
+        assert!(keyed_groups(&model, DEFAULT_AGENTS)[0].2.contains(&Kind::Pr(0, 0)), "which joins it too");
     }
 
 
@@ -1847,8 +1854,8 @@ mod tests {
     #[test]
     fn a_new_group_leaves_the_others_where_they_are() {
         let (a, b) = (bare(1, "/w/a"), bare(2, "/w/b"));
-        let before: Vec<String> = keyed_groups(&board_of(vec![a.clone(), b.clone()])).into_iter().map(|g| g.0).collect();
-        let after: Vec<String> = keyed_groups(&board_of(vec![a, b, bare(3, "/w/c")])).into_iter().map(|g| g.0).collect();
+        let before: Vec<String> = keyed_groups(&board_of(vec![a.clone(), b.clone()]), DEFAULT_AGENTS).into_iter().map(|g| g.0).collect();
+        let after: Vec<String> = keyed_groups(&board_of(vec![a, b, bare(3, "/w/c")]), DEFAULT_AGENTS).into_iter().map(|g| g.0).collect();
         assert_eq!(after.len(), 3);
         assert_eq!(&after[..2], &before[..], "the two that were there keep their keys and their order");
     }

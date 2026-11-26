@@ -1,16 +1,18 @@
 //! Settings panel (⌘, or the settings button): board background, Metro
-//! accent and UI size.
+//! accent, UI size and how many subagent tiles a session shows.
 
 use nsh_core::prelude::*;
 use nsh_metro::{Accent, label, palette, radio_button, slider};
 
-use crate::settings::BoardTheme;
+use crate::settings::{AGENTS_MAX, AGENTS_MIN, BoardTheme};
 use crate::ui::metro;
 use crate::ui::panel::{Which, button, flyout, hint, section};
 use crate::ui::state::{Board, Ui};
 use crate::zoom;
 
 const ZOOM_PRESETS: [f32; 5] = [0.5, 0.75, 1.0, 1.5, 2.0];
+/// One block of small tiles, two, three, four.
+const AGENT_PRESETS: [usize; 4] = [4, 8, 12, 16];
 /// The twenty accents as a 10 × 2 grid of swatches, the way the phone's
 /// accent picker laid them out as tiles.
 const SWATCH: f32 = 26.0;
@@ -31,6 +33,23 @@ pub fn set_theme(b: &mut Board, theme: BoardTheme) {
         b.settings.save();
         // The panels follow the board: dark board, dark Metro ground.
         metro::sync(&b.settings);
+    }
+}
+
+/// Subagent count ↔ slider position (0–1), one step per tile.
+fn agents_to_unit(n: usize) -> f32 {
+    (n.clamp(AGENTS_MIN, AGENTS_MAX) - AGENTS_MIN) as f32 / (AGENTS_MAX - AGENTS_MIN) as f32
+}
+
+fn unit_to_agents(v: f32) -> usize {
+    AGENTS_MIN + (v.clamp(0.0, 1.0) * (AGENTS_MAX - AGENTS_MIN) as f32).round() as usize
+}
+
+pub fn set_agents(b: &mut Board, n: usize) {
+    let n = n.clamp(AGENTS_MIN, AGENTS_MAX);
+    if b.settings.agents != n {
+        b.settings.agents = n;
+        b.settings.save();
     }
 }
 
@@ -91,6 +110,16 @@ fn body(ui: &Ui) -> AnyElement {
         .header(move || SharedString::from(format!("{:.0}%", zoom_now.get() as f32 / 10.0)))
         .on_change(move |v| set.update(|b| b.set_zoom(unit_to_zoom(v))));
 
+    let mut agent_presets = view().flex_row().flex_wrap().gap(px(4.));
+    for n in AGENT_PRESETS {
+        let (on, set) = (ui.memo(move |b| b.settings.agents() == n), ui.clone());
+        agent_presets = agent_presets.child(button(n.to_string(), move || on.get(), move || set.update(|b| set_agents(b, n))));
+    }
+    let (agents_now, set) = (ui.memo(|b| b.settings.agents()), ui.clone());
+    let agents_slider = slider(move || agents_to_unit(agents_now.get()))
+        .header(move || SharedString::from(format!("{} per session", agents_now.get())))
+        .on_change(move |v| set.update(|b| set_agents(b, unit_to_agents(v))));
+
     // The way back for anything put away by hand (#194). Only when there is
     // something to bring back.
     let put_away = {
@@ -116,6 +145,7 @@ fn body(ui: &Ui) -> AnyElement {
                 .child(label(current).text_size(px(metro::BODY)).text_color(move || palette().accent)),
         )
         .child(section("ui size").child(zoom_slider).child(presets))
+        .child(section("subagent tiles").child(agents_slider).child(agent_presets))
         .child(put_away)
         .child(hint("⌘+ ⌘− ⌘0 · ⌘+wheel zoom · ⌘, toggles this panel · settings persist"))
         .into_element()
@@ -131,6 +161,15 @@ mod tests {
         assert_eq!(zoom_to_unit(zoom::USER_ZOOM_MAX), 1.0);
         for z in ZOOM_PRESETS {
             assert!((unit_to_zoom(zoom_to_unit(z)) - z).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn agents_slider_steps_through_every_count() {
+        assert_eq!(unit_to_agents(0.0), AGENTS_MIN);
+        assert_eq!(unit_to_agents(1.0), AGENTS_MAX);
+        for n in AGENTS_MIN..=AGENTS_MAX {
+            assert_eq!(unit_to_agents(agents_to_unit(n)), n);
         }
     }
 }
