@@ -30,6 +30,14 @@ pub const BANG_SVG: &str = concat!(
     r#"M10.75 8.6h2.5l-0.35 6.6h-1.8ZM10.8 16.7h2.4v2.4h-2.4Z"/></svg>"#
 );
 
+/// Auto-merge, drawn: an arrow going down into a line, square-cut like the
+/// rest of the board's marks (#239). It says the pull request goes in on
+/// its own once it is allowed to.
+pub const AUTO_SVG: &str = concat!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" "#,
+    r#"d="M10.6 2.8h2.8v9.4h-2.8ZM6.6 11.2h10.8L12 18.6ZM4 20.4h16v2.8H4Z"/></svg>"#
+);
+
 /// Side padding inside a panel.
 pub const PAD: f32 = 16.;
 /// Body text inside the panels.

@@ -168,9 +168,8 @@ pub enum Style {
     Pr { look: pr::Look, running: bool, signed_off: bool },
     /// The Linear node at the head of a lane; `None` before Orca answers.
     Ticket(Option<ticket::Status>),
-    /// A page the session published (#137). Outlined rather than filled: a
-    /// page has no state to be further along in, and the fills on this board
-    /// all mean progress.
+    /// A page the session published (#137), in the teal that is its own on
+    /// the board (#238).
     Artifact,
 }
 
@@ -218,7 +217,11 @@ impl Style {
             Style::Ticket(None | Some(ticket::Status::Backlog)) => {
                 body(Some(ink(0.10)), Some(ink(0.45)), ink(0.6))
             }
-            Style::Artifact => body(None, Some(ink(0.35)), ink(0.8)),
+            Style::Artifact => {
+                let fill = crate::ink::floor_color(crate::ink::artifact_color(theme), theme);
+                let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+                body(Some(at(fill)), None, at(crate::ink::legible(white, fill, theme)))
+            }
         }
     }
 }

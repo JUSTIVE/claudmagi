@@ -52,6 +52,10 @@ const BANG: f32 = 17.0;
 
 /// The side of the tick a signed-off pull request wears, in px.
 const TICK: f32 = 15.0;
+/// The side of the auto-merge mark, in px.
+const AUTO: f32 = 13.0;
+/// Between two marks sharing the corner.
+const MARK_GAP: f32 = 6.0;
 
 /// The most letters a group's title runs to before it is cut, per small
 /// tile of the group's width: the title is set in one line over the group.
@@ -472,8 +476,9 @@ fn wants_me(key: &TileKey, model: &BoardModel) -> bool {
                 Look::Failing => true,
                 // Signed off and open: nobody else is going to press the
                 // button (#226) — unless it is stacked, where the button
-                // belongs to the pull request underneath (#227).
-                Look::Open => p.unasked() || (p.approved && !p.stacked),
+                // belongs to the pull request underneath (#227), or
+                // auto-merge is on, where nobody has to press it (#239).
+                Look::Open => p.unasked() || (p.approved && !p.stacked && !p.auto),
                 // Going in by itself (#231), already in, abandoned, or not
                 // asking yet. A landed pull request can still be put away
                 // (#194), but that is a right-click when it suits you
@@ -516,6 +521,8 @@ struct Face {
     tick: bool,
     /// Waiting on a person: the bang, drawn in the corner (#219, #223).
     bang: bool,
+    /// Auto-merge is on: the mark that says it goes in by itself (#239).
+    auto: bool,
     big: String,
     small: Vec<String>,
     title: String,
@@ -664,6 +671,8 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
                 // nothing to do but the sign-off to show.
                 bang: wants_me(key, model),
                 tick: signed_off(p),
+                // Nothing to promise once it is in or abandoned.
+                auto: p.auto && !matches!(p.state, crate::pr::State::Merged | crate::pr::State::Closed),
                 big: p.label(),
                 small: wrap_lines(&p.title),
                 foot: Some(pr_word(p)),
@@ -679,7 +688,7 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
         }
         TileKey::Page(u) => {
             let a = infos().flat_map(|i| i.artifacts.iter()).find(|a| a.url() == *u)?;
-            let (fill, ink) = inks.on(inks.quiet());
+            let (fill, ink) = inks.on(ink::floor_color(ink::artifact_color(inks.pal), inks.pal));
             let front = Face { big: a.label(), small: wrap_lines(&a.title), foot: Some("published".into()), ..Face::default() };
             plain(fill, ink, front, Some(Mark::Artifact))
         }
@@ -1026,15 +1035,32 @@ fn face(data: Memo<Option<Shows>>, back: bool, z: f32, menu: impl Fn((f32, f32))
             svg(|| ImageSrc::svg_markup(crate::ui::metro::TICK_SVG))
                 .absolute()
                 .top(px(9. * z))
-                // Both at once on a pull request review has passed and
-                // nobody has merged: the tick stands to the sign's left.
+                // The corner is a row, right to left: the sign, then the
+                // tick, then auto-merge. Each stands aside for the one
+                // outside it (#239).
                 .right({
                     let side = side.clone();
-                    move || px((9. + if side().bang { BANG + 6. } else { 0. }) * z)
+                    move || px((9. + if side().bang { BANG + MARK_GAP } else { 0. }) * z)
                 })
                 .size(px(TICK * z))
                 .text_color(ink)
                 .opacity(move || if side().tick { 1.0_f32 } else { 0.0 }),
+        )
+        .child(
+            svg(|| ImageSrc::svg_markup(crate::ui::metro::AUTO_SVG))
+                .absolute()
+                .top(px(10. * z))
+                .right({
+                    let side = side.clone();
+                    move || {
+                        let s = side();
+                        let before = if s.bang { BANG + MARK_GAP } else { 0. } + if s.tick { TICK + MARK_GAP } else { 0. };
+                        px((9. + before) * z)
+                    }
+                })
+                .size(px(AUTO * z))
+                .text_color(ink)
+                .opacity(move || if side().auto { 1.0_f32 } else { 0.0 }),
         )
         .child(
             svg(|| ImageSrc::svg_markup(crate::ui::metro::BANG_SVG))
@@ -1631,6 +1657,43 @@ mod tests {
         let shown = shows_in(&stack, inks(), &key).expect("on the board");
         assert!(!shown.front.bang);
         assert_eq!(shown.front.foot.as_deref(), Some("stacked"));
+    }
+
+    /// A published page has a colour of its own (#238) and auto-merge has a
+    /// mark of its own (#239): it goes in by itself, so it asks nothing.
+    #[test]
+    fn a_page_and_an_automerging_pull_request_say_what_they_are() {
+        use crate::pr::{Look, Pr};
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Idle);
+        let auto = Pr { approved: true, auto: true, ..Pr::synthetic(1, Look::Open) };
+        let hand = Pr { approved: true, ..Pr::synthetic(2, Look::Open) };
+        s.prs = vec![auto.clone(), hand.clone()];
+        let model = board_of(vec![s]);
+        let tile = |u: String| shows_in(&model, inks(), &TileKey::Pr(u)).expect("on the board");
+
+        let going = tile(auto.url());
+        assert!(going.front.auto, "it says it goes in by itself");
+        assert!(going.front.tick, "and that review has passed");
+        assert!(!going.front.bang, "nobody has to press anything (#239)");
+        assert_eq!(size_of(&TileKey::Pr(auto.url()), &model), TileSize::Medium);
+
+        let mine = tile(hand.url());
+        assert!(!mine.front.auto);
+        assert!(mine.front.bang, "this one is still mine to let in (#226)");
+
+        // The page: its own teal, away from the quiet grey it shared with an
+        // idle session and from the greens of work in flight.
+        let page = model.chips[0].info.artifacts.first().map(|a| a.url());
+        if let Some(url) = page {
+            let fill = shows_in(&model, inks(), &TileKey::Page(url)).expect("on the board").fill;
+            let pal = inks().pal;
+            assert_ne!(fill, inks().quiet(), "not the quiet grey any more");
+            let turn = |a: Rgba, b: Rgba| {
+                let d = (theme::hsla(a).h - theme::hsla(b).h).abs();
+                d.min(1.0 - d)
+            };
+            assert!(turn(fill, crate::ink::floor_color(pal.text_on, pal)) > 0.05, "a step off the board's green");
+        }
     }
 
     /// What is waiting on a person is twice as wide: a session that needs an

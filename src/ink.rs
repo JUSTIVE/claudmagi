@@ -40,6 +40,19 @@ pub fn ticket_color(t: &crate::ticket::Ticket, pal: Palette) -> Rgba {
     }
 }
 
+/// How far round the wheel a published page sits from the board's green:
+/// into the teals, the one stretch of the wheel no state uses (#238). A
+/// page is not a step along the way to landing, so it stands away from the
+/// green-to-purple run rather than inside it.
+const ARTIFACT_HUE: f32 = 40.0;
+
+/// A page the session published (#137). Quiet grey was the colour of
+/// everything the board had nothing to say about — an idle session, a pull
+/// request GitHub would not answer for — and a page is not nothing.
+pub fn artifact_color(pal: Palette) -> Rgba {
+    theme::turned_hue(pal.text_on, ARTIFACT_HUE)
+}
+
 /// How far round the wheel a pull request on its way in sits from one that
 /// is in (#233): towards magenta, so the queue reads as the purple family
 /// — landing — without being mistaken for the blue of a pull request that

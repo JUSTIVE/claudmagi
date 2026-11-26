@@ -85,6 +85,9 @@ pub struct Pr {
     /// It is in the repository's merge queue: going in by itself, with
     /// nothing left for anybody to do (#231).
     pub queued: bool,
+    /// Auto-merge is on (`gh`'s `autoMergeRequest`): it goes in on its own
+    /// the moment it is allowed to, so it is not waiting on anybody (#239).
+    pub auto: bool,
     /// Checks that concluded green, and ones that concluded red. Cancelled and
     /// skipped runs count as neither — a cancelled job is not a failure.
     pub passed: u32,
@@ -202,6 +205,7 @@ impl Pr {
             asked: true,
             stacked: false,
             queued: look == Look::Merging,
+            auto: false,
             passed,
             failed,
             pending: 0,
@@ -384,7 +388,7 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
             "-R",
             &id.repo,
             "--json",
-            "number,title,state,isDraft,reviewDecision,reviewRequests,baseRefName,statusCheckRollup",
+            "number,title,state,isDraft,reviewDecision,reviewRequests,baseRefName,autoMergeRequest,statusCheckRollup",
         ])
         .output()
         .ok()?;
@@ -528,6 +532,8 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
     }
     let approved = v.get("reviewDecision").and_then(|r| r.as_str()) == Some("APPROVED");
     let asked = v.get("reviewRequests").and_then(|r| r.as_array()).is_some_and(|who| !who.is_empty());
+    // `autoMergeRequest` is the request itself, or null where nobody set one.
+    let auto = v.get("autoMergeRequest").is_some_and(|a| !a.is_null());
     Pr {
         id: id.clone(),
         title: v.get("title").and_then(|t| t.as_str()).unwrap_or_default().into(),
@@ -536,6 +542,7 @@ fn parse_pr(id: &PrRef, v: &serde_json::Value) -> Pr {
         asked,
         stacked: false,
         queued: false,
+        auto,
         passed,
         failed,
         pending,
@@ -890,7 +897,7 @@ mod tests {
         // checks running are the queue's own and it takes the pull request
         // out itself if they fail. Landed still beats everything.
         let id = PrRef { repo: "o/r".into(), number: 7 };
-        let base = Pr { id, title: String::new(), state: State::Open, approved: true, asked: true, stacked: false, queued: true, passed: 2, failed: 0, pending: 1 };
+        let base = Pr { id, title: String::new(), state: State::Open, approved: true, asked: true, stacked: false, queued: true, auto: false, passed: 2, failed: 0, pending: 1 };
         assert_eq!(base.look(), Look::Merging);
         assert_eq!(Pr { failed: 1, ..base.clone() }.look(), Look::Merging);
         assert_eq!(Pr { state: State::Merged, ..base.clone() }.look(), Look::Merged);
@@ -924,7 +931,7 @@ mod tests {
     fn state_and_checks_decide_the_look() {
         let id = PrRef { repo: "o/r".into(), number: 1 };
         let base =
-            Pr { id, title: String::new(), state: State::Open, approved: false, asked: true, stacked: false, queued: false, passed: 1, failed: 0, pending: 0 };
+            Pr { id, title: String::new(), state: State::Open, approved: false, asked: true, stacked: false, queued: false, auto: false, passed: 1, failed: 0, pending: 0 };
         assert!(!base.running());
         assert!(Pr { pending: 1, ..base.clone() }.running());
         assert!(!Pr { pending: 1, state: State::Merged, ..base.clone() }.running(), "a landed PR is never busy");
