@@ -160,7 +160,7 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
             for &i in &members {
                 tiles.push(Kind::Session(i));
                 let live = model.chips[i].subs.iter().filter(|s| !s.anim.gone).count();
-                tiles.extend((0..live.min(4)).map(|k| Kind::Agent(i, k)));
+                tiles.extend((0..live.min(MAX_AGENTS)).map(|k| Kind::Agent(i, k)));
             }
             let mut shown: Vec<String> = Vec::new();
             let mut once = |key: String| {
@@ -194,6 +194,11 @@ pub fn keyed_groups(model: &BoardModel) -> Vec<(String, String, Vec<Kind>)> {
         })
         .collect()
 }
+
+/// How many subagent tiles a session shows in its group (#253): past this
+/// the last one stands for the rest as `+N`. Four small tiles fill one
+/// medium tile's room, so eight are two of them.
+pub const MAX_AGENTS: usize = 8;
 
 /// How many small tiles wide every group is: narrow — one medium tile, so
 /// groups of one or two things stand close — unless some group holds more
@@ -643,12 +648,12 @@ fn shows_in(model: &BoardModel, inks: Inks, key: &TileKey) -> Option<Shows> {
             let agents: Vec<_> = chip.subs.iter().filter(|x| !x.anim.gone).collect();
             let n = agents.len();
             let agent = agents.get(*k)?;
-            let over = *k == 3 && n > 4;
+            let over = *k == MAX_AGENTS - 1 && n > MAX_AGENTS;
             let base = if inks.pal.screened { inks.pal.ink } else { inks.pal.chip };
             // A finished one is the colour given back to the board.
             let fill = if over || agent.info.running { base } else { theme::lerp(inks.pal.bg, base, 0.45) };
             let ink = if inks.pal.screened { inks.pal.bg } else { ink::legible(WHITE, fill, inks.pal) };
-            let text = if over { format!("+{}", n - 3) } else { agent.info.label().to_lowercase() };
+            let text = if over { format!("+{}", n - (MAX_AGENTS - 1)) } else { agent.info.label().to_lowercase() };
             Shows { agent: Some((text, over)), ..plain(fill, ink, Face::default(), None) }
         }
         TileKey::Issue(k) => {
@@ -1380,11 +1385,11 @@ mod tests {
     }
 
     #[test]
-    fn subagents_follow_their_session_and_the_fourth_counts_the_rest() {
+    fn subagents_follow_their_session_and_the_eighth_counts_the_rest() {
         let mut model = work();
         let info = model.chips[2].info.clone();
         let mut list: Vec<SessionInfo> = model.chips.iter().map(|c| c.info.clone()).collect();
-        for k in 0..6 {
+        for k in 0..10 {
             list[2].subagents.push(crate::model::SubagentInfo::synthetic(k, "AGENT", "", true));
         }
         model.apply(list, Instant::now());
@@ -1393,8 +1398,8 @@ mod tests {
         let loose = &groups.iter().find(|(_, k)| k.contains(&Kind::Session(2))).unwrap().1;
         assert_eq!(
             loose,
-            &vec![Kind::Session(2), Kind::Agent(2, 0), Kind::Agent(2, 1), Kind::Agent(2, 2), Kind::Agent(2, 3)],
-            "{}: four small tiles after the session, never more",
+            &std::iter::once(Kind::Session(2)).chain((0..MAX_AGENTS).map(|k| Kind::Agent(2, k))).collect::<Vec<_>>(),
+            "{}: eight small tiles after the session, never more",
             info.label()
         );
     }
