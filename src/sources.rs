@@ -727,7 +727,16 @@ pub const CHURN_INTERVAL: Duration = Duration::from_millis(1400);
 /// churn is how the board's animations get exercised, and what wants
 /// watching decides the pace: a lane sliding into place wants it slow, a
 /// crowd of chips arriving wants it fast.
-pub const CHURN_RATES: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+pub const CHURN_RATES: [f32; 6] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
+/// How many churns one tick may make up at once (#249).
+///
+/// The sandbox is churned where the board is laid down — once a second —
+/// and the fast rates ask for more than that: at 8× one is due every 175ms.
+/// A tick that only ever made one would make 2×, 4× and 8× the same button
+/// with three different names, so a tick makes up the ones that came due.
+/// The ceiling is here so a board that was asleep, or a machine that was,
+/// does not come back to a hundred of them at once.
+const CHURN_CATCH_UP: usize = 8;
 
 struct FakeState {
     sessions: Vec<SessionInfo>,
@@ -1066,73 +1075,88 @@ impl FakeSource {
     /// random thing happens:
     /// a subagent is spawned, finished or removed, a session is added or
     /// removed, or a session changes phase. Returns true if something changed.
-    pub fn churn(&self, now: Instant) -> bool {
+    /// Moves the sandbox on, as many steps as have come due, and says how
+    /// many it made (#106, #249).
+    pub fn churn(&self, now: Instant) -> usize {
         let mut st = self.lock();
         if !st.auto {
-            return false;
+            return 0;
         }
         let wait = CHURN_INTERVAL.div_f32(st.rate.max(0.05));
-        if st.last_churn.is_some_and(|t| now.duration_since(t) < wait) {
-            return false;
+        let due = match st.last_churn {
+            // The first tick is one, whatever the pace.
+            None => 1,
+            Some(then) => (now.duration_since(then).as_secs_f32() / wait.as_secs_f32()) as usize,
+        };
+        if due == 0 {
+            return 0;
         }
+        let due = due.min(CHURN_CATCH_UP);
         st.last_churn = Some(now);
-        let roll = st.next_rand() % 100;
-        let n = st.sessions.len();
-        let pick = |st: &mut FakeState| (st.next_rand() % st.sessions.len().max(1) as u64) as usize;
-        match roll {
-            // 30%: spawn a subagent under a session that has room.
-            0..=29 if n > 0 => {
-                let idx = pick(&mut st);
-                if st.sessions[idx].subagents.len() < 3 {
-                    let id = st.sessions[idx].session_id.clone();
-                    st.push_sub(&id, true);
-                } else {
-                    // Full: finish one instead so the chain keeps moving.
-                    if let Some(a) = st.sessions[idx].subagents.iter_mut().find(|a| a.running) {
-                        a.running = false;
-                    }
-                }
-            }
-            // 20%: a running subagent finishes (unplugs).
-            30..=49 if n > 0 => {
-                let idx = pick(&mut st);
+        for _ in 0..due {
+            step(&mut st);
+        }
+        due
+    }
+}
+
+/// One step of the churn: the sandbox does one thing to itself.
+fn step(st: &mut FakeState) {
+    let roll = st.next_rand() % 100;
+    let n = st.sessions.len();
+    let pick = |st: &mut FakeState| (st.next_rand() % st.sessions.len().max(1) as u64) as usize;
+    match roll {
+        // 30%: spawn a subagent under a session that has room.
+        0..=29 if n > 0 => {
+            let idx = pick(st);
+            if st.sessions[idx].subagents.len() < 3 {
+                let id = st.sessions[idx].session_id.clone();
+                st.push_sub(&id, true);
+            } else {
+                // Full: finish one instead so the chain keeps moving.
                 if let Some(a) = st.sessions[idx].subagents.iter_mut().find(|a| a.running) {
                     a.running = false;
-                } else if !st.sessions[idx].subagents.is_empty() {
-                    st.sessions[idx].subagents.remove(0);
                 }
-            }
-            // 15%: a finished subagent disappears (oldest first).
-            50..=64 if n > 0 => {
-                let idx = pick(&mut st);
-                let subs = &mut st.sessions[idx].subagents;
-                if let Some(pos) = subs.iter().position(|a| !a.running) {
-                    subs.remove(pos);
-                } else if !subs.is_empty() {
-                    subs[0].running = false;
-                }
-            }
-            // 8%: a new session arrives.
-            65..=72 if n < 14 => {
-                let phase = Phase::ALL[(st.next_rand() % 3) as usize];
-                st.push_session(phase, None);
-            }
-            // 7%: a session goes away.
-            73..=79 if n > 2 => {
-                let idx = pick(&mut st);
-                st.sessions.remove(idx);
-            }
-            // Rest: a session changes phase.
-            _ if n > 0 => {
-                let idx = pick(&mut st);
-                let next = st.sessions[idx].phase().next();
-                st.sessions[idx].set_phase(next);
-            }
-            _ => {
-                st.push_session(Phase::Working, None);
             }
         }
-        true
+        // 20%: a running subagent finishes (unplugs).
+        30..=49 if n > 0 => {
+            let idx = pick(st);
+            if let Some(a) = st.sessions[idx].subagents.iter_mut().find(|a| a.running) {
+                a.running = false;
+            } else if !st.sessions[idx].subagents.is_empty() {
+                st.sessions[idx].subagents.remove(0);
+            }
+        }
+        // 15%: a finished subagent disappears (oldest first).
+        50..=64 if n > 0 => {
+            let idx = pick(st);
+            let subs = &mut st.sessions[idx].subagents;
+            if let Some(pos) = subs.iter().position(|a| !a.running) {
+                subs.remove(pos);
+            } else if !subs.is_empty() {
+                subs[0].running = false;
+            }
+        }
+        // 8%: a new session arrives.
+        65..=72 if n < 14 => {
+            let phase = Phase::ALL[(st.next_rand() % 3) as usize];
+            st.push_session(phase, None);
+        }
+        // 7%: a session goes away.
+        73..=79 if n > 2 => {
+            let idx = pick(st);
+            st.sessions.remove(idx);
+        }
+        // Rest: a session changes phase.
+        _ if n > 0 => {
+            let idx = pick(st);
+            let next = st.sessions[idx].phase().next();
+            st.sessions[idx].set_phase(next);
+        }
+        _ => {
+            st.push_session(Phase::Working, None);
+        }
     }
 }
 
@@ -1252,18 +1276,18 @@ mod tests {
         src.set_auto(true);
         let tick = Duration::from_millis(1);
         let mut last = Instant::now();
-        assert!(src.churn(last));
+        assert_eq!(src.churn(last), 1);
 
         src.set_rate(4.0);
         let quick = CHURN_INTERVAL.div_f32(4.0);
-        assert!(!src.churn(last + quick / 2), "not yet, even at four times");
-        assert!(src.churn(last + quick + tick), "a quarter of the wait is enough");
+        assert_eq!(src.churn(last + quick / 2), 0, "not yet, even at four times");
+        assert_eq!(src.churn(last + quick + tick), 1, "a quarter of the wait is enough");
         last += quick + tick;
 
         src.set_rate(0.25);
         let slow = CHURN_INTERVAL.mul_f32(4.0);
-        assert!(!src.churn(last + CHURN_INTERVAL + tick), "the slow dial waits four times as long");
-        assert!(src.churn(last + slow + tick));
+        assert_eq!(src.churn(last + CHURN_INTERVAL + tick), 0, "the slow dial waits four times as long");
+        assert_eq!(src.churn(last + slow + tick), 1);
         assert_eq!(src.rate(), 0.25, "and says what it is set to");
     }
 
@@ -1317,12 +1341,38 @@ mod tests {
         let src = FakeSource::new();
         src.fill(3);
         let t0 = Instant::now();
-        assert!(!src.churn(t0));
+        assert_eq!(src.churn(t0), 0);
         src.set_auto(true);
-        assert!(src.churn(t0));
-        assert!(!src.churn(t0 + Duration::from_millis(100)));
-        assert!(src.churn(t0 + CHURN_INTERVAL + Duration::from_millis(1)));
+        assert_eq!(src.churn(t0), 1);
+        assert_eq!(src.churn(t0 + Duration::from_millis(100)), 0);
+        assert_eq!(src.churn(t0 + CHURN_INTERVAL + Duration::from_millis(1)), 1);
         assert!(src.snapshot().iter().all(|s| s.synthetic));
+    }
+
+    /// The pace can ask for more than the tick can give (#249). The sandbox
+    /// is churned where the board is laid down — once a second — and at 8×
+    /// a churn is due every 175ms, so a tick makes up the ones that came
+    /// due; otherwise 2×, 4× and 8× are one button with three names. The
+    /// catching up has a ceiling, so a board that was asleep comes back to
+    /// a sandbox that moved on, not one that exploded.
+    #[test]
+    fn a_fast_sandbox_makes_up_the_churns_that_came_due() {
+        let src = FakeSource::new();
+        src.fill(3);
+        src.set_auto(true);
+        let t0 = Instant::now();
+        assert_eq!(src.churn(t0), 1, "the first one is one, whatever the pace");
+
+        src.set_rate(8.0);
+        let a_poll = Duration::from_millis(1000);
+        assert_eq!(src.churn(t0 + a_poll), 5, "1000ms of 175ms churns");
+        assert!(CHURN_RATES.contains(&8.0), "and 8x is a rate you can pick");
+
+        src.set_rate(1.0);
+        assert_eq!(src.churn(t0 + a_poll * 2), 0, "a second is not a churn at 1x");
+
+        src.set_rate(8.0);
+        assert_eq!(src.churn(t0 + Duration::from_secs(60)), CHURN_CATCH_UP, "a minute away is not a minute's worth");
     }
 
     #[test]
@@ -1335,7 +1385,7 @@ mod tests {
         let mut prev = src.snapshot();
         for _ in 0..300 {
             t += CHURN_INTERVAL + Duration::from_millis(1);
-            assert!(src.churn(t));
+            assert_eq!(src.churn(t), 1);
             let cur = src.snapshot();
             for s in &cur {
                 if let Some(p) = prev.iter().find(|p| p.session_id == s.session_id) {

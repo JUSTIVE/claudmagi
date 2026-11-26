@@ -335,15 +335,26 @@ fn status_bar(ui: Ui) -> AnyElement {
         dynamic(move || {
             let (pal, ink, fill, fill_ink) = colors();
             let (summary, mode, note) = ui.read(|b| (b.model.summary(), b.mode, b.source_note));
-            let fda = ui.clone();
+            let (fda, out) = (ui.clone(), ui.clone());
             view()
                 .flex_row()
                 .flex_shrink_0()
                 .items_center()
                 .gap(px(8.))
                 .child(label(summary).text_size(px(BODY)).text_color(ink))
+                // The one thing on the board that says none of this is real
+                // is also the way out of it (#248). Pressing it turns the
+                // sandbox off — not a toggle: it is only drawn while the
+                // sandbox is on, and turning it *on* stays in the test
+                // tools, where a slip cannot make the whole board a lie.
                 .children((mode == Mode::Sandbox).then(|| {
-                    view().px(px(6.)).bg(fill).child(label("SANDBOX").text_size(px(BODY)).text_color(fill_ink))
+                    view()
+                        .px(px(6.))
+                        .bg(fill)
+                        .cursor_pointer()
+                        .hover(move |s| s.opacity(0.75))
+                        .on_press(move || out.update(|b| b.set_mode(Mode::Live)))
+                        .child(label("SANDBOX").text_size(px(BODY)).text_color(fill_ink))
                 }))
 
                 // The board looks right when Warp's tabs are unreadable, so
