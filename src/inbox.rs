@@ -178,12 +178,6 @@ impl Reading {
     pub fn is_empty(&self) -> bool {
         self.notes.is_empty()
     }
-
-    /// Linear's desktop app answers to the same path its site does (#60),
-    /// so the app is tried first and the web page is the fallback.
-    pub fn app_url(&self) -> Option<String> {
-        app_url(&self.url)
-    }
 }
 
 /// The `linear://` twin of a `linear.app` link.
@@ -432,7 +426,7 @@ mod tests {
         let got = parse(&text).expect("parses");
         assert_eq!(got.len(), 1);
         assert_eq!(got.url, "https://linear.app/cookieplace/inbox", "the badge leads to the inbox itself");
-        assert_eq!(got.app_url().as_deref(), Some("linear://cookieplace/inbox"));
+        assert_eq!(app_url(&got.url).as_deref(), Some("linear://cookieplace/inbox"));
         let n = &got.notes[0];
         assert_eq!(n.label(), "DEV-6350", "the key is what the chip carries");
         assert_eq!(n.verb(), "comment mention");

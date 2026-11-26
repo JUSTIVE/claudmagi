@@ -97,8 +97,10 @@ fn chrome_fill(b: &Board) -> (Hsla, Hsla) {
 /// all when the inbox is clear — a zero would be one more number to read
 /// past every time the board is glanced at.
 ///
-/// A press opens **Linear**, not the search: the thing being asked for is
-/// over there, and the rows are in ⌘K either way (#241).
+/// A press opens **the list, here** (#243): magi is what shows what is
+/// being asked of you, and Linear is opened to go and do something about
+/// one of them — which is what a press on a row does, straight to that
+/// comment (#241).
 fn inbox_badge(ui: Ui) -> AnyElement {
     dynamic(move || {
         let (inbox, fill, ink) = ui.read(|b| {
@@ -111,8 +113,6 @@ fn inbox_badge(ui: Ui) -> AnyElement {
             .top(px(7.))
             .right(px(14.))
             .children((!inbox.is_empty()).then(|| {
-                let app = inbox.app_url();
-                let web = (!inbox.url.is_empty()).then(|| inbox.url.clone());
                 view()
                     .flex_row()
                     .items_center()
@@ -122,7 +122,7 @@ fn inbox_badge(ui: Ui) -> AnyElement {
                     .bg(fill)
                     .cursor_pointer()
                     .hover(move |s| s.opacity(0.8))
-                    .on_press(move || open.open_link("linear".into(), app.clone(), web.clone(), "Linear inbox"))
+                    .on_press(move || open.update(crate::ui::palette::toggle))
                     .child(
                         svg(ImageSrc::svg_markup(crate::logos::markup(crate::logos::Mark::Linear)))
                             .size(px(11.))
