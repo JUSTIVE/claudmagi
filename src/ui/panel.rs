@@ -112,6 +112,70 @@ pub fn flyout(
     )
 }
 
+/// Where a panel's sheet is, and what moves it (#251).
+///
+/// This was three things — a `mounted` flag, an `is_open` flag and the
+/// animated offset — and the combinations that cannot happen were not
+/// written down anywhere: a sheet that is on its way out and opened again
+/// is `mounted && is_open` with a slide running the wrong way, which reads
+/// exactly like a sheet that is on its way in. One name per state says what
+/// the three booleans only implied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sheet {
+    /// Not in the tree at all.
+    Away,
+    /// Sliding in from the right edge.
+    Coming,
+    /// All the way in.
+    Up,
+    /// Sliding out. Still drawn, and the board behind it is live again.
+    Going,
+}
+
+/// What moves a sheet: the panel's own flag, and the slides finishing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// The panel's flag went up.
+    Opened,
+    /// The panel's flag went down.
+    Closed,
+    /// The slide in finished.
+    Arrived,
+    /// The slide out finished.
+    Left,
+}
+
+impl Sheet {
+    /// The whole table. Total on purpose: every pair has an answer here
+    /// rather than a `_ => unreachable!()` somewhere else.
+    pub fn next(self, moved: Moved) -> Self {
+        match (self, moved) {
+            // Opening always starts the way in, from wherever it was —
+            // including from half way out, which is the case the booleans
+            // could not tell apart.
+            (_, Moved::Opened) => Sheet::Coming,
+            (Sheet::Away, Moved::Closed) => Sheet::Away,
+            (_, Moved::Closed) => Sheet::Going,
+            (Sheet::Coming, Moved::Arrived) => Sheet::Up,
+            (Sheet::Going, Moved::Left) => Sheet::Away,
+            // A slide that finishes for a sheet which has since turned
+            // round says nothing; the slide running now will say it.
+            (here, _) => here,
+        }
+    }
+
+    /// Whether it is in the tree.
+    pub fn drawn(self) -> bool {
+        self != Sheet::Away
+    }
+
+    /// Whether a press outside it puts it away. A sheet on its way out has
+    /// already been put away once, and the board behind it answers again.
+    pub fn catching(self) -> bool {
+        matches!(self, Sheet::Coming | Sheet::Up)
+    }
+}
+
 /// How long the sheet takes to come in and to go, in ms: Metro's own
 /// `showPanel` timings, a long hard deceleration in and a quicker
 /// acceleration out.
@@ -140,27 +204,32 @@ fn sheet(
     let initially = untracked(|| open.get());
     // How far off the right edge it sits: 0 is in place.
     let x = animated_value(if initially { 0. } else { w });
-    let mounted = signal(initially);
-    let is_open = signal(initially);
+    let sheet = signal(if initially { Sheet::Up } else { Sheet::Away });
+    let moved = move |m: Moved| sheet.set(sheet.get_untracked().next(m));
     effect(move || {
         let up = open.get();
         untracked(|| {
-            is_open.set(up);
+            moved(if up { Moved::Opened } else { Moved::Closed });
+            // Without motion there is no slide to wait for, so the sheet is
+            // wherever it was going the moment it was told to go there.
+            if reduced_motion() {
+                x.set(if up { 0. } else { w });
+                moved(if up { Moved::Arrived } else { Moved::Left });
+                return;
+            }
             if up {
-                mounted.set(true);
-                if reduced_motion() {
-                    x.set(0.);
-                } else {
-                    x.set(w);
-                    let _ = x.timing(0., IN_MS, EXP6_OUT);
-                }
-            } else if reduced_motion() {
-                mounted.set(false);
+                x.set(w);
+                let there = x.timing(0., IN_MS, EXP6_OUT);
+                spawn(async move {
+                    if there.await {
+                        moved(Moved::Arrived);
+                    }
+                });
             } else {
                 let gone = x.timing(w, OUT_MS, EXP6_IN);
                 spawn(async move {
-                    if gone.await && !is_open.get_untracked() {
-                        mounted.set(false);
+                    if gone.await {
+                        moved(Moved::Left);
                     }
                 });
             }
@@ -197,7 +266,7 @@ fn sheet(
         view()
             .absolute()
             .inset_0()
-            .child(when(move || is_open.get(), {
+            .child(when(move || sheet.get().catching(), {
                 let out = out.clone();
                 move || {
                     let out = out.clone();
@@ -223,7 +292,12 @@ fn sheet(
             )
             .into_element()
     };
-    view().absolute().inset_0().pointer_events(PointerEvents::BoxNone).child(when(move || mounted.get(), panel)).into_element()
+    view()
+        .absolute()
+        .inset_0()
+        .pointer_events(PointerEvents::BoxNone)
+        .child(when(move || sheet.get().drawn(), panel))
+        .into_element()
 }
 
 /// A flyout's own layer over the window: the flyout places itself against
@@ -276,5 +350,39 @@ mod tests {
         assert!(inbox[Which::Inbox.slot()] && !inbox[Which::Settings.slot()], "⌘A is one of them too (#244)");
         assert_eq!(after_toggle(inbox, Which::Inbox), none, "and closes on a second press");
         assert_eq!(Which::ALL.map(|w| w.slot()), [0, 1, 2, 3, 4], "every panel has a place of its own in the sweep");
+    }
+
+    /// The sheet's table is total, and the state the three booleans could
+    /// not tell apart has a name now (#251): a sheet half way out that is
+    /// opened again is **coming in**, where before it was `mounted` and
+    /// `is_open` with a slide running the wrong way — the same two flags a
+    /// sheet half way *in* has.
+    #[test]
+    fn a_sheet_that_turns_round_knows_which_way_it_is_going() {
+        use Moved::*;
+        use Sheet::*;
+        const EVERY: [Sheet; 4] = [Away, Coming, Up, Going];
+
+        assert_eq!(Away.next(Opened), Coming);
+        assert_eq!(Coming.next(Arrived), Up);
+        assert_eq!(Up.next(Closed), Going);
+        assert_eq!(Going.next(Left), Away);
+        assert_eq!(Going.next(Opened), Coming, "opened on its way out, it turns round");
+        assert_eq!(Coming.next(Closed), Going, "and closed on its way in");
+        assert_eq!(Coming.next(Left), Coming, "a slide that ended for the way it used to be going");
+        assert_eq!(Going.next(Arrived), Going);
+        assert_eq!(Away.next(Closed), Away, "closing what is not there is nothing");
+
+        // The two things the rest of the panel asks it, from anywhere.
+        for here in EVERY {
+            assert!(here.next(Opened).catching(), "{here:?}: opening takes the presses");
+            assert_ne!(here.next(Closed), Up, "{here:?}: closing never leaves it up");
+            assert_eq!(here.drawn(), here != Away, "{here:?}: away is the only one not drawn");
+            for m in [Opened, Closed, Arrived, Left] {
+                let there = here.next(m);
+                assert!(EVERY.contains(&there), "{here:?} + {m:?} leaves the table");
+            }
+        }
+        assert!(!Going.catching(), "on its way out the board behind it answers again");
     }
 }

@@ -24,8 +24,56 @@ pub struct Warp {
     tabs: Mutex<Option<WarpTabs>>,
     /// Set once the first snapshot has waited on Warp; it never waits again.
     tabs_tried: std::sync::atomic::AtomicBool,
-    /// When each pane was first missing from a good answer (#186).
-    missing: Mutex<HashMap<String, Instant>>,
+    /// Where each pane stands with Warp's own list (#186, #251).
+    missing: Mutex<HashMap<String, Presence>>,
+}
+
+/// Whether a seat is still there, as Warp's list answers for it (#186,
+/// #192, #251).
+///
+/// The rule this holds is that **only Warp condemns a pane**: a wait, and
+/// then two answers saying the same thing. It used to live as a map of
+/// "first missing at" plus the subtraction at the call site, which meant
+/// the three states a seat can be in were never written down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Presence {
+    /// Warp lists it.
+    Listed,
+    /// A good answer did not list it, since this moment.
+    Missing(Instant),
+    /// It has been missing for its whole wait: the board lets it go.
+    Gone,
+}
+
+/// What one reading of Warp's list says about one seat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sighting {
+    /// A good answer lists it.
+    There,
+    /// A good answer does not list it.
+    NotThere,
+    /// There was no good answer — the database is missing, locked or
+    /// refused (#67). This says **nothing** about the seat, and a board
+    /// that drops sessions on a maybe is worse than one that keeps a stale
+    /// tile.
+    Unknown,
+}
+
+impl Presence {
+    /// The whole table. `wait` is this seat's own grace (`wait_for`).
+    pub fn next(self, seen: Sighting, now: Instant, wait: Duration) -> Presence {
+        match (self, seen) {
+            (_, Sighting::There) => Presence::Listed,
+            // Not knowing forgets what was: the clock starts again when
+            // there is something to start it from.
+            (_, Sighting::Unknown) => Presence::Listed,
+            (Presence::Listed, Sighting::NotThere) => Presence::Missing(now),
+            (Presence::Missing(since), Sighting::NotThere) => {
+                if now.duration_since(since) >= wait { Presence::Gone } else { Presence::Missing(since) }
+            }
+            (Presence::Gone, Sighting::NotThere) => Presence::Gone,
+        }
+    }
 }
 
 impl Host for Warp {
@@ -129,24 +177,31 @@ impl Warp {
     /// `gone`, with the clock handed in so it can be tested (#186).
     fn gone_at(&self, seats: &[Seated], now: Instant) -> Vec<String> {
         let answered = self.tabs.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|t| (t.map.clone(), t.good));
-        let Some((map, true)) = answered else {
-            // Nothing was read, so nothing is missing: forget what was.
-            self.missing.lock().unwrap_or_else(|e| e.into_inner()).clear();
-            return Vec::new();
+        // A bad answer is not an empty one: every seat is simply unknown,
+        // and the table is what forgets (`Unknown` → `Listed`).
+        let listing = match answered {
+            Some((map, true)) => Some(map),
+            _ => None,
         };
-        let mut missing = self.missing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut standing = self.missing.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = Vec::new();
         for seat in seats {
-            if map.contains_key(&seat.handle.replace('-', "")) {
-                missing.remove(seat.handle);
-                continue;
-            }
-            let since = *missing.entry(seat.handle.to_string()).or_insert(now);
-            if now.duration_since(since) >= wait_for(seat.running_for) {
+            let seen = match &listing {
+                None => Sighting::Unknown,
+                Some(map) if map.contains_key(&seat.handle.replace('-', "")) => Sighting::There,
+                Some(_) => Sighting::NotThere,
+            };
+            let here = standing.get(seat.handle).copied().unwrap_or(Presence::Listed);
+            let there = here.next(seen, now, wait_for(seat.running_for));
+            if there == Presence::Gone {
                 out.push(seat.handle.to_string());
             }
+            match there {
+                Presence::Listed => standing.remove(seat.handle),
+                other => standing.insert(seat.handle.to_string(), other),
+            };
         }
-        missing.retain(|h, _| seats.iter().any(|s| s.handle == h));
+        standing.retain(|h, _| seats.iter().any(|s| s.handle == h));
         out
     }
 
@@ -460,6 +515,35 @@ mod tests {
     /// A pane Warp has stopped listing is a tab that was closed, and the
     /// session in it may well still be running (#186). Two things keep that
     /// from being read too eagerly: nothing is dropped unless Warp actually
+    /// Every reading moves a pane one step, and a reading that is not an
+    /// answer moves it back (#251). The rule the table holds is that only
+    /// Warp condemns a pane: a wait, and then the same thing said twice.
+    #[test]
+    fn a_bad_reading_is_not_an_empty_one() {
+        let t0 = Instant::now();
+        let wait = Duration::from_secs(60);
+        let step = |p: Presence, seen: Sighting, at: Duration| p.next(seen, t0 + at, wait);
+
+        let missing = step(Presence::Listed, Sighting::NotThere, Duration::ZERO);
+        assert_eq!(missing, Presence::Missing(t0), "the clock starts the first time it is not listed");
+        assert_eq!(step(missing, Sighting::NotThere, wait / 2), missing, "half a wait is not a wait");
+        assert_eq!(step(missing, Sighting::NotThere, wait), Presence::Gone, "and then it is let go");
+        assert_eq!(step(Presence::Gone, Sighting::NotThere, wait * 9), Presence::Gone, "gone stays gone");
+
+        // The two ways back.
+        assert_eq!(step(missing, Sighting::There, wait * 9), Presence::Listed, "listed again is listed");
+        assert_eq!(step(Presence::Gone, Sighting::There, wait * 9), Presence::Listed, "even after it was let go");
+        assert_eq!(
+            step(missing, Sighting::Unknown, wait * 9),
+            Presence::Listed,
+            "a database that is missing, locked or refused says nothing about the pane (#67)"
+        );
+        for here in [Presence::Listed, Presence::Missing(t0), Presence::Gone] {
+            assert_ne!(step(here, Sighting::Unknown, wait * 9), Presence::Gone, "{here:?}: not knowing never condemns");
+            assert_ne!(step(here, Sighting::There, wait * 9), Presence::Gone, "{here:?}: nor does being listed");
+        }
+    }
+
     /// answered, and a pane has to stay missing for a minute first.
     #[test]
     fn a_pane_warp_has_stopped_listing_is_gone_after_a_minute() {

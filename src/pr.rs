@@ -49,6 +49,36 @@ const UNANSWERED: Duration = Duration::from_secs(60);
 /// How long a worker idles when everything is fresh.
 const IDLE: Duration = Duration::from_millis(500);
 
+/// Where one pull request stands with the worker pool (#64, #247, #251).
+///
+/// It was three containers and a subtraction at the call site — `wanted`,
+/// `seen`, `inflight` — and the four states a pull request can be in had no
+/// names. The pool's whole job is to move each of them round this ring, so
+/// the ring is written down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// On the board and never asked about: the board has nothing for it.
+    Unasked,
+    /// A worker is asking `gh` right now.
+    Asking,
+    /// `gh` answered and the answer is still good for its kind.
+    Fresh,
+    /// The answer has aged past what its own state allows.
+    Stale,
+}
+
+/// Where a pull request stands, from what the pool holds about it.
+fn ask(answer: Option<&(Option<Pr>, Instant)>, asking: bool, now: Instant) -> Ask {
+    match (answer, asking) {
+        // A worker has it: nobody else may take it, whatever its age.
+        (_, true) => Ask::Asking,
+        (None, false) => Ask::Unasked,
+        (Some((pr, at)), false) => {
+            if now.duration_since(*at) >= again_after(pr.as_ref()) { Ask::Stale } else { Ask::Fresh }
+        }
+    }
+}
+
 /// When the worker may ask about this pull request again, given the last
 /// answer. `None` is a pull request `gh` had nothing to say about.
 fn again_after(pr: Option<&Pr>) -> Duration {
@@ -641,19 +671,13 @@ impl Shared {
         let seen = self.seen.lock().ok()?;
         let mut inflight = self.inflight.lock().ok()?;
         let now = Instant::now();
-        let free = |id: &&PrRef| !inflight.contains(*id);
+        let standing = |id: &PrRef| ask(seen.get(id), inflight.contains(id), now);
+        // Never asked comes first: a pull request the board has nothing at
+        // all for is one the board is quietly lying about (#112).
         let id = wanted
             .iter()
-            .filter(free)
-            .find(|id| !seen.contains_key(*id))
-            .or_else(|| {
-                wanted
-                    .iter()
-                    .filter(free)
-                    .find(|id| {
-                        seen.get(*id).is_some_and(|(pr, at)| now.duration_since(*at) >= again_after(pr.as_ref()))
-                    })
-            })
+            .find(|id| standing(id) == Ask::Unasked)
+            .or_else(|| wanted.iter().find(|id| standing(id) == Ask::Stale))
             .cloned()?;
         inflight.insert(id.clone());
         Some(id)
@@ -1119,6 +1143,24 @@ mod tests {
         }
         let landed = Pr { state: State::Merged, approved: false, ..base };
         assert!(landed.signed_off(), "merging is a sign-off, whatever the review field says");
+    }
+
+    /// The four states a pull request can be in with the pool, and the one
+    /// rule that outranks the clock (#251): a worker has it, so nobody else
+    /// may take it, however old the answer is.
+    #[test]
+    fn a_pull_request_a_worker_is_holding_is_nobody_elses_to_take() {
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(3600)).expect("a clock with a past");
+        let answer: (Option<Pr>, Instant) = (None, old);
+        let young: (Option<Pr>, Instant) = (None, now);
+
+        assert_eq!(ask(None, false, now), Ask::Unasked, "nothing at all is the loudest state");
+        assert_eq!(ask(Some(&young), false, now), Ask::Fresh);
+        assert_eq!(ask(Some(&answer), false, now), Ask::Stale);
+        for held in [None, Some(&young), Some(&answer)] {
+            assert_eq!(ask(held, true, now), Ask::Asking, "a worker has it, so it is not free");
+        }
     }
 
     /// What `gh` last said decides when it is asked again (#247). Under one

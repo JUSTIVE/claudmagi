@@ -27,6 +27,27 @@ pub const STATUS_H: f32 = 30.0;
 /// height of the macOS titlebar the traffic lights sit in (#171, #185).
 pub const GRAB_H: f32 = 32.0;
 
+/// What becomes of a poll that has just come back (#197, #251).
+///
+/// A poll reads the sessions on a background thread and comes back some
+/// time later. In between, a test-tools button may have changed the board
+/// **in hand** — and the snapshot in flight knows nothing about that, so
+/// laying it down would undo what was just done. The board counts its
+/// hand-edits, a poll carries the count it set out with, and this says
+/// which of the two a poll is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Landing {
+    /// Nothing happened in hand while it was away.
+    Lands,
+    /// The board moved on; the snapshot is of a board that no longer is.
+    Dropped,
+}
+
+/// Which of the two a poll is: the only rule, in one place.
+pub fn landing(board: u64, poll: u64) -> Landing {
+    if board == poll { Landing::Lands } else { Landing::Dropped }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     /// Real Claude Code sessions from `~/.claude/sessions`.
@@ -188,7 +209,7 @@ impl Board {
     /// since the poll set out (`generation`): then it is the older snapshot,
     /// and laying it down would undo what was just done (#197).
     pub fn take_polled(&mut self, generation: u64, list: Vec<crate::model::SessionInfo>, note: Option<&'static str>) -> bool {
-        if self.generation != generation {
+        if landing(self.generation, generation) == Landing::Dropped {
             return false;
         }
         self.take(list, note);
@@ -359,6 +380,17 @@ impl<T> DetachQuietly for Spawned<T> {
 mod tests {
     use super::*;
     use crate::model::{Phase, SessionInfo};
+
+    /// Which of the two a poll is, in one place (#197, #251). Only the
+    /// count the poll set out with decides it: not how old it is, not what
+    /// it read, not whether the board looks different now.
+    #[test]
+    fn a_poll_lands_only_if_nothing_happened_in_hand_while_it_was_away() {
+        assert_eq!(landing(0, 0), Landing::Lands);
+        assert_eq!(landing(1, 1), Landing::Lands);
+        assert_eq!(landing(1, 0), Landing::Dropped, "the board moved on while it was away");
+        assert_eq!(landing(0, 1), Landing::Dropped, "and a count from the future is no better");
+    }
 
     /// A test-tools button reads the sandbox in hand and bumps the
     /// generation; a poll that set out before then holds the older snapshot
