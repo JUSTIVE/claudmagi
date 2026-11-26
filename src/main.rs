@@ -2,6 +2,7 @@ mod artifact;
 mod cloud;
 mod font;
 mod host;
+mod inbox;
 mod logos;
 mod made;
 mod mac;
@@ -69,6 +70,25 @@ fn main() -> ExitCode {
                 if prs.is_empty() { "-".to_string() } else { prs.join("  ·  ") },
                 if pages.is_empty() { "-".to_string() } else { pages.join("  ·  ") }
             );
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // The inbox, from the terminal, for the same reason `--prs` exists
+    // (#241): the one way to see what the key is actually answering.
+    if args.iter().any(|a| a == "--inbox") {
+        match inbox::fetch() {
+            Ok(notes) if notes.is_empty() => println!("inbox clear"),
+            Ok(notes) => {
+                for n in &notes {
+                    println!("{:<12} {:<34} {}", n.label(), n.kind, n.detail());
+                }
+                println!("{} unread", notes.len());
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
         }
         return ExitCode::SUCCESS;
     }

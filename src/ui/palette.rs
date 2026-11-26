@@ -171,6 +171,11 @@ pub enum Style {
     /// A page the session published (#137), in the teal that is its own on
     /// the board (#238).
     Artifact,
+    /// A Linear notification still asking (#241). It wears the colour the
+    /// board already keeps for "a person is wanted" rather than inventing
+    /// one: that is exactly what it says, and the Linear mark inside the
+    /// chip says whose asking it is (#79).
+    Inbox,
 }
 
 /// A node's body: fill, outline, and the label that goes on it. `None` where
@@ -217,6 +222,7 @@ impl Style {
             Style::Ticket(None | Some(ticket::Status::Backlog)) => {
                 body(Some(ink(0.10)), Some(ink(0.45)), ink(0.6))
             }
+            Style::Inbox => body(Some(at(theme.chip_needs)), None, at(theme.text_needs)),
             Style::Artifact => {
                 let fill = crate::ink::floor_color(crate::ink::artifact_color(theme), theme);
                 let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
@@ -230,12 +236,15 @@ impl Style {
 // Entries
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Session,
     Ticket,
     Pr,
     Artifact,
+    /// A Linear notification (#241): not a node on the board at all, which
+    /// is the point of it being here.
+    Inbox,
 }
 
 impl Kind {
@@ -246,6 +255,7 @@ impl Kind {
             Kind::Ticket => Mark::Linear,
             Kind::Pr => Mark::GitHub,
             Kind::Artifact => Mark::Artifact,
+            Kind::Inbox => Mark::Linear,
         }
     }
 }
@@ -379,6 +389,33 @@ pub fn refresh(b: &mut Board) {
 fn entries(b: &Board) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     let mut seen: Vec<(Kind, String)> = Vec::new();
+    // What Linear is still asking of you leads the list (#241). It is the
+    // one thing in the panel that is not already drawn on the board behind
+    // it, and the board fills twenty rows on its own: put the inbox under
+    // the lanes and an empty query would never reach it.
+    for (i, note) in b.inbox.iter().enumerate() {
+        let label = note.label();
+        let web = (!note.url.is_empty()).then(|| note.url.clone());
+        out.push(Entry {
+            kind: Kind::Inbox,
+            style: Style::Inbox,
+            // A lane of its own. Most of these are about work no session
+            // here is doing, and one that does name a lane should not drag
+            // that lane's rows along behind it (#85) — the inbox is a list
+            // of what is being asked, not another way into the board.
+            owner: usize::MAX - i,
+            related: false,
+            detail: note.detail(),
+            action: Action::Open {
+                label: label.clone(),
+                first: web.as_deref().and_then(app_url),
+                then: web,
+                what: "Linear notification",
+            },
+            fields: vec![label.clone(), note.title.clone(), note.body.clone(), note.actor.clone()],
+            label,
+        });
+    }
     for (i, chip) in b.model.chips.iter().enumerate() {
         let info = &chip.info;
         let label = info.label();
@@ -467,6 +504,12 @@ fn entries(b: &Board) -> Vec<Entry> {
         }
     }
     out
+}
+
+/// Linear's desktop app answers to the same path its site does (#60), so
+/// the app is tried first and the web page is what it falls back to.
+fn app_url(web: &str) -> Option<String> {
+    web.strip_prefix("https://linear.app/").map(|rest| format!("linear://{rest}"))
 }
 
 /// Keys while the search is open. Everything lands here, so `t` types a `t`
@@ -804,6 +847,8 @@ mod tests {
                 pr_style(pr::Look::Failing, false),
                 Style::Ticket(Some(ticket::Status::Started)),
                 Style::Ticket(Some(ticket::Status::Done)),
+                Style::Artifact,
+                Style::Inbox,
             ];
             for s in styles {
                 let body = s.body(t);
@@ -812,6 +857,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The inbox leads the list and stands alone (#241). The board fills
+    /// the panel by itself, so rows put in behind the lanes would never be
+    /// reached on an empty query; and a notification is not another way
+    /// into a lane, so it brings none along behind it (#85).
+    #[test]
+    fn what_linear_is_asking_leads_the_list_and_stands_alone() {
+        use crate::model::{Phase, SessionInfo};
+        let mut b = crate::ui::state::Board::new();
+        let many: Vec<SessionInfo> =
+            (0..MAX_ROWS as u32 + 4).map(|i| SessionInfo::synthetic(i, &format!("S-{i}"), Phase::Working)).collect();
+        b.take(many, None);
+        b.inbox = vec![crate::inbox::Note {
+            kind: "issueCommentMention".into(),
+            actor: "Z".into(),
+            key: Some("PJM-3292".into()),
+            title: "키보드가 덮은 입력칸을 키보드 위로 스크롤합니다".into(),
+            url: "https://linear.app/cookieplace/issue/PJM-3292/yo#comment-1".into(),
+            ..Default::default()
+        }];
+
+        let rows = rank(entries(&b), "");
+        assert_eq!(rows.len(), MAX_ROWS, "the board alone is enough to fill the list");
+        assert_eq!(rows[0].kind, Kind::Inbox, "what is being asked of you leads");
+        assert_eq!(rows[0].label, "PJM-3292", "the key is what the chip carries");
+        assert!(rows[1..].iter().all(|r| r.owner != rows[0].owner), "it drags no lane behind it");
+        assert!(rows[1..].iter().all(|r| !r.related), "and nothing rides in as its tagalong");
     }
 
     /// The panel runs the window's full height, so the rows it shows have to

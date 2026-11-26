@@ -70,6 +70,10 @@ pub struct Board {
     /// Claude plan usage for the status bar (#48).
     pub usage: Option<(Usage, Instant)>,
     pub usage_error: Option<usage::UsageError>,
+    /// What Linear is asking of you, unread only (#241). Never a tile: the
+    /// ⌘K list and a count in the status bar are the whole of it.
+    pub inbox: Vec<crate::inbox::Note>,
+    pub inbox_error: Option<crate::inbox::Error>,
     /// What the live source wants said in the status bar (#67).
     pub source_note: Option<&'static str>,
     /// The window in points.
@@ -101,6 +105,8 @@ impl Board {
             last_tick: Instant::now(),
             usage: None,
             usage_error: None,
+            inbox: Vec::new(),
+            inbox_error: None,
             source_note: None,
             window: (zoom::DESIGN_W, zoom::DESIGN_H),
             palette: PaletteState::default(),

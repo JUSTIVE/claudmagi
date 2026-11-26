@@ -15,6 +15,7 @@ use crate::theme;
 use crate::ui::metro::BODY;
 use crate::ui::panel::{self, Which};
 use crate::ui::state::{Board, Mode, STATUS_H, Ui};
+use crate::inbox;
 use crate::usage;
 
 /// Session registry poll interval.
@@ -33,6 +34,7 @@ pub fn App() -> impl IntoElement {
     open_window();
     poll_sessions(ui.clone());
     poll_usage(ui.clone());
+    poll_inbox(ui.clone());
     run_clock(ui.clone());
 
     let keys = ui.clone();
@@ -202,6 +204,36 @@ fn poll_usage(ui: Ui) {
     });
 }
 
+/// What Linear is asking of you (#241): keychain + curl off the engine
+/// thread, once a minute. A missing key is not final the way a missing
+/// Claude login is — the key is usually put in while the board is already
+/// up, and the next poll is sixty seconds away.
+fn poll_inbox(ui: Ui) {
+    spawn(async move {
+        loop {
+            let Ok(result) = background(async move { inbox::fetch() }).await else { break };
+            ui.update(|b| {
+                match result {
+                    Ok(notes) => {
+                        b.inbox = notes;
+                        b.inbox_error = None;
+                    }
+                    // One shaky minute does not empty the inbox (#59). No
+                    // key at all is different: there is nothing to keep.
+                    Err(e) => {
+                        if e == inbox::Error::NoKey {
+                            b.inbox.clear();
+                        }
+                        b.inbox_error = Some(e);
+                    }
+                }
+                crate::ui::palette::refresh(b);
+            });
+            timer(inbox::POLL).await;
+        }
+    });
+}
+
 /// Ages the model between polls.
 fn run_clock(ui: Ui) {
     spawn(async move {
@@ -237,8 +269,10 @@ fn status_bar(ui: Ui) -> AnyElement {
         let (ui, colors) = (ui.clone(), colors.clone());
         dynamic(move || {
             let (pal, ink, fill, fill_ink) = colors();
-            let (summary, mode, note) = ui.read(|b| (b.model.summary(), b.mode, b.source_note));
+            let (summary, mode, note, unread) =
+                ui.read(|b| (b.model.summary(), b.mode, b.source_note, b.inbox.len()));
             let fda = ui.clone();
+            let kay = ui.clone();
             view()
                 .flex_row()
                 .flex_shrink_0()
@@ -247,6 +281,23 @@ fn status_bar(ui: Ui) -> AnyElement {
                 .child(label(summary).text_size(px(BODY)).text_color(ink))
                 .children((mode == Mode::Sandbox).then(|| {
                     view().px(px(6.)).bg(fill).child(label("SANDBOX").text_size(px(BODY)).text_color(fill_ink))
+                }))
+                // What Linear is still asking of you (#241). Nothing when
+                // the inbox is clear: a zero here would be one more number
+                // to read past every time the board is glanced at. A press
+                // opens ⌘K, where the rows themselves are.
+                .children((unread > 0).then(|| {
+                    view()
+                        .px(px(6.))
+                        .bg(fill)
+                        .cursor_pointer()
+                        .hover(move |s| s.opacity(0.75))
+                        .on_press(move || kay.update(crate::ui::palette::toggle))
+                        .child(
+                            label(format!("{unread} LINEAR"))
+                                .text_size(px(BODY))
+                                .text_color(fill_ink),
+                        )
                 }))
                 // The board looks right when Warp's tabs are unreadable, so
                 // the only way to tell is to say it (#67).
