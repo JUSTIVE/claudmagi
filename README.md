@@ -146,15 +146,33 @@ Press `T` (or click `TEST` in the status bar) to open the test panel. Panels doc
 - **SANDBOX SESSIONS** creates synthetic sessions in any phase, fills eight at
   once, clears them, or turns on *auto churn*: every 1.4 s a subagent is
   spawned, finishes or disappears, a session arrives, leaves or changes phase.
-  **RATE** runs that between a quarter speed and four times, since watching a
+  **RATE** runs that between a quarter speed and eight times, since watching a
   lane slide into place wants one end of it and a crowd arriving wants the
-  other. **GROW** adds a session to a group already on the board, one pane at
+  other. The churn is stepped where the board is laid down — once a second —
+  so the fast rates make up the steps that came due rather than being three
+  names for "once a second". **GROW** adds a session to a group already on the board, one pane at
   a time: the sandbox otherwise starts a new group every third session and a
   tab full of panes never turns up.
 - **SESSIONS** (sandbox only; the live list is `⌘L`) has `W/N/I` phase
   buttons, `+SUB` (spawn a synthetic subagent) and `×`; subagent rows have
   `RUN/DONE` and `×`. Clicking a sandbox name cycles its phase. `Esc` closes
   it.
+
+## Specs
+
+`cargo test` sees one ordering. Three rules are about ordering itself — several
+polls in flight while a hand edits the board, three workers sharing one map, a
+clock that has to pass twice before a pane counts as gone — so those are
+written as TLA+ models and model-checked:
+
+```sh
+tools/spec.sh            # fetches tla2tools.jar into a cache, checks every spec
+```
+
+`spec/README.md` says which Rust function each model mirrors and what to do
+when a new feature lands in one of those places. The specs are not a second
+copy of the code; nothing checks that they still match it but a person
+reading both.
 
 ## Fonts
 
