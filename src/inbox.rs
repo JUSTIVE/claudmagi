@@ -132,29 +132,28 @@ impl Note {
                 break;
             }
         }
-        let mut out = String::new();
-        for c in rest.chars() {
-            if c.is_ascii_uppercase() && !out.is_empty() {
-                out.push(' ');
-            }
-            out.extend(c.to_lowercase());
-        }
-        out
+        spaced(rest)
     }
 
-    /// The row's line: who wants what, then what it is about, then the words
-    /// they used.
-    pub fn detail(&self) -> String {
-        let who = match (self.actor.trim(), self.verb()) {
-            ("", v) => v,
-            (a, v) if v.is_empty() => a.to_string(),
-            (a, v) => format!("{a} {v}"),
-        };
-        [who.as_str(), self.title.trim(), self.body.as_str()]
+    /// Everything but who said it: what they did, what it is about, and the
+    /// words they used. The name is drawn on its own in the panel, in the
+    /// one bit of accent a panel keeps (#245).
+    pub fn said(&self) -> String {
+        [self.verb(), self.title.trim().to_string(), self.body.clone()]
             .into_iter()
             .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
             .join(" · ")
+    }
+
+    /// The whole line, name first: for the ⌘K row and the diagnostics,
+    /// where there is only one colour to say it in.
+    pub fn detail(&self) -> String {
+        match (self.actor.trim(), self.said()) {
+            ("", said) => said,
+            (who, said) if said.is_empty() => who.to_string(),
+            (who, said) => format!("{who} {said}"),
+        }
     }
 }
 
@@ -183,6 +182,19 @@ impl Reading {
 /// The `linear://` twin of a `linear.app` link.
 pub fn app_url(web: &str) -> Option<String> {
     web.strip_prefix("https://linear.app/").map(|rest| format!("linear://{rest}"))
+}
+
+/// A camelCase name as words: split where the case changes, all lower.
+/// Linear's kinds and categories are both written that way.
+pub fn spaced(camel: &str) -> String {
+    let mut out = String::new();
+    for c in camel.chars() {
+        if c.is_ascii_uppercase() && !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
 }
 
 /// The first line of a comment, short enough to live on one row.

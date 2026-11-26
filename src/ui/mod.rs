@@ -3,6 +3,7 @@
 
 pub mod app;
 pub mod devtools;
+pub mod inbox;
 pub mod list;
 pub mod metro;
 pub mod palette;

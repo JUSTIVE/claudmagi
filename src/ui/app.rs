@@ -97,8 +97,8 @@ fn chrome_fill(b: &Board) -> (Hsla, Hsla) {
 /// all when the inbox is clear — a zero would be one more number to read
 /// past every time the board is glanced at.
 ///
-/// A press opens **the list, here** (#243): magi is what shows what is
-/// being asked of you, and Linear is opened to go and do something about
+/// A press opens **the inbox panel** (#243, #244): magi is what shows what
+/// is being asked of you, and Linear is opened to go and do something about
 /// one of them — which is what a press on a row does, straight to that
 /// comment (#241).
 fn inbox_badge(ui: Ui) -> AnyElement {
@@ -122,7 +122,7 @@ fn inbox_badge(ui: Ui) -> AnyElement {
                     .bg(fill)
                     .cursor_pointer()
                     .hover(move |s| s.opacity(0.8))
-                    .on_press(move || open.update(crate::ui::palette::toggle))
+                    .on_press(move || open.update(|b| panel::toggle(b, Which::Inbox)))
                     .child(
                         svg(ImageSrc::svg_markup(crate::logos::markup(crate::logos::Mark::Linear)))
                             .size(px(11.))
@@ -189,6 +189,7 @@ fn on_key(ui: &Ui, ev: &KeyEvent) {
             // Esc puts away whatever is up, the topmost first, and quits
             // when nothing is.
             Command::Back if b.tile_menu.is_some() => b.tile_menu = None,
+            Command::Back if b.inbox_panel.open => b.inbox_panel.open = false,
             Command::Back if b.list_panel.open => b.list_panel.open = false,
             Command::Back if b.settings_panel.open => b.settings_panel.open = false,
             Command::Back if b.dev.open => b.dev.open = false,
@@ -214,6 +215,8 @@ enum Command {
 fn command(key: &str, cmd: bool) -> Option<Command> {
     Some(match key {
         "l" if cmd => Command::Panel(Which::List),
+        // ⌘A: what Linear is asking of you (#244).
+        "a" if cmd => Command::Panel(Which::Inbox),
         // ⌘T, or T alone as it always was (#202).
         "t" | "T" => Command::Panel(Which::Dev),
         "," if cmd => Command::Panel(Which::Settings),

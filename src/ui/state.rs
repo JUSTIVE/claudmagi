@@ -73,6 +73,8 @@ pub struct Board {
     /// What Linear is asking of you, unread only (#241). Never a tile: the
     /// ⌘K list and a count in the status bar are the whole of it.
     pub inbox: crate::inbox::Reading,
+    /// The panel that lists it (#244).
+    pub inbox_panel: PanelState,
     pub inbox_error: Option<crate::inbox::Error>,
     /// What the live source wants said in the status bar (#67).
     pub source_note: Option<&'static str>,
@@ -106,6 +108,7 @@ impl Board {
             usage: None,
             usage_error: None,
             inbox: Default::default(),
+            inbox_panel: PanelState::default(),
             inbox_error: None,
             source_note: None,
             window: (zoom::DESIGN_W, zoom::DESIGN_H),
