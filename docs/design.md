@@ -198,7 +198,7 @@
 ## 검증 방법
 
 합성 클릭·키는 **샌드박스 밖에서** 보내야 앱에 닿는다(에이전트의 bash 가 기본으로 샌드박스 안이고, 그 안에서 보낸 CGEvent 는 조용히 버려진다 — 권한 문제가 아니다). 창 하나만 찍을 때는 `screencapture -x -o -l <windowid>`, 창 번호는 `CGWindowListCopyWindowInfo` 로. 화면이 잠겨 있으면 캡처도 합성 입력도 되지 않는다.
-화면 캡처 권한이 없어도 `cargo run -- --svg out.svg --demo --size 1920x1080` 로 같은 장면을 SVG로 뽑고 `swift tools/svg2png.swift out.svg out.png` 로 정확한 크기의 PNG를 만들어 확인한다. (Quick Look 썸네일은 비율을 무시하므로 쓰지 않는다.)
+**`--svg`·`--demo` 는 더 이상 없다** — gpui 와 함께 갔다(#195, 지금 플래그는 `--list`·`--prs`·`--usage`·`--inbox`·`--focus` 뿐이다). 그래서 **창 없이 보드 그림을 뽑는 길은 없고**, 화면이 잠겨 있으면 사진은 아예 못 찍는다(#252 에서 실제로 막혔다). `tools/svg2png.swift` 는 남아 있지만 아이콘용이다.
 
 ## 성능(#38)
 
