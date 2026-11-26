@@ -25,10 +25,42 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-/// How long a fetched PR stays fresh before `gh` is asked again.
-pub const TTL: Duration = Duration::from_secs(60);
+/// How soon `gh` is asked about a pull request again, by what it last said
+/// (#247).
+///
+/// It was one number for all of them, and that was one number too few. A
+/// board of thirteen refreshes in four seconds — three workers, a second a
+/// call — so what you wait for is never the asking, it is the gap between
+/// asks. And the same gap is wrong at both ends: a minute is an age to a
+/// pull request whose checks are running right now, and a waste on one that
+/// merged an hour ago and will never say anything else.
+///
+/// Checks running, or in the merge queue: this changes by the minute.
+const MOVING: Duration = Duration::from_secs(12);
+/// Open, with nothing of its own left to do: it changes when a person does
+/// something — a review, a merge — so it is watched, not stared at.
+const WAITING: Duration = Duration::from_secs(30);
+/// Merged or closed. It is on the board to be seen, not to be followed:
+/// GitHub has nothing left to tell us about it.
+const SETTLED: Duration = Duration::from_secs(10 * 60);
+/// One `gh` would not answer for (#112). Asking harder will not make it
+/// answer, so it keeps the old pace.
+const UNANSWERED: Duration = Duration::from_secs(60);
 /// How long a worker idles when everything is fresh.
 const IDLE: Duration = Duration::from_millis(500);
+
+/// When the worker may ask about this pull request again, given the last
+/// answer. `None` is a pull request `gh` had nothing to say about.
+fn again_after(pr: Option<&Pr>) -> Duration {
+    match pr {
+        None => UNANSWERED,
+        Some(pr) => match pr.state {
+            State::Merged | State::Closed => SETTLED,
+            _ if pr.pending > 0 || pr.queued => MOVING,
+            _ => WAITING,
+        },
+    }
+}
 /// Workers fetching in parallel. A `gh pr view` is a second of waiting on the
 /// network, so a board with ten PRs fills in three seconds instead of twelve.
 const WORKERS: usize = 3;
@@ -438,14 +470,15 @@ pub fn fetch(id: &PrRef) -> Option<Pr> {
 ///
 /// `gh pr view` does not carry it, and asking GitHub per pull request would
 /// be a call each; the repository's queue is one call that answers for all
-/// of them, kept as long as a fetched pull request is kept ([`TTL`]) — a
-/// pull request sits in a queue for minutes.
+/// of them, kept for [`WAITING`] — a pull request sits in a queue for
+/// minutes, so this is the one thing on a moving pull request that does not
+/// need the moving pace (#247).
 fn in_queue(repo: &str, number: u32) -> bool {
     static QUEUES: OnceLock<Mutex<HashMap<String, (Instant, HashSet<u32>)>>> = OnceLock::new();
     let cache = QUEUES.get_or_init(Mutex::default);
     let fresh = {
         let seen = cache.lock().unwrap_or_else(|e| e.into_inner());
-        seen.get(repo).filter(|(at, _)| at.elapsed() < TTL).map(|(_, q)| q.clone())
+        seen.get(repo).filter(|(at, _)| at.elapsed() < WAITING).map(|(_, q)| q.clone())
     };
     let queue = match fresh {
         Some(q) => q,
@@ -617,7 +650,9 @@ impl Shared {
                 wanted
                     .iter()
                     .filter(free)
-                    .find(|id| seen.get(*id).is_some_and(|(_, at)| now.duration_since(*at) >= TTL))
+                    .find(|id| {
+                        seen.get(*id).is_some_and(|(pr, at)| now.duration_since(*at) >= again_after(pr.as_ref()))
+                    })
             })
             .cloned()?;
         inflight.insert(id.clone());
@@ -1084,5 +1119,48 @@ mod tests {
         }
         let landed = Pr { state: State::Merged, approved: false, ..base };
         assert!(landed.signed_off(), "merging is a sign-off, whatever the review field says");
+    }
+
+    /// What `gh` last said decides when it is asked again (#247). Under one
+    /// pace for all of them the board spent its calls on pull requests that
+    /// had finished, and made the one whose checks were running wait out the
+    /// same minute as the rest.
+    #[test]
+    fn the_board_asks_again_as_often_as_a_pull_request_moves() {
+        let id = |n: u32| PrRef { repo: "o/r".into(), number: n };
+        let pr = |n: u32, state: State, pending: u32| Pr {
+            id: id(n),
+            title: String::new(),
+            state,
+            approved: false,
+            asked: true,
+            stacked: false,
+            queued: false,
+            auto: false,
+            passed: 1,
+            failed: 0,
+            pending,
+        };
+        assert_eq!(again_after(Some(&pr(1, State::Merged, 0))), SETTLED);
+        assert_eq!(again_after(Some(&pr(1, State::Closed, 0))), SETTLED);
+        assert_eq!(again_after(Some(&pr(1, State::Open, 2))), MOVING, "its checks are running");
+        let going_in = Pr { queued: true, ..pr(1, State::Open, 0) };
+        assert_eq!(again_after(Some(&going_in)), MOVING, "it is going in by itself");
+        assert_eq!(again_after(Some(&pr(1, State::Open, 0))), WAITING);
+        assert_eq!(again_after(None), UNANSWERED, "asking harder will not make it answer");
+        assert!(MOVING < WAITING && WAITING < SETTLED, "the busier it is, the sooner it is asked about");
+
+        // And the worker acts on it. Forty seconds after both were answered,
+        // the one with checks running is due and the merged one is not.
+        let shared = Shared::default();
+        *shared.wanted.lock().expect("a fresh lock") = vec![id(1), id(2)];
+        let then = Instant::now().checked_sub(Duration::from_secs(40)).expect("a clock with a past");
+        {
+            let mut seen = shared.seen.lock().expect("a fresh lock");
+            seen.insert(id(1), (Some(pr(1, State::Merged, 0)), then));
+            seen.insert(id(2), (Some(pr(2, State::Open, 3)), then));
+        }
+        assert_eq!(shared.claim(), Some(id(2)), "the one still working is the one to ask about");
+        assert_eq!(shared.claim(), None, "and the one that landed is left alone");
     }
 }
