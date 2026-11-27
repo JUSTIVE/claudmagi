@@ -245,6 +245,11 @@ pub enum Kind {
     /// A Linear notification (#241): not a node on the board at all, which
     /// is the point of it being here.
     Inbox,
+    /// A pull request waiting on your review (#257). It sits in the inbox
+    /// beside the notifications and wears the same colour, but the mark
+    /// says GitHub, because that is whose thing it is (#79) and where
+    /// pressing it goes.
+    Review,
 }
 
 impl Kind {
@@ -256,6 +261,7 @@ impl Kind {
             Kind::Pr => Mark::GitHub,
             Kind::Artifact => Mark::Artifact,
             Kind::Inbox => Mark::Linear,
+            Kind::Review => Mark::GitHub,
         }
     }
 }
@@ -397,7 +403,7 @@ fn entries(b: &Board) -> Vec<Entry> {
         let label = note.label();
         let web = (!note.url.is_empty()).then(|| note.url.clone());
         out.push(Entry {
-            kind: Kind::Inbox,
+            kind: if crate::inbox::about_a_pull_request(&note.kind) { Kind::Review } else { Kind::Inbox },
             style: Style::Inbox,
             // A lane of its own. Most of these are about work no session
             // here is doing, and one that does name a lane should not drag

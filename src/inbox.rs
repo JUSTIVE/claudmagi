@@ -192,6 +192,93 @@ pub fn about_a_pull_request(kind: &str) -> bool {
     kind.starts_with("pullRequest")
 }
 
+/// What `gh` is asked for, and how many. A review you have not done is the
+/// sort of thing that is counted on one hand; this is the ceiling, not the
+/// expectation.
+const REVIEWS: usize = 20;
+
+/// The kind a review row carries, so it reads like a notification does.
+const REVIEW_KIND: &str = "pullRequestReviewRequested";
+
+/// One pull request GitHub says is waiting for you.
+#[derive(Debug, Deserialize)]
+struct ReviewRaw {
+    #[serde(default)]
+    number: u32,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    repository: RepoRaw,
+    #[serde(default)]
+    author: AuthorRaw,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RepoRaw {
+    #[serde(rename = "nameWithOwner", default)]
+    name_with_owner: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AuthorRaw {
+    #[serde(default)]
+    login: String,
+}
+
+/// What GitHub says is waiting for your review (#257).
+///
+/// Linear sends a notification for every pull request event and carries
+/// nothing in it that names the pull request — two internal ids and no
+/// more (#256). So the rows that are about a pull request do not come from
+/// Linear at all: they come from the one service that can say **which**
+/// pull request it is, and pressing one opens it where the reviewing
+/// happens. `gh` answers this in about a second.
+///
+/// A missing or unauthenticated `gh` is no connector and no error: the
+/// board simply has nothing to say about reviews, and Linear keeps its own
+/// rows (#58).
+///
+/// `None` is "could not ask", which is not the same answer as an empty
+/// list, and `fetch` reads the difference.
+fn ask_github() -> Option<String> {
+    let out = Command::new("gh")
+        .args(["search", "prs", "--review-requested=@me", "--state=open"])
+        .args(["--limit", &REVIEWS.to_string()])
+        .args(["--json", "number,title,url,repository,author"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// `gh`'s answer as rows. A pull request with no number or address is not
+/// one this can point at, so it is dropped rather than drawn as a dead
+/// chip.
+pub fn parse_reviews(text: &str) -> Vec<Note> {
+    let found: Vec<ReviewRaw> = serde_json::from_str(text).unwrap_or_default();
+    found
+        .into_iter()
+        .filter(|p| p.number > 0 && !p.url.is_empty())
+        .map(|p| Note {
+            id: p.url.clone(),
+            kind: REVIEW_KIND.into(),
+            // The word the panel prints down the right-hand side. Linear's
+            // own notifications say `reviews` here, and this is one.
+            category: "reviews".into(),
+            actor: p.author.login,
+            // The number is the name a pull request goes by, and the
+            // repository is which one of them it is.
+            key: Some(format!("#{}", p.number)),
+            title: p.title,
+            body: p.repository.name_with_owner,
+            url: p.url,
+        })
+        .collect()
+}
+
 pub fn app_url(web: &str) -> Option<String> {
     web.strip_prefix("https://linear.app/").map(|rest| format!("linear://{rest}"))
 }
@@ -385,9 +472,42 @@ fn request_body() -> String {
     serde_json::json!({ "query": query }).to_string()
 }
 
-/// One round trip. Blocks; call it off the engine thread.
+/// One look at everything that is waiting: what GitHub says needs your
+/// review, then what Linear says is unread. Blocks; call it off the engine
+/// thread.
+///
+/// The reviews lead, because a pull request waiting on you is the most
+/// definite thing in the list — somebody named you (#257).
 pub fn fetch() -> Result<Reading, Error> {
-    parse(&ask(&request_body())?)
+    // Whether GitHub *answered* is a different question from whether it
+    // had anything to say. Linear's pull request rows are only dropped by
+    // an answer — a `gh` that is missing or signed out must not take the
+    // reviews off the board altogether (#58).
+    let answer = ask_github();
+    let spoke = answer.is_some();
+    let waiting = answer.as_deref().map(parse_reviews).unwrap_or_default();
+    match ask(&request_body()).and_then(|body| parse(&body)) {
+        Ok(reading) => Ok(merge(waiting, spoke, reading)),
+        // A key that is missing or an API that is down is no reason to
+        // hide what GitHub has already answered (#58).
+        Err(_) if !waiting.is_empty() => Ok(Reading { url: String::new(), notes: waiting }),
+        Err(e) => Err(e),
+    }
+}
+
+/// The two answers as one list (#257). `spoke` is whether GitHub answered
+/// at all, which is a different question from whether it had anything to
+/// say — and the one that decides whether Linear's pull request rows are
+/// superseded or kept.
+fn merge(waiting: Vec<Note>, spoke: bool, mut reading: Reading) -> Reading {
+    if spoke {
+        // GitHub already said this, and said which pull request it was.
+        reading.notes.retain(|n| !about_a_pull_request(&n.kind));
+    }
+    let mut notes = waiting;
+    notes.append(&mut reading.notes);
+    reading.notes = notes;
+    reading
 }
 
 /// Sends one GraphQL body and hands back what came out, for `fetch` and for
@@ -479,6 +599,56 @@ mod tests {
         // waiting on you rather than to the whole inbox (#256).
         assert_eq!(n.url, "https://linear.app/cookieplace/reviews");
         assert_eq!(app_url(&n.url).as_deref(), Some("linear://cookieplace/reviews"));
+    }
+
+    /// A review row is a pull request GitHub named, not a notification
+    /// Linear could not (#257). The number is what it goes by, the
+    /// repository is which one of them it is, and the author is who is
+    /// asking — which is the one thing the panel paints in the accent.
+    #[test]
+    fn a_review_row_names_the_pull_request_it_is_about() {
+        let said = r#"[
+          {"number":11544,"title":"어드민 mutation 의 updater 를 걷어냅니다",
+           "url":"https://github.com/cookieplace/crepe/pull/11544",
+           "repository":{"name":"crepe","nameWithOwner":"cookieplace/crepe"},
+           "author":{"login":"ellemedit"}},
+          {"number":0,"title":"nothing to point at","url":"","repository":{},"author":{}}
+        ]"#;
+        let rows = parse_reviews(said);
+        assert_eq!(rows.len(), 1, "a row with no number or address is not one you can press");
+        let r = &rows[0];
+        assert_eq!(r.label(), "#11544", "the number is the name it goes by");
+        assert_eq!(r.actor, "ellemedit", "and the author is who is asking");
+        assert_eq!(r.url, "https://github.com/cookieplace/crepe/pull/11544");
+        assert!(r.said().contains("review requested"), "{}", r.said());
+        assert!(r.said().contains("cookieplace/crepe"), "which of them it is: {}", r.said());
+        assert_eq!(app_url(&r.url), None, "GitHub has no app link here, so the web one stands");
+    }
+
+    /// GitHub supersedes Linear's pull request rows only by **answering**
+    /// (#257, #58). A `gh` that is missing or signed out has said nothing,
+    /// and taking the reviews off the board on the strength of that would
+    /// be worse than keeping the thinner rows.
+    #[test]
+    fn only_an_answer_from_github_takes_linears_review_rows_away() {
+        let linear = |kind: &str| Note { kind: kind.into(), ..Note::default() };
+        let reading = || Reading {
+            url: "https://linear.app/cookieplace/inbox".into(),
+            notes: vec![linear("pullRequestApproved"), linear("issueCommentMention")],
+        };
+        let mine = vec![Note { key: Some("#1".into()), ..Note::default() }];
+
+        let spoke = merge(mine.clone(), true, reading());
+        assert_eq!(spoke.notes.len(), 2, "the pull request row is GitHub's now");
+        assert_eq!(spoke.notes[0].label(), "#1", "and what is waiting on you leads");
+        assert_eq!(spoke.notes[1].kind, "issueCommentMention", "everything else is untouched");
+
+        let silent = merge(Vec::new(), false, reading());
+        assert_eq!(silent.notes.len(), 2, "nothing was said, so nothing is taken away");
+        assert_eq!(silent.notes[0].kind, "pullRequestApproved");
+
+        let empty = merge(Vec::new(), true, reading());
+        assert_eq!(empty.notes.len(), 1, "an answer of none is still an answer");
     }
 
     /// Everything Linear calls a pull request goes to the reviews list, and
