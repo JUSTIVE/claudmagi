@@ -185,11 +185,18 @@ pub fn keyed_groups(model: &BoardModel, agents: usize) -> Vec<(String, String, V
                         tiles.push(Kind::Unanswered(i, k));
                     }
                 }
-                if info.prs.is_empty() && info.prs_unanswered.is_empty() {
-                    if let Some(a) = info.artifacts.last() {
-                        if once(a.url()) {
-                            tiles.push(Kind::Page(i));
-                        }
+                // A page the session published stands whether or not it
+                // also opened a pull request (#255). The rule that hid it
+                // came from the honeycomb, where a cell has three rows and
+                // the output row has to be shared, so the page rides on the
+                // pull request's label and only takes the row when there is
+                // no pull request (#137). A start screen has no such limit:
+                // here one tile is one thing worth opening, which is how
+                // every pull request is drawn too — and a session that has
+                // both is exactly the one with something to show.
+                if let Some(a) = info.artifacts.last() {
+                    if once(a.url()) {
+                        tiles.push(Kind::Page(i));
                     }
                 }
             }
@@ -1680,6 +1687,7 @@ mod tests {
         let auto = Pr { approved: true, auto: true, ..Pr::synthetic(1, Look::Open) };
         let hand = Pr { approved: true, ..Pr::synthetic(2, Look::Open) };
         s.prs = vec![auto.clone(), hand.clone()];
+        s.artifacts = vec![page_of("Abc123", "weekly report")];
         let model = board_of(vec![s]);
         let tile = |u: String| shows_in(&model, inks(), DEFAULT_AGENTS, &TileKey::Pr(u)).expect("on the board");
 
@@ -1706,6 +1714,38 @@ mod tests {
             };
             assert!(turn(fill, crate::ink::floor_color(pal.text_on, pal)) > 0.05, "a step off the board's green");
         }
+    }
+
+    /// One made-up published page.
+    fn page_of(id: &str, title: &str) -> crate::artifact::Artifact {
+        crate::artifact::Artifact { id: id.into(), title: title.into(), version: Some(2) }
+    }
+
+    /// A page the session published is on the board even when that session
+    /// also opened a pull request (#255).
+    ///
+    /// The board drew the page only for a session with no pull request at
+    /// all, which hid it from exactly the sessions with the most to show —
+    /// a rule half-copied from the honeycomb, where a cell has three rows
+    /// and the output row has to be shared (#137). A start screen has no
+    /// such limit.
+    #[test]
+    fn a_published_page_stands_beside_the_pull_requests() {
+        use crate::pr::{Look, Pr};
+        let mut s = SessionInfo::synthetic(1, "S-1", Phase::Working);
+        let pr = Pr::synthetic(1, Look::Open);
+        s.prs = vec![pr.clone()];
+        s.artifacts = vec![page_of("Abc123", "weekly report")];
+        let page = s.artifacts[0].url();
+        let model = board_of(vec![s]);
+
+        let keys: Vec<TileKey> = groups(&model, DEFAULT_AGENTS)
+            .into_iter()
+            .flat_map(|(_, kinds)| kinds)
+            .filter_map(|k| TileKey::of(&k, &model))
+            .collect();
+        assert!(keys.contains(&TileKey::Pr(pr.url())), "the pull request is drawn");
+        assert!(keys.contains(&TileKey::Page(page)), "and so is the page it published");
     }
 
     /// What is waiting on a person is twice as wide: a session that needs an
