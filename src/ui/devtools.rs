@@ -19,6 +19,7 @@ pub(crate) fn phase_color(phase: Phase) -> Rgba {
     match phase {
         Phase::Working => PALETTE.text_on,
         Phase::NeedsUser => PALETTE.packet, // the needs-input chip's orange (#50)
+        Phase::Unread => crate::ink::unread_color(PALETTE), // #259
         Phase::Idle => theme::AMBER_DIM,
     }
 }
@@ -117,6 +118,7 @@ fn tools(ui: &Ui, mode: Mode) -> AnyElement {
                         .gap(px(4.))
                         .child(add("+ working", Phase::Working))
                         .child(add("+ needs input", Phase::NeedsUser))
+                        .child(add("+ unread", Phase::Unread))
                         .child(add("+ idle", Phase::Idle)),
                 )
                 .child(

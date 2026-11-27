@@ -197,6 +197,13 @@ impl Style {
             // pulled out of its socket wears the colour of why it did.
             Style::Chip(Phase::Working) => body(Some(at(theme.chip)), None, at(theme.text_on)),
             Style::Chip(Phase::NeedsUser) => body(Some(at(theme.chip_needs)), None, at(theme.text_needs)),
+            // Finished with something nobody has opened (#259): the board's
+            // green turned right round, the one arc nothing else wears.
+            Style::Chip(Phase::Unread) => {
+                let fill = crate::ink::floor_color(crate::ink::unread_color(theme), theme);
+                let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+                body(Some(at(fill)), None, at(crate::ink::legible(white, fill, theme)))
+            }
             Style::Chip(Phase::Idle) => body(Some(at(theme.chip_idle)), None, at(theme.text_idle)),
             Style::Pr { look, running, .. } => {
                 let mut out = match look {
@@ -842,6 +849,7 @@ mod tests {
             let styles = [
                 Style::Chip(Phase::Working),
                 Style::Chip(Phase::NeedsUser),
+                Style::Chip(Phase::Unread),
                 Style::Chip(Phase::Idle),
                 pr_style(pr::Look::Merged, false),
                 pr_style(pr::Look::Failing, false),

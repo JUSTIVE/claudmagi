@@ -166,39 +166,51 @@ fn label_of(raw: &Raw) -> String {
 /// called waiting, and the two that had *failed* could not be told from
 /// either, because the board had no way to say so.
 ///
-/// Mapping five words onto three:
+/// Mapping the service's words onto four (#259):
 ///
 /// - `working` is a turn in flight.
+/// - `needs_action`, when the last turn wrote one, is the session naming
+///   what it wants from a person — in its own sentence, which beats any
+///   bucket word, including one that says the run is over. A run that ends
+///   with "paste this prompt into the routine" is not finished.
 /// - `blocked` is the board's own meaning of waiting on a person: it has
-///   asked something and stopped.
-/// - `failed` wants a person just as much — it stopped badly, and nobody
-///   else is going to pick it up.
-/// - `review_ready` finished with something to show, so it wants a person
-///   until one has looked and is simply done afterwards.
-/// - `completed` finished with nothing to review. The service draws that
-///   line itself, which is the whole reason to take its word for it: being
-///   unopened is not the same as wanting somebody.
+///   asked something and stopped. It is the **only** bucket word that does.
+/// - everything else has stopped and wants nothing. Whether anybody has
+///   opened it decides which of the two quiet phases it is: `Unread` while
+///   it still holds something nobody has read, `Idle` once they have.
 ///
-/// A word nobody here has heard of falls through to the old reckoning
-/// rather than blanking the cell, the way an unknown `status` does (#136).
+/// This is where the board was lying. `unread` was being read as "wants
+/// you": a `review_ready` run nobody had opened came out in the accent,
+/// the same colour as one that had stopped to ask a question, and `failed`
+/// came out there too. Watching one session two minutes apart showed what
+/// that costs — `Relay 버전 확인`, worker idle both times and nobody
+/// touching it, went `review_ready` + unread (accent) → `completed` +
+/// unread (grey) because the *service* changed a word. Nothing about
+/// whether it wanted a person had changed, and the board had said it twice
+/// in two colours.
+///
+/// `unread` still has a job, and it is the one it already had forty lines
+/// down: it decides whether the tile is on the board at all. Here it only
+/// picks between two phases that are both quiet.
+///
+/// A word nobody here has heard of lands in the same place as `completed`,
+/// which is where the old reckoning put it too.
 fn phase_of(raw: &Raw) -> Phase {
     let worker = raw.worker_status.as_deref().unwrap_or("idle");
     if worker != "idle" {
         return Phase::Working;
     }
     let summary = raw.external_metadata.post_turn_summary.as_ref();
-    match said(raw) {
-        "working" => return Phase::Working,
-        "blocked" | "failed" => return Phase::NeedsUser,
-        "review_ready" => return if raw.unread { Phase::NeedsUser } else { Phase::Idle },
-        "completed" => return Phase::Idle,
-        _ => {}
-    }
     let needs = summary.and_then(|s| s.needs_action.as_deref()).unwrap_or("").trim();
-    if !needs.is_empty() || raw.unread {
+    if !needs.is_empty() {
         return Phase::NeedsUser;
     }
-    Phase::Idle
+    match said(raw) {
+        "working" => Phase::Working,
+        "blocked" => Phase::NeedsUser,
+        _ if raw.unread => Phase::Unread,
+        _ => Phase::Idle,
+    }
 }
 
 /// The service's own word for the session: the live one, or the last turn's
@@ -211,7 +223,7 @@ fn said(raw: &Raw) -> &str {
         .trim()
 }
 
-/// What the session says it is waiting for, in its own words (#155).
+/// What the session stopped on, in its own words (#155).
 ///
 /// The board prints this after "needs you:" in the hovered detail (#115).
 /// Every cloud session was printing `dialog open` there — the placeholder
@@ -310,7 +322,16 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
         // nobody is looking (#120). The service draws the line between a run
         // that left something to look at and one that did not (#155), so
         // this takes its word rather than the container's.
-        if said(&raw) == "completed" && !raw.unread {
+        //
+        // Except one that named what it wants (#259): the bucket is the
+        // service's summary of the run and the sentence is the run's own,
+        // and a run that ends "paste this into the routine" is not over
+        // however it was bucketed. Dropping those was the same mistake as
+        // painting an unopened one orange, pointing the other way — the
+        // board said nothing at all about the one session that wanted
+        // something.
+        let phase = phase_of(&raw);
+        if said(&raw) == "completed" && !raw.unread && phase != Phase::NeedsUser {
             continue;
         }
         let connected = raw.connection_status.as_deref() == Some("connected");
@@ -321,7 +342,6 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
         if !connected && now.saturating_sub(last) > RECENT.as_secs() {
             continue;
         }
-        let phase = phase_of(&raw);
         let repo = repo_of(&raw);
         let pr = repo.as_deref().and_then(|r| pr_of(&raw, r));
         let mut info = SessionInfo {
@@ -340,6 +360,8 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
             waiting_for: None,
             state: None,
             tempo: None,
+            // `set_phase` below is what decides this.
+            unread: false,
             started_at: millis_of(raw.created_at.as_deref()),
             context_since: 0,
             tty: None,
@@ -371,11 +393,22 @@ pub fn parse(body: &str, now: u64) -> Vec<SessionInfo> {
         info.set_phase(phase);
         // The service's own word for the session, kept where the board keeps
         // a session's own word for itself, and its own sentence where the
-        // board prints what a session is waiting for (#155).
+        // board has somewhere to print it (#155).
         info.state = raw.status_bucket.clone();
-        if phase == Phase::NeedsUser {
-            if let Some(said) = stopped_on(&raw) {
-                info.waiting_for = Some(said);
+        if let Some(said) = stopped_on(&raw) {
+            match phase {
+                // Waiting on a person: the line the board prints after
+                // "needs you".
+                Phase::NeedsUser => info.waiting_for = Some(said),
+                // Holding something for a person who has not looked: the
+                // sentence says what is being held, which is more use than
+                // the bucket word it would otherwise show (#259). It can
+                // never read `blocked` here — that word only reaches this
+                // field as the fallback for a bucket that is `blocked`, and
+                // that bucket is `NeedsUser` above — so putting it in
+                // `state` cannot turn the phase back round.
+                Phase::Unread => info.state = Some(said),
+                _ => {}
             }
         }
         out.push(info);
@@ -696,7 +729,7 @@ mod tests {
         assert_eq!(seat.focus_url.as_deref(), Some("claude://code/cse_1"));
     }
 
-    /// The board's three phases, out of fields that do not look like them.
+    /// The board's four phases, out of fields that do not look like them.
     #[test]
     fn the_phase_comes_from_the_worker_and_from_who_is_waiting() {
         let row = |extra: &str| {
@@ -708,9 +741,10 @@ mod tests {
         let phase = |extra: &str| parse(&body(&row(extra)), NOW)[0].phase();
 
         assert_eq!(phase(r#""worker_status":"running","unread":true"#), Phase::Working, "a turn in flight wins");
-        // Cloud work finishes while nobody is looking, so an unread finished
-        // session is a session waiting on a person.
-        assert_eq!(phase(r#""worker_status":"idle","unread":true"#), Phase::NeedsUser);
+        // Cloud work finishes while nobody is looking, so a finished session
+        // nobody has opened is holding something — and that is all it is
+        // doing. It is not waiting on an answer (#259).
+        assert_eq!(phase(r#""worker_status":"idle","unread":true"#), Phase::Unread);
         assert_eq!(
             phase(
                 r#""worker_status":"idle","unread":false,
@@ -735,35 +769,62 @@ mod tests {
         let phase = |extra: &str| parse(&body(&row(extra)), NOW)[0].phase();
 
         assert_eq!(phase(r#""status_bucket":"working","unread":false"#), Phase::Working);
-        assert_eq!(phase(r#""status_bucket":"blocked","unread":false"#), Phase::NeedsUser);
         assert_eq!(
-            phase(r#""status_bucket":"failed","unread":false"#),
+            phase(r#""status_bucket":"blocked","unread":false"#),
             Phase::NeedsUser,
-            "a run that stopped badly wants a person as much as one that asked a question"
+            "the one word that means a person is being waited on"
         );
-        assert_eq!(
-            phase(r#""status_bucket":"completed","unread":true"#),
-            Phase::Idle,
-            "unopened is not the same as wanting somebody, and the service draws that line itself"
-        );
+        // #259: the accent is for a session that asked something. A run that
+        // stopped badly asked nothing — it is over, and what is left is a
+        // thing to look at.
+        assert_eq!(phase(r#""status_bucket":"failed","unread":true"#), Phase::Unread, "stopped badly, nobody looked");
+        assert_eq!(phase(r#""status_bucket":"failed","unread":false"#), Phase::Idle, "stopped badly, and seen");
+        assert_eq!(phase(r#""status_bucket":"completed","unread":true"#), Phase::Unread);
+        // (`completed` once it has been seen is not on the board at all, so
+        // it has no phase to ask about — see the keep test below.)
         assert_eq!(
             phase(r#""status_bucket":"review_ready","unread":true"#),
-            Phase::NeedsUser,
+            Phase::Unread,
             "finished with something to show, and nobody has looked"
         );
         assert_eq!(phase(r#""status_bucket":"review_ready","unread":false"#), Phase::Idle, "looked at: just done");
+
+        // The whole point of the fourth phase: the two words the service
+        // uses for a finished run differ in what it left behind, not in
+        // whether it wants anybody. Watching one session flip from one to
+        // the other with nobody touching it is what caught this (#259).
+        assert_eq!(
+            phase(r#""status_bucket":"review_ready","unread":true"#),
+            phase(r#""status_bucket":"completed","unread":true"#),
+            "a finished run is the same colour whichever word the service picked for it"
+        );
 
         // A turn in flight is the one thing the board can see for itself.
         assert_eq!(phase(r#""status_bucket":"blocked","worker_status":"running""#), Phase::Working);
         // The live word first, the last turn's word when there is no live one.
         assert_eq!(
-            phase(r#""unread":false,"external_metadata":{"post_turn_summary":{"status_category":"failed"}}"#),
-            Phase::NeedsUser
+            phase(r#""unread":true,"external_metadata":{"post_turn_summary":{"status_category":"failed"}}"#),
+            Phase::Unread
         );
-        // And a word nobody here has heard of leaves the old reckoning in
-        // place rather than blanking the cell (#136).
-        assert_eq!(phase(r#""status_bucket":"hibernating","unread":true"#), Phase::NeedsUser);
+        // And a word nobody here has heard of lands where a finished run
+        // lands rather than blanking the cell (#136).
+        assert_eq!(phase(r#""status_bucket":"hibernating","unread":true"#), Phase::Unread);
         assert_eq!(phase(r#""status_bucket":"hibernating","unread":false"#), Phase::Idle);
+
+        // The session's own sentence outranks any bucket word, including
+        // one that says the run is over: a turn that ends by naming what it
+        // wants from a person has not finished (#259). Seen live —
+        // `purple-haro 주간 트렌드 차트` sat at `completed` with
+        // "프롬프트 교체" in `needs_action`, and the board called it idle.
+        assert_eq!(
+            phase(
+                r#""status_bucket":"completed","unread":false,
+                   "external_metadata":{"post_turn_summary":
+                   {"status_category":"need_input","needs_action":"replace the prompt"}}"#
+            ),
+            Phase::NeedsUser,
+            "a run that named what it wants is not finished, whatever the bucket says"
+        );
 
         // What it stopped on, in its own words: the board prints this after
         // "needs you:" and was printing `dialog open` for every one of them.
@@ -778,7 +839,23 @@ mod tests {
         // With nothing said, the word itself is still better than a dialog
         // that does not exist.
         let bare = &parse(&body(&row(r#""status_bucket":"failed""#)), NOW)[0];
-        assert_eq!(bare.waiting_for.as_deref(), Some("failed"));
+        assert_eq!(bare.state.as_deref(), Some("failed"));
+        assert_eq!(bare.waiting_for, None, "nothing is waiting on a person here (#259)");
+
+        // A session holding something nobody has read says what it is
+        // holding, and says it without claiming to be waiting on anybody
+        // (#259) — `waiting_for` is the one field that would put it back in
+        // the accent, and it stays empty.
+        let held = &parse(
+            &body(&row(
+                r#""status_bucket":"review_ready","unread":true,"external_metadata":{"post_turn_summary":
+                   {"status_detail":"PR CI passed, awaiting human review"}}"#,
+            )),
+            NOW,
+        )[0];
+        assert_eq!(held.phase(), Phase::Unread);
+        assert_eq!(held.waiting_for, None, "unread never reads as waiting on you");
+        assert_eq!(held.state.as_deref(), Some("PR CI passed, awaiting human review"));
 
         // And a finished one says which kind of finished it is, where the
         // board would otherwise call a session that is not on this machine
@@ -821,6 +898,19 @@ mod tests {
         assert_eq!(
             kept(r#""unread":false,"external_metadata":{"post_turn_summary":{"status_category":"completed"}}"#),
             0
+        );
+        // But a run that named what it wants from a person stays, whatever
+        // bucket it was put in (#259). This is the fault pointing the other
+        // way: `purple-haro 주간 트렌드 차트` sat at `completed`, seen,
+        // with "프롬프트 교체" written in `needs_action`, and the board
+        // threw away the one session that actually wanted something.
+        assert_eq!(
+            kept(
+                r#""status_bucket":"completed","unread":false,
+                   "external_metadata":{"post_turn_summary":{"needs_action":"replace the prompt"}}"#
+            ),
+            1,
+            "a run that asked for something is not finished"
         );
     }
 

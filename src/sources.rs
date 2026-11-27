@@ -350,6 +350,9 @@ pub fn read_sessions(hosts: &[Box<dyn crate::host::Host>]) -> Vec<SessionInfo> {
                 waiting_for: r.waiting_for,
                 state: r.state,
                 tempo: r.tempo,
+                // A terminal session has nobody counting what has been read:
+                // the person is sitting in front of it (#259).
+                unread: false,
                 started_at: started,
                 context_since: r.name_since.filter(|t| *t > started).unwrap_or(0),
                 tty: ttys.get(&r.pid).cloned(),
