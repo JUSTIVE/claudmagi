@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 
-use crate::model::{Phase, SessionInfo};
+use crate::model::{Phase, SessionInfo, SubagentInfo};
 use crate::usage;
 
 pub const URL: &str = "https://api.anthropic.com/v1/code/sessions";
@@ -464,7 +464,112 @@ fn fetch() -> Option<Vec<SessionInfo>> {
         log::warn!("cloud sessions: HTTP {}", code.trim());
         return None;
     }
-    Some(parse(body, now_secs()))
+    let mut sessions = parse(body, now_secs());
+    // Only a session with a turn in flight is asked (#258). Subagents run
+    // inside a turn, so a session between turns has nothing running, and a
+    // round trip for a list of finished agents is a round trip for
+    // nothing. It is also what keeps this to one extra call on a poll
+    // rather than one per session.
+    for s in sessions.iter_mut().filter(|s| s.phase() == Phase::Working) {
+        s.subagents = subagents(&s.session_id, &token);
+    }
+    Some(sessions)
+}
+
+/// How many of a session's newest events to read when looking for what it
+/// has running (#258). The endpoint hands them back newest first, so this
+/// is a window on the present, not a page into the past.
+const EVENTS: usize = 150;
+
+/// The subagents a cloud session is running, read from its own
+/// conversation.
+///
+/// Nothing in the sessions endpoint says: not the list, not the detail,
+/// and not `task_summary`, which is one line about the tool running this
+/// second. The conversation does. `/events` hands back the same assistant
+/// and user messages a local transcript holds (#1), and a subagent is a
+/// `Task` tool call in it — one with no result yet is still running.
+fn subagents(id: &str, token: &str) -> Vec<SubagentInfo> {
+    let url = format!("{URL}/{id}/events?limit={EVENTS}");
+    let Some(body) = ask(&url, token) else { return Vec::new() };
+    task_agents(&body)
+}
+
+/// One GET, through `curl` for the same reason the rest of this file does
+/// it. `None` covers every way of not being told, which is never an error
+/// worth emptying the board over (#58).
+fn ask(url: &str, token: &str) -> Option<String> {
+    let out = Command::new("/usr/bin/curl")
+        .args(["-sS", "-m", &CURL_TIMEOUT_S.to_string(), "-w", "\n%{http_code}"])
+        .args(["-H", &format!("Authorization: Bearer {token}")])
+        .args(["-H", "anthropic-beta: oauth-2025-04-20"])
+        .args(["-H", "anthropic-version: 2023-06-01"])
+        .args(["-H", "User-Agent: claudmagi"])
+        .arg(url)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (body, code) = text.rsplit_once('\n')?;
+    (code.trim() == "200").then(|| body.to_string())
+}
+
+/// The `Task` calls in a page of events, oldest first.
+///
+/// A call and its result are two events: the assistant asks, and the
+/// result comes back addressed to the call's own id. So a call whose id no
+/// result names is one still in flight — the same rule a local transcript
+/// is read by, said in the shape the wire uses.
+pub fn task_agents(body: &str) -> Vec<SubagentInfo> {
+    let Ok(page) = serde_json::from_str::<serde_json::Value>(body) else { return Vec::new() };
+    let Some(events) = page.get("data").and_then(|d| d.as_array()) else { return Vec::new() };
+    let mut started: Vec<SubagentInfo> = Vec::new();
+    let mut done: Vec<String> = Vec::new();
+    for event in events {
+        let at = millis_of(event.get("created_at").and_then(|v| v.as_str()));
+        let blocks = event
+            .get("payload")
+            .and_then(|p| p.get("message"))
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array());
+        for block in blocks.into_iter().flatten() {
+            let kind = block.get("type").and_then(|t| t.as_str()).unwrap_or_default();
+            match kind {
+                "tool_use" if block.get("name").and_then(|n| n.as_str()) == Some("Task") => {
+                    let input = block.get("input");
+                    let text = |key: &str| {
+                        input.and_then(|i| i.get(key)).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+                    };
+                    started.push(SubagentInfo {
+                        agent_id: block.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                        agent_type: text("subagent_type"),
+                        description: text("description"),
+                        // Filled in once every result has been seen.
+                        running: true,
+                        started_at: at,
+                        updated_at: at,
+                    });
+                }
+                "tool_result" => {
+                    if let Some(id) = block.get("tool_use_id").and_then(|v| v.as_str()) {
+                        done.push(id.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    started.retain(|a| !a.agent_id.is_empty());
+    for agent in &mut started {
+        agent.running = !done.contains(&agent.agent_id);
+    }
+    // The page comes newest first; the board draws them in the order they
+    // were started (`sources::subagents_for`).
+    started.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.agent_id.cmp(&b.agent_id)));
+    started
 }
 
 fn now_secs() -> u64 {
@@ -477,6 +582,56 @@ mod tests {
     use crate::model::BoardModel;
 
     const NOW: u64 = 1_790_000_000;
+
+    /// A cloud session's subagents come from its own conversation (#258):
+    /// nothing the sessions endpoint says mentions them. A `Task` call and
+    /// its result are two events, and a call no result names is one still
+    /// in flight.
+    #[test]
+    fn a_task_nobody_answered_is_a_subagent_still_running() {
+        // As the wire sends it: newest first.
+        let body = r#"{"data":[
+          {"created_at":"2026-11-27T02:51:23.190076Z","event_type":"assistant","payload":{"message":{"content":[
+            {"type":"tool_use","id":"toolu_b","name":"Task",
+             "input":{"subagent_type":"Explore","description":"Find the relevant files"}}]}}},
+          {"created_at":"2026-11-27T02:50:00Z","event_type":"user","payload":{"message":{"content":[
+            {"type":"tool_result","tool_use_id":"toolu_a","content":"done"}]}}},
+          {"created_at":"2026-11-27T02:49:00Z","event_type":"assistant","payload":{"message":{"content":[
+            {"type":"tool_use","id":"toolu_a","name":"Task",
+             "input":{"subagent_type":"Plan","description":"Design the approach"}},
+            {"type":"tool_use","id":"toolu_x","name":"Bash","input":{"command":"ls"}}]}}},
+          {"created_at":"2026-11-27T02:48:00Z","event_type":"system","payload":{"agents":["Task","Plan"]}}
+        ],"next_cursor":"12"}"#;
+
+        let found = task_agents(body);
+        assert_eq!(found.len(), 2, "a Bash call is not a subagent, and neither is a list of tool names");
+        assert_eq!(found[0].agent_id, "toolu_a", "oldest first, the way the board draws them");
+        assert_eq!(found[0].agent_type, "Plan");
+        assert_eq!(found[0].description, "Design the approach");
+        assert!(!found[0].running, "its result came back");
+        assert_eq!(found[1].agent_type, "Explore");
+        assert!(found[1].running, "nothing has answered this one");
+        assert!(found[1].started_at > found[0].started_at, "and it started later");
+        // The wire writes microseconds; a stamp that did not parse would
+        // leave every agent at zero and the order with it.
+        assert!(found[1].started_at > 1_700_000_000_000, "microseconds and all: {}", found[1].started_at);
+    }
+
+    /// Not being told is not an error, and nothing here is a shape worth
+    /// trusting: an answer that is not a page of events is simply no
+    /// subagents (#58).
+    #[test]
+    fn an_answer_that_is_not_events_is_no_subagents() {
+        for body in ["", "null", "{}", "{\"data\":null}", "{\"data\":[]}", "not json at all"] {
+            assert!(task_agents(body).is_empty(), "{body:?}");
+        }
+        // A Task call with no id of its own cannot be matched to a result,
+        // so it is not one the board can speak for.
+        let nameless = r#"{"data":[{"created_at":"2026-11-27T02:51:00Z","event_type":"assistant",
+          "payload":{"message":{"content":[{"type":"tool_use","name":"Task","input":{}}]}}}]}"#;
+        assert!(task_agents(nameless).is_empty());
+    }
+
 
     fn body(rows: &str) -> String {
         format!(r#"{{"data":[{rows}],"resume_token":"x"}}"#)
