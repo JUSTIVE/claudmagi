@@ -116,7 +116,12 @@ impl Note {
     /// What goes in the chip: the key when there is one, so the row is found
     /// by typing it the way every other row on the list is (#71).
     pub fn label(&self) -> String {
-        self.key.clone().unwrap_or_else(|| "LINEAR".to_string())
+        self.key.clone().unwrap_or_else(|| {
+            // A pull request has no ticket key, and saying `LINEAR` tells
+            // you nothing you did not already know from the mark beside it
+            // (#256). What it is, is a review.
+            if about_a_pull_request(&self.kind) { "REVIEW".into() } else { "LINEAR".into() }
+        })
     }
 
     /// The kind as words: the entity off the front, the rest split where it
@@ -180,6 +185,13 @@ impl Reading {
 }
 
 /// The `linear://` twin of a `linear.app` link.
+/// Whether a notification is about a pull request rather than about
+/// anything carrying a ticket key. Linear names every one of them
+/// `pullRequest…` and gives them nothing else to go on (#256).
+pub fn about_a_pull_request(kind: &str) -> bool {
+    kind.starts_with("pullRequest")
+}
+
 pub fn app_url(web: &str) -> Option<String> {
     web.strip_prefix("https://linear.app/").map(|rest| format!("linear://{rest}"))
 }
@@ -303,14 +315,17 @@ pub fn parse(body: &str) -> Result<Reading, Error> {
     let Some(data) = resp.data else {
         return Err(Error::Response("no data".into()));
     };
-    // Where a row goes when the thing it is about has no page of its own —
-    // a review notification carries an id and nothing else.
-    let inbox_url = data
-        .viewer
-        .and_then(|v| v.organization)
-        .and_then(|o| o.url_key)
-        .map(|k| format!("https://linear.app/{k}/inbox"))
-        .unwrap_or_default();
+    // Where a row goes when the thing it is about has no page of its own.
+    let url_key = data.viewer.and_then(|v| v.organization).and_then(|o| o.url_key);
+    let inbox_url = url_key.as_deref().map(|k| format!("https://linear.app/{k}/inbox")).unwrap_or_default();
+    // A review notification carries two internal ids and nothing else — no
+    // title, no link (#256). Linear does have a page for it, and the app
+    // opens it readily, but its address ends in a hash that no public id
+    // produces, so it cannot be built here. The reviews list is the nearest
+    // true thing: the one surface that is about pull requests waiting on
+    // you, rather than the whole inbox the row has already been pulled out
+    // of.
+    let reviews_url = url_key.as_deref().map(|k| format!("https://linear.app/{k}/reviews"));
     let notes = data
         .inbox
         .nodes
@@ -319,21 +334,24 @@ pub fn parse(body: &str) -> Result<Reading, Error> {
             let issue = n.issue.unwrap_or(IssueRaw { identifier: None, title: None, url: None });
             let project = n.project;
             let comment = n.comment;
+            let kind = n.kind;
             Note {
                 id: n.id,
-                kind: n.kind,
+                kind: kind.clone(),
                 category: n.category,
                 actor: n.actor.and_then(|a| a.display_name.or(a.name)).unwrap_or_default(),
                 key: issue.identifier,
                 title: issue.title.or_else(|| project.as_ref().and_then(|p| p.name.clone())).unwrap_or_default(),
                 body: comment.as_ref().and_then(|c| c.body.as_deref()).map(excerpt).unwrap_or_default(),
                 // The comment is the thing being pointed at when there is
-                // one; the issue is where it lives; the inbox is the last
+                // one; the issue is where it lives; the reviews list is
+                // where a pull request lives (#256); the inbox is the last
                 // resort.
                 url: comment
                     .and_then(|c| c.url)
                     .or(issue.url)
                     .or_else(|| project.and_then(|p| p.url))
+                    .or_else(|| about_a_pull_request(&kind).then(|| reviews_url.clone()).flatten())
                     .unwrap_or_else(|| inbox_url.clone()),
             }
         })
@@ -453,9 +471,31 @@ mod tests {
     fn a_review_has_no_ticket_and_still_reads() {
         let text = body("{\"id\":\"n2\",\"type\":\"pullRequestReviewRequested\",\"category\":\"reviews\",\"actor\":{\"displayName\":\"Mars\"}}");
         let n = &parse(&text).expect("parses").notes[0];
-        assert_eq!(n.label(), "LINEAR");
+        assert_eq!(n.label(), "REVIEW", "it is not a ticket, and saying so is the only key it has");
         assert_eq!(n.detail(), "Mars review requested");
-        assert_eq!(n.url, "https://linear.app/cookieplace/inbox", "the inbox is the last resort");
+        // Linear has a page for this pull request and the app opens it
+        // readily, but its address ends in a hash no public id produces, so
+        // the row goes to the one surface that is about pull requests
+        // waiting on you rather than to the whole inbox (#256).
+        assert_eq!(n.url, "https://linear.app/cookieplace/reviews");
+        assert_eq!(app_url(&n.url).as_deref(), Some("linear://cookieplace/reviews"));
+    }
+
+    /// Everything Linear calls a pull request goes to the reviews list, and
+    /// nothing else does: the prefix is the whole rule, so a kind nobody
+    /// here has heard of still falls to the inbox (#256).
+    #[test]
+    fn only_a_pull_request_goes_to_the_reviews_list() {
+        for kind in ["pullRequestReviewRequested", "pullRequestApproved", "pullRequestCommented"] {
+            assert!(about_a_pull_request(kind), "{kind}");
+        }
+        for kind in ["issueCommentMention", "issueAssignedToYou", "projectUpdateCreated", "somethingNew"] {
+            assert!(!about_a_pull_request(kind), "{kind}");
+            let text = body(&format!("{{\"id\":\"n9\",\"type\":\"{kind}\",\"category\":\"other\"}}"));
+            let n = &parse(&text).expect("parses").notes[0];
+            assert_eq!(n.url, "https://linear.app/cookieplace/inbox", "{kind}: the inbox is the last resort");
+            assert_eq!(n.label(), "LINEAR", "{kind}");
+        }
     }
 
     /// Nobody caused some of them, and some are about nothing this knows
