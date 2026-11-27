@@ -11,28 +11,24 @@ pub enum Phase {
     Working,
     /// A permission dialog / question is waiting on the user.
     NeedsUser,
-    /// The turn finished and left something to look at, and nobody has
-    /// looked yet (#259).
-    ///
-    /// This is **not** the same as waiting on a person, and telling the two
-    /// apart is the whole point of the state: a cloud session that finished
-    /// with a result was being painted in the accent, which is the board
-    /// saying "answer me", when all that was true was "you have not opened
-    /// this". Nothing is blocked on you here — the work is done and the
-    /// tile is only holding it out.
-    Unread,
     /// The turn finished; the session is idle at the prompt.
+    ///
+    /// A cloud run that finished holding something nobody has opened is
+    /// this too (#260). It briefly had a phase of its own and a colour to
+    /// go with it, which was one state more than the board wanted: the
+    /// tile being on the board at all is already the whole of what
+    /// "nobody has opened this" has to say (#120), and saying it twice put
+    /// a fourth colour on a board whose three were doing fine.
     Idle,
 }
 
 impl Phase {
-    pub const ALL: [Phase; 4] = [Phase::Working, Phase::NeedsUser, Phase::Unread, Phase::Idle];
+    pub const ALL: [Phase; 3] = [Phase::Working, Phase::NeedsUser, Phase::Idle];
 
     pub fn label(self) -> &'static str {
         match self {
             Phase::Working => "working",
             Phase::NeedsUser => "needs input",
-            Phase::Unread => "unread",
             Phase::Idle => "idle",
         }
     }
@@ -41,7 +37,6 @@ impl Phase {
         match self {
             Phase::Working => "W",
             Phase::NeedsUser => "N",
-            Phase::Unread => "U",
             Phase::Idle => "I",
         }
     }
@@ -49,8 +44,7 @@ impl Phase {
     pub fn next(self) -> Phase {
         match self {
             Phase::Working => Phase::NeedsUser,
-            Phase::NeedsUser => Phase::Unread,
-            Phase::Unread => Phase::Idle,
+            Phase::NeedsUser => Phase::Idle,
             Phase::Idle => Phase::Working,
         }
     }
@@ -112,14 +106,6 @@ pub struct SessionInfo {
     pub waiting_for: Option<String>,
     pub state: Option<String>,
     pub tempo: Option<String>,
-    /// The session finished with something to look at and nobody has opened
-    /// it (#259). Only a cloud session has this today: the service counts
-    /// what the person has read, and a terminal does not.
-    ///
-    /// It says nothing about whether the session wants anything — a run
-    /// that stopped to ask is `waiting_for`, whether or not it is also
-    /// unread, and the two are read in that order below.
-    pub unread: bool,
     pub started_at: u64,
     pub tty: Option<String>,
     /// Where the session is running and how to get back to it: which host
@@ -177,7 +163,6 @@ impl SessionInfo {
             waiting_for: None,
             state: None,
             tempo: None,
-            unread: false,
             started_at: seq as u64,
             tty: Some(format!("ttys{:03}", 900 + seq % 100)),
             seat: None,
@@ -228,22 +213,13 @@ impl SessionInfo {
             return Phase::Working;
         }
         let blocked = |v: &Option<String>| v.as_deref() == Some("blocked");
-        if blocked(&self.tempo) || blocked(&self.state) {
-            return Phase::NeedsUser;
-        }
-        // Read last of the four on purpose: being unopened never outranks
-        // something the session actually asked for (#259).
-        if self.unread {
-            return Phase::Unread;
-        }
-        Phase::Idle
+        if blocked(&self.tempo) || blocked(&self.state) { Phase::NeedsUser } else { Phase::Idle }
     }
 
     /// Rewrites the raw fields so that `phase()` reports `phase`.
     pub fn set_phase(&mut self, phase: Phase) {
         self.tempo = None;
         self.state = None;
-        self.unread = false;
         match phase {
             Phase::Working => {
                 self.status = "busy".into();
@@ -252,11 +228,6 @@ impl SessionInfo {
             Phase::NeedsUser => {
                 self.status = "busy".into();
                 self.waiting_for = Some("dialog open".into());
-            }
-            Phase::Unread => {
-                self.status = "idle".into();
-                self.waiting_for = None;
-                self.unread = true;
             }
             Phase::Idle => {
                 self.status = "idle".into();
@@ -566,14 +537,6 @@ impl BoardModel {
             self.count(Phase::Working),
             self.count(Phase::NeedsUser),
         );
-        // Said only when there is one, the way the subagents are: the bar
-        // has to stay readable, and four counts that always add up to the
-        // first number is three more words than it can spare (#259). The
-        // three that are always there are the ones a board always has.
-        let unread = self.count(Phase::Unread);
-        if unread > 0 {
-            s.push_str(&format!(" · {unread} UNREAD"));
-        }
         s.push_str(&format!(" · {} IDLE", self.count(Phase::Idle)));
         let subs = self.live_subagents();
         if subs > 0 {
@@ -597,15 +560,6 @@ impl BoardModel {
                     Phase::NeedsUser => match &info.waiting_for {
                         Some(w) => format!("needs you: {w}"),
                         None => "waiting for your answer".into(),
-                    },
-                    // Finished, with something nobody has opened. Its own
-                    // sentence about what it left, where the service wrote
-                    // one (#259) — the same place the waiting line comes
-                    // from, said about a person who has not looked rather
-                    // than one being waited on.
-                    Phase::Unread => match &info.state {
-                        Some(w) => format!("unread · {w}"),
-                        None => "unread".into(),
                     },
                     // A session's own word for itself where it has one: a
                     // cloud session is never idle at a prompt, it has
@@ -664,30 +618,6 @@ mod tests {
         let mut s = SessionInfo::synthetic(2, "t", Phase::Idle);
         s.tempo = Some("blocked".into());
         assert_eq!(s.phase(), Phase::NeedsUser, "idle + blocked tempo counts as needs-input");
-    }
-
-    /// The bar counts what nobody has opened apart from what is waiting on
-    /// a person (#259). It used to add them together and call the sum
-    /// `NEEDS INPUT`, which is how a board with nothing to answer could
-    /// still read as a board with work on it.
-    #[test]
-    fn the_bar_counts_what_is_unread_apart_from_what_wants_you() {
-        let mut m = BoardModel::new();
-        m.apply(
-            vec![SessionInfo::synthetic(1, "a", Phase::Unread), SessionInfo::synthetic(2, "b", Phase::NeedsUser)],
-            Instant::now(),
-        );
-        m.settle();
-        let bar = m.summary();
-        assert!(bar.contains("1 NEEDS INPUT"), "{bar}");
-        assert!(bar.contains("1 UNREAD"), "{bar}");
-
-        // And it is said only when there is one: a board with nothing
-        // unopened reads exactly as it always did.
-        let mut quiet = BoardModel::new();
-        quiet.apply(vec![SessionInfo::synthetic(3, "c", Phase::Idle)], Instant::now());
-        quiet.settle();
-        assert!(!quiet.summary().contains("UNREAD"), "{}", quiet.summary());
     }
 
     #[test]

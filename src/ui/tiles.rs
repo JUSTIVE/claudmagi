@@ -325,14 +325,6 @@ fn back_lines(info: &SessionInfo, chip: &ChipState) -> (String, Vec<String>) {
                 (format!("{} at work", busy.len()), busy.into_iter().take(3).collect())
             }
         }
-        // What it is holding, in the service's own sentence where there is
-        // one (#259), and then where it ran. Deliberately not "needs you":
-        // nothing is blocked on the person here.
-        Phase::Unread => {
-            let mut small: Vec<String> = info.state.iter().map(|w| w.to_lowercase()).collect();
-            small.push(place);
-            ("unread".into(), small)
-        }
         Phase::Idle => (place, running_for(info.started_at).map(|up| vec![format!("up {up}")]).unwrap_or_default()),
     }
 }
@@ -393,13 +385,6 @@ impl Inks {
         match info.phase() {
             Phase::NeedsUser => self.accent,
             Phase::Working => self.pal.chip,
-            // Finished, holding something nobody has opened (#259). Its own
-            // colour and not the accent: the accent is the session calling
-            // you, and this one is not calling. Not the quiet grey either —
-            // grey is what the board says when it has nothing to say, and a
-            // result nobody has read is not nothing (the same argument that
-            // took the page out of grey, #238).
-            Phase::Unread => ink::floor_color(ink::unread_color(self.pal), self.pal),
             Phase::Idle => self.quiet(),
         }
     }
@@ -1506,52 +1491,6 @@ mod tests {
 
         let asking = SessionInfo::synthetic(3, "S-3", Phase::NeedsUser);
         assert_eq!(inks.session(&asking), inks.accent, "the accent is for a session asking");
-    }
-
-    /// A run that finished and left something nobody has opened is its own
-    /// colour (#259): not the accent, which is a session asking; not the
-    /// quiet grey, which is the board having nothing to say; and not the
-    /// chip, which is work still going on.
-    ///
-    /// This is the fault itself, in a test: a cloud session that had merely
-    /// not been opened was being painted the same colour as one that had
-    /// stopped to ask a question, and the status bar counted it as waiting.
-    #[test]
-    fn a_finished_run_nobody_opened_is_not_the_colour_of_one_asking() {
-        for pal in [theme::PALETTE, theme::DARK, theme::ORANGE] {
-            let inks = Inks { pal, accent: Rgba { r: 1.0, g: 0.44, b: 0.0, a: 1.0 } };
-            let held = SessionInfo::synthetic(1, "S-1", Phase::Unread);
-            let fill = inks.session(&held);
-            for (other, what) in [
-                (inks.accent, "a session asking"),
-                (inks.quiet(), "a session with nothing to say"),
-                (pal.chip, "a session still working"),
-            ] {
-                assert_ne!(fill, other, "unread would read as {what}");
-            }
-            // And it reads on the board it stands on, like every other fill.
-            assert!(
-                theme::contrast(fill, pal.bg) >= 2.99,
-                "unread does not read on the board: {:.2}",
-                theme::contrast(fill, pal.bg)
-            );
-        }
-    }
-
-    /// The back of an unread tile says what is being held, and never says
-    /// the person is wanted (#259).
-    #[test]
-    fn an_unread_tile_says_what_it_is_holding_not_that_it_wants_you() {
-        let mut held = SessionInfo::synthetic(1, "S-1", Phase::Unread);
-        held.state = Some("PR CI passed, awaiting human review".into());
-        let mut model = crate::model::BoardModel::new();
-        model.apply(vec![held.clone()], std::time::Instant::now());
-        model.settle();
-        let chip = model.chips.first().expect("the session is on the board");
-        let (big, small) = back_lines(&held, chip);
-        assert_eq!(big, "unread");
-        assert!(small.iter().any(|l| l.contains("awaiting human review")), "{small:?}");
-        assert!(!small.iter().any(|l| l.contains("needs")), "nothing is waiting on a person: {small:?}");
     }
 
     #[test]

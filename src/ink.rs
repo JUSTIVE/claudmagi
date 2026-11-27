@@ -53,27 +53,6 @@ pub fn artifact_color(pal: Palette) -> Rgba {
     theme::turned_hue(pal.text_on, ARTIFACT_HUE)
 }
 
-/// How far round the wheel a finished run nobody has opened sits from the
-/// board's green: **right round**, to the colour opposite it (#259).
-///
-/// Green is work going well — a session running, a pull request open — so
-/// the far side of the wheel is the one place a stopped run can stand
-/// without borrowing somebody else's meaning. It is also, as it happens,
-/// the widest gap left on this board: the accent and the alarm sit at 16°,
-/// the ticket's amber and the running border at 36° and 45°, the greens at
-/// 148°, the page's teal at 188°, review's blue at 226°, merged at 261°
-/// and the queue at 289°. 328° is nobody's.
-///
-/// It is deliberately **not** the accent. The accent is a session calling
-/// you; this one is not calling. It only has something you have not read.
-const UNREAD_HUE: f32 = 180.0;
-
-/// A run that finished with something to look at that nobody has opened
-/// (#259).
-pub fn unread_color(pal: Palette) -> Rgba {
-    theme::turned_hue(pal.text_on, UNREAD_HUE)
-}
-
 /// How far round the wheel a pull request on its way in sits from one that
 /// is in (#233): towards magenta, so the queue reads as the purple family
 /// — landing — without being mistaken for the blue of a pull request that
@@ -141,9 +120,7 @@ mod tests {
     #[test]
     fn a_fill_keeps_the_colour_it_was_given() {
         for pal in [theme::PALETTE, theme::DARK] {
-            for paint in
-                [pal.text_on, pal.merged, pal.alarm, pal.text_idle, theme::turned_hue(pal.text_on, 78.0), unread_color(pal)]
-            {
+            for paint in [pal.text_on, pal.merged, pal.alarm, pal.text_idle, theme::turned_hue(pal.text_on, 78.0)] {
                 let fill = floor_color(paint, pal);
                 assert!(
                     theme::contrast(fill, pal.bg) >= READABLE - 0.01,
