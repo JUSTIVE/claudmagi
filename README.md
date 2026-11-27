@@ -1,5 +1,10 @@
 # claudmagi
 
+![The start screen: sessions grouped by what they are working on, each with its Linear issue, its subagents and its pull requests beside it](docs/board.png)
+
+<sub>The sandbox, not a real board — synthetic sessions so the picture carries nobody's
+ticket numbers. `T` → **SANDBOX** → *fill ×8* → *auto churn* makes one.</sub>
+
 A board of your live Claude Code sessions, built on [Native Shell](https://nsh.dev)
 (AppKit views, their motion on Core Animation) and dressed in Windows Phone Metro by
 [nsh-metro](https://github.com/JUSTIVE/nsh-metro): flat square sheets that slide in from
